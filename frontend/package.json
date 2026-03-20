@@ -1,0 +1,69 @@
+{
+  "name": "kea-scheduler-frontend",
+  "version": "1.0.0",
+  "description": "Emergency Physician Scheduling Application",
+  "main": "out/main/index.js",
+  "author": "KEA Scheduler",
+  "private": true,
+  "scripts": {
+    "predev": "electron-vite build",
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "dist": "electron-builder",
+    "package:win": "npm run build && electron-builder --win",
+    "package:mac": "npm run build && electron-builder --mac"
+  },
+  "build": {
+    "appId": "com.kea.physician-scheduler",
+    "productName": "KEA Physician Scheduler",
+    "copyright": "Copyright © 2026 KEA Scheduler",
+    "directories": {
+      "output": "../release",
+      "buildResources": "build"
+    },
+    "files": [
+      "out/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../dist_backend",
+        "to": "backend",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "../scheduler/config",
+        "to": "config"
+      }
+    ],
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }]
+    },
+    "mac": {
+      "target": [{ "target": "dmg" }],
+      "category": "public.app-category.productivity",
+      "hardenedRuntime": false,
+      "identity": null
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "dmg": {
+      "sign": false
+    }
+  },
+  "dependencies": {
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.0",
+    "autoprefixer": "^10.4.0",
+    "electron": "^30.0.0",
+    "electron-builder": "^24.0.0",
+    "electron-vite": "^2.3.0",
+    "postcss": "^8.4.0",
+    "tailwindcss": "^3.4.0"
+  }
+}

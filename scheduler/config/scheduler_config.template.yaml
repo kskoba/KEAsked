@@ -1,0 +1,147 @@
+# ============================================================
+# Scheduler Configuration
+# ============================================================
+# Group-level rules that apply to the schedule as a whole,
+# independent of any individual physician's preferences.
+# ============================================================
+
+# ----------------------------------------------------------
+# Site distribution targets
+# ----------------------------------------------------------
+# The scheduler will aim for these fractions of all filled
+# shifts across the entire monthly schedule.
+#
+# Group A: RAH A side, RAH B side
+# Group B: RAH I side, NEHC, RAH F side
+#
+# Expressed as fractions (must sum to 1.0).
+# ----------------------------------------------------------
+site_distribution:
+  # Per-physician: 40% of each physician's assigned shifts must be acute
+  # (RAH A or B), 60% non-acute (RAH I, NEHC, RAH F).
+  # These are the authoritative per-physician targets from Scheduling-Procedures.
+  # The 38/62 figures were a population-level approximation — use 40/60.
+  group_a_target: 0.40     # RAH A + RAH B  (acute)
+  group_b_target: 0.60     # RAH I + NEHC + RAH F  (non-acute)
+  tolerance: 0.05          # Acceptable deviation per physician (±5%)
+
+# ----------------------------------------------------------
+# Spacing constraint
+# ----------------------------------------------------------
+# Minimum hours between the start time of a physician's last
+# shift on day D and the start time of any shift on day D+1.
+# ----------------------------------------------------------
+spacing:
+  min_hours_between_shifts: 22
+
+# ----------------------------------------------------------
+# Consecutive shift limits (group-wide defaults)
+# ----------------------------------------------------------
+# Per-physician overrides live in physicians.yaml.
+# ----------------------------------------------------------
+consecutive:
+  max_consecutive_shifts: 3   # default if not set per physician
+
+# ----------------------------------------------------------
+# Anchor shift limits (0600h and 2400h)
+# ----------------------------------------------------------
+# Per-physician caps for early and overnight shifts.
+# If a physician specifies counts in their Excel submission
+# (AK59 = 2400h requested, AK61 = 0600h requested), the
+# scheduler targets that number ±1.  If unspecified (0),
+# the total of 0600h + 2400h shifts is capped at anchor_max_total.
+# ----------------------------------------------------------
+anchor_shifts:
+  anchor_max_total: 4          # max combined 0600h + 2400h when not specified
+  anchor_target_tolerance: 1   # ±1 from physician's stated target
+
+# ----------------------------------------------------------
+# Weekend limits
+# ----------------------------------------------------------
+# Fri/Sat/Sun that are contiguous count as one weekend.
+# A physician may work multiple shifts within a weekend, but
+# the scheduler will not assign more than max_weekends_per_month
+# occupied weekends without prompting for confirmation.
+# ----------------------------------------------------------
+weekends:
+  max_weekends_per_month: 2
+
+# ----------------------------------------------------------
+# Singleton shift rule
+# ----------------------------------------------------------
+# An isolated shift (no adjacent-day shifts in the same run)
+# is a singleton.  Singletons are unavoidable sometimes, but:
+#   - Only one singleton is allowed per physician per month.
+#   - A 2400h shift must not be a singleton (it must be part
+#     of a consecutive run or have a preceding/following shift
+#     within the spacing rules).
+# ----------------------------------------------------------
+singleton:
+  max_singletons_per_month: 1
+  singleton_2400h_forbidden: true
+
+# ----------------------------------------------------------
+# Same-shift consecutive rule
+# ----------------------------------------------------------
+# A physician must not be assigned the identical shift code
+# (same time AND same site) on two consecutive calendar days.
+# ----------------------------------------------------------
+same_shift_consecutive: false   # false = constraint is active (do not allow)
+
+# ----------------------------------------------------------
+# Group A/B mix during consecutive runs
+# ----------------------------------------------------------
+# When a physician works two or more consecutive days, the
+# scheduler should mix Group A and Group B assignments across
+# those days.  It must not schedule all days in a run as
+# Group A or all as Group B (while still respecting the
+# overall monthly 38/62 distribution target).
+# ----------------------------------------------------------
+run_group_mix: true
+
+# ----------------------------------------------------------
+# Physician pair constraints
+# ----------------------------------------------------------
+
+# Timed separation: these pairs CAN work the same day but their
+# shift start times must be at least min_hours_gap apart.
+# Additionally, the forbidden_time_pairs combinations are never
+# allowed on the same day regardless of gap.
+timed_separation:
+  - physicians: [Brenneis, Fanaeian]
+    min_hours_gap: 6
+    forbidden_time_pairs:
+      - [1700h, 2400h]
+      - [1800h, 2400h]
+
+# Conditional co-working: these pairs have day-type restrictions.
+#   no_shared_weekends: true  → they cannot both work Fri/Sat/Sun
+#   weekday_requires_one_at   → on a weekday, one of them must be at this time
+conditional_cowork:
+  - physicians: [Edgecumbe, Houston]
+    no_shared_weekends: true
+    weekday_requires_one_at: "0600h"
+
+# ----------------------------------------------------------
+# Linked-pair constraints
+# ----------------------------------------------------------
+# Physicians in a linked pair share their shift load and are
+# treated as a single scheduling unit:
+#   - Their combined requested shifts are distributed between them.
+#   - If both are available on a given day, they are assigned
+#     the same shift (they work together).
+#   - They are never assigned different simultaneous shifts.
+# ----------------------------------------------------------
+linked_pairs: []
+# Example:
+#   linked_pairs:
+#     - [PhysicianA, PhysicianB]   # use physician IDs from physicians.yaml
+
+# ----------------------------------------------------------
+# Claude API key (optional)
+# ----------------------------------------------------------
+# Set this to enable Claude-assisted schedule improvement.
+# Set this to your Anthropic API key, or set the ANTHROPIC_API_KEY env var.
+# Alternatively, set the ANTHROPIC_API_KEY environment variable.
+# ----------------------------------------------------------
+anthropic_api_key: ""

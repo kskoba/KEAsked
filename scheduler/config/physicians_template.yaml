@@ -1,0 +1,92 @@
+# ============================================================
+# Physician Entry — Annotated Template
+# ============================================================
+# Copy this block into physicians.yaml and fill in the fields.
+# Fields marked [REQUIRED] must be present.
+# Fields marked [OPTIONAL] can be omitted; defaults are shown.
+# ============================================================
+
+physicians:
+
+  - id: INITIALS            # [REQUIRED] Short unique identifier, e.g. KS
+                            # Must match the prefix of the physician's Excel file
+                            # (e.g. "KS" matches "KS- June 2026 ....xlsx")
+
+    name: "Full Name"       # [REQUIRED] Display name; must match cell A1 of
+                            # the physician's Excel submission exactly.
+
+    email: ""               # [OPTIONAL] Used for future notification features.
+
+    active: true            # [OPTIONAL] Set to false to exclude from scheduling
+                            # without removing the record.  Default: true.
+
+    # ----------------------------------------------------------
+    # Scheduling preferences (stable across months)
+    # Shift counts (requested / min / max) come from each month's
+    # Excel submission, not from this file.
+    # ----------------------------------------------------------
+    scheduling:
+      max_consecutive_shifts: 3     # [OPTIONAL] Max back-to-back shifts before
+                                    # a mandatory day off.  Default: 3
+
+      group_b_site_preference: nehc # [OPTIONAL] Within-Group-B preference for
+                                    # the 62% non-acute allocation.
+                                    #   nehc  — prefer NEHC
+                                    #   rah   — prefer RAH I or RAH F
+                                    #   rah_f — prefer specifically RAH F side
+                                    # Omit (or leave null) for no preference.
+
+    # ----------------------------------------------------------
+    # Sites this physician must NEVER be assigned to.
+    # Use canonical site names exactly as listed below.
+    # Omit the key (or use []) if there are no restrictions.
+    #
+    # Valid site names:
+    #   NEHC
+    #   RAH A side
+    #   RAH B side
+    #   RAH I side
+    #   RAH F side
+    # ----------------------------------------------------------
+    forbidden_sites: []
+    # Example — physician can only work Group A sites:
+    #   forbidden_sites:
+    #     - NEHC
+    #     - RAH I side
+    #     - RAH F side
+
+    # ----------------------------------------------------------
+    # Submission validation rule overrides
+    # Use these ONLY for physicians who have an agreed exception
+    # to the standard minimum-availability rules.
+    #
+    # For each key:
+    #   - Omit it (or leave as {}) to use the standard formula.
+    #   - Set to an integer to replace the computed minimum.
+    #   - Set to null to disable the rule entirely for this physician.
+    #
+    # Standard formulas (n = shifts_requested from their Excel):
+    #   min_valid_days    = ceil(n * 1.5)
+    #   min_valid_blocks  = n * 4
+    #   min_weekend_days  = ceil(n * 0.6)
+    #   min_anchored_days = ceil(n / 2)
+    # ----------------------------------------------------------
+    rule_overrides: {}
+    # Examples:
+    #
+    # No exceptions (default):
+    #   rule_overrides: {}
+    #
+    # Disable the weekend minimum entirely:
+    #   rule_overrides:
+    #     min_weekend_days: null
+    #
+    # Lower the anchored-day minimum to 2 regardless of n:
+    #   rule_overrides:
+    #     min_anchored_days: 2
+    #
+    # Combine multiple overrides:
+    #   rule_overrides:
+    #     min_valid_days: 10
+    #     min_weekend_days: null
+    #     min_anchored_days: 2

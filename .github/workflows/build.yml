@@ -1,0 +1,203 @@
+name: Build Installers
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  # ─── Windows x64 ────────────────────────────────────────────────────────────
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install -r scheduler/requirements.txt pyinstaller
+
+      - name: Inject API key into scheduler config
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python -c "
+          import re, os
+          t = open('scheduler/config/scheduler_config.template.yaml', encoding='utf-8').read()
+          key = os.environ.get('ANTHROPIC_API_KEY', '')
+          result = re.sub(r'anthropic_api_key: \"[^\"]*\"', f'anthropic_api_key: \"{key}\"', t)
+          open('scheduler/config/scheduler_config.yaml', 'w', encoding='utf-8').write(result)
+          "
+
+      - name: Bundle Python backend (PyInstaller)
+        run: >
+          pyinstaller scheduler_server.spec
+          --distpath dist_backend
+          --workpath build_pyinstaller
+          --noconfirm
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install npm dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build Windows installer
+        working-directory: frontend
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run package:win
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: release/*.exe
+          if-no-files-found: error
+
+  # ─── macOS ARM64 (Apple Silicon) ────────────────────────────────────────────
+  build-mac-arm64:
+    runs-on: macos-latest   # macos-14 = Apple Silicon (arm64)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install -r scheduler/requirements.txt pyinstaller
+
+      - name: Inject API key into scheduler config
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python -c "
+          import re, os
+          t = open('scheduler/config/scheduler_config.template.yaml', encoding='utf-8').read()
+          key = os.environ.get('ANTHROPIC_API_KEY', '')
+          result = re.sub(r'anthropic_api_key: \"[^\"]*\"', f'anthropic_api_key: \"{key}\"', t)
+          open('scheduler/config/scheduler_config.yaml', 'w', encoding='utf-8').write(result)
+          "
+
+      - name: Bundle Python backend (PyInstaller)
+        run: |
+          pyinstaller scheduler_server.spec \
+            --distpath dist_backend \
+            --workpath build_pyinstaller \
+            --noconfirm
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install npm dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build macOS DMG (arm64)
+        working-directory: frontend
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --mac --arm64
+
+      - name: Upload macOS arm64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64-dmg
+          path: release/*.dmg
+          if-no-files-found: error
+
+  # ─── macOS x64 (Intel) ──────────────────────────────────────────────────────
+  build-mac-x64:
+    runs-on: macos-13   # Intel x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install -r scheduler/requirements.txt pyinstaller
+
+      - name: Inject API key into scheduler config
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python -c "
+          import re, os
+          t = open('scheduler/config/scheduler_config.template.yaml', encoding='utf-8').read()
+          key = os.environ.get('ANTHROPIC_API_KEY', '')
+          result = re.sub(r'anthropic_api_key: \"[^\"]*\"', f'anthropic_api_key: \"{key}\"', t)
+          open('scheduler/config/scheduler_config.yaml', 'w', encoding='utf-8').write(result)
+          "
+
+      - name: Bundle Python backend (PyInstaller)
+        run: |
+          pyinstaller scheduler_server.spec \
+            --distpath dist_backend \
+            --workpath build_pyinstaller \
+            --noconfirm
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install npm dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build macOS DMG (x64)
+        working-directory: frontend
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --mac --x64
+
+      - name: Upload macOS x64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-x64-dmg
+          path: release/*.dmg
+          if-no-files-found: error
+
+  # ─── GitHub Release (tag pushes only) ───────────────────────────────────────
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-windows, build-mac-arm64, build-mac-x64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "KEA Physician Scheduler ${{ github.ref_name }}"
+          body: |
+            ## Downloads
+            | Platform | File |
+            |---|---|
+            | Windows (x64) | `KEA Physician Scheduler Setup *.exe` |
+            | macOS Apple Silicon (M1/M2/M3) | `KEA Physician Scheduler-*-arm64.dmg` |
+            | macOS Intel | `KEA Physician Scheduler-*-x64.dmg` |
+
+            > **macOS note:** The app is unsigned. On first launch, right-click → Open to bypass Gatekeeper.
+          files: |
+            windows-installer/*.exe
+            macos-arm64-dmg/*.dmg
+            macos-x64-dmg/*.dmg
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

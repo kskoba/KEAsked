@@ -1,0 +1,786 @@
+# ============================================================
+# Physician Roster
+# ============================================================
+# Source: SM-rules.md (parsed 2026-03-20)
+#
+# scheduling.group_b_site_preference — within Group B (62% target):
+#   nehc  : prefer NEHC
+#   rah   : prefer RAH I or RAH F
+#   rah_f : prefer specifically RAH F side
+#   (omit): no preference within Group B
+#
+# scheduling.max_consecutive_shifts — hard cap on back-to-back days
+#   Global default is 3; only listed here when it differs or for clarity.
+#
+# rule_overrides — submission validation exceptions only.
+#   Omit or use {} for standard rules.
+# ============================================================
+
+physicians:
+
+  - id: Ademola
+    name: Ademola
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: AHanson
+    name: Amanda Hanson
+    active: true
+    scheduling:
+      max_consecutive_shifts: 2
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Anderson
+    name: Anderson
+    active: true
+    scheduling:
+      max_consecutive_shifts: 4
+      group_b_site_preference: rah
+    rule_overrides: {}
+
+  - id: AYeung
+    name: Aref Yeung
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Bacon
+    name: Bacon
+    active: true
+    scheduling:
+      max_consecutive_shifts: 4
+      group_b_site_preference: rah
+    rule_overrides: {}
+
+  - id: Bly
+    name: Bly
+    active: true
+    scheduling:
+      max_consecutive_shifts: 4
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Braun
+    name: Braun
+    active: true
+    scheduling:
+      max_consecutive_shifts: 2
+      group_b_site_preference: rah
+    forbidden_sites:
+      - NEHC
+    rule_overrides:
+      min_valid_blocks: 1
+
+  - id: Brenneis
+    name: Brenneis
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Breton
+    name: Breton
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: BrownF
+    name: Brown F
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+    rule_overrides: {}
+
+  - id: BrownT
+    name: Brown T
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Burkart
+    name: Burkart
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+    rule_overrides: {}
+
+  - id: Butcher
+    name: Butcher
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+    rule_overrides: {}
+
+  - id: Carroll
+    name: Carroll
+    active: true
+    scheduling:
+      max_consecutive_shifts: 4
+    rule_overrides: {}
+
+  - id: CenaikoA
+    name: Cenaiko A
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+    rule_overrides: {}
+
+  - id: Chee
+    name: Chee
+    active: true
+    scheduling:
+      max_consecutive_shifts: 4
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Cloutier
+    name: Cloutier
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+    forbidden_sites:
+      - NEHC
+      - RAH A side
+      - RAH B side
+      - RAH F side
+    rule_overrides: {}
+
+  - id: Dance
+    name: Dance
+    active: true
+    scheduling:
+      max_consecutive_shifts: 2
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Davis
+    name: Davis
+    active: true
+    scheduling:
+      max_consecutive_shifts: 2
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Deol
+    name: Deol
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: rah
+    rule_overrides: {}
+
+  - id: Desrochers
+    name: Desrochers
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Deutscher
+    name: Deutscher
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+    rule_overrides: {}
+
+  - id: Dong
+    name: Dong
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: EChang
+    name: E Chang
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: rah
+    forbidden_sites:
+      - NEHC
+    rule_overrides: {}
+
+  - id: Edgecumbe
+    name: Edgecumbe
+    active: true
+    scheduling:
+      max_consecutive_shifts: 4
+      group_b_site_preference: rah
+    rule_overrides: {}
+
+  - id: Esterhuizen
+    name: Esterhuizen
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: rah
+    rule_overrides: {}
+
+  - id: Fanaeian
+    name: Fanaeian
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Farfus
+    name: Farfus
+    active: true
+    scheduling:
+      max_consecutive_shifts: 4
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Fisher
+    name: Fisher
+    active: true
+    scheduling:
+      max_consecutive_shifts: 4
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Francescutti
+    name: Francescutti
+    active: true
+    scheduling:
+      max_consecutive_shifts: 2
+      group_b_site_preference: nehc
+    forbidden_sites:
+      - RAH A side
+      - RAH B side
+      - RAH F side
+    rule_overrides: {}
+
+  - id: Garcea
+    name: Garcea
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Gerber
+    name: Gerber
+    active: true
+    scheduling:
+      max_consecutive_shifts: 5
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Gill
+    name: Gill
+    active: true
+    scheduling:
+      max_consecutive_shifts: 2
+    rule_overrides: {}
+
+  - id: Grishin
+    name: Grishin
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Gunawan
+    name: Gunawan
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+    rule_overrides: {}
+
+  - id: Haager
+    name: Haager
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: HansenR
+    name: Hansen R
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+    rule_overrides: {}
+
+  - id: Hayward
+    name: Hayward
+    active: true
+    scheduling:
+      max_consecutive_shifts: 4
+      group_b_site_preference: rah
+    rule_overrides: {}
+
+  - id: Hegstrom
+    name: Hegstrom
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Houston
+    name: Houston
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: JChang
+    name: J Chang
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Johnston
+    name: Johnston
+    active: true
+    scheduling:
+      max_consecutive_shifts: 5
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Keyes
+    name: Keyes
+    active: true
+    scheduling:
+      max_consecutive_shifts: 1
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Khangura
+    name: Khangura
+    active: true
+    scheduling:
+      max_consecutive_shifts: 2
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Kilburn
+    name: Kilburn
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+    rule_overrides: {}
+
+  - id: Kjelland
+    name: Kjelland
+    active: true
+    scheduling:
+      max_consecutive_shifts: 2
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Krisik
+    name: Krisik
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    forbidden_sites:
+      - RAH I side
+      - RAH A side
+      - RAH B side
+    rule_overrides: {}
+
+  - id: Lali
+    name: Lali
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: rah
+    rule_overrides: {}
+
+  - id: LamN
+    name: Lam N
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: LamRico
+    name: Lam-Rico
+    active: true
+    scheduling:
+      max_consecutive_shifts: 4
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Lefebvre
+    name: Lefebvre
+    active: true
+    scheduling:
+      max_consecutive_shifts: 4
+      group_b_site_preference: rah
+    rule_overrides: {}
+
+  - id: Lucyk
+    name: Lucyk
+    active: true
+    scheduling:
+      max_consecutive_shifts: 2
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Lung
+    name: Lung
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: rah
+    rule_overrides: {}
+
+  - id: MacGougan
+    name: MacGougan
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Mackenzie
+    name: Mackenzie
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: MacLean
+    name: MacLean
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Mason
+    name: Mason
+    active: true
+    scheduling:
+      max_consecutive_shifts: 4
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Matemisz
+    name: Matemisz
+    active: true
+    scheduling:
+      max_consecutive_shifts: 5
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: McKinnon
+    name: McKinnon
+    active: true
+    scheduling:
+      max_consecutive_shifts: 2
+      max_consecutive_nights: 2
+      group_b_site_preference: nehc
+    forbidden_sites:
+      - RAH I side
+      - RAH F side
+      - RAH A side
+      - RAH B side
+    rule_overrides: {}
+
+  - id: Meleshko
+    name: Meleshko
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Mithani
+    name: Mithani
+    active: true
+    scheduling:
+      max_consecutive_shifts: 2
+      group_b_site_preference: rah
+    rule_overrides: {}
+
+  - id: Morrison
+    name: Morrison
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Mrochuk
+    name: Mrochuk
+    active: true
+    scheduling:
+      max_consecutive_shifts: 2
+      group_b_site_preference: nehc
+    forbidden_sites:
+      - RAH I side
+      - RAH F side
+    rule_overrides: {}
+
+  - id: Norum
+    name: Norum
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Peterson
+    name: Peterson
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Pritchard
+    name: Pritchard
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: RScheirer
+    name: R Scheirer
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      max_consecutive_nights: 1
+      group_b_site_preference: rah
+    forbidden_sites:
+      - NEHC
+    rule_overrides: {}
+
+  - id: Randhawa
+    name: Randhawa
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+    rule_overrides: {}
+
+  - id: Rawe
+    name: Rawe
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: rah_f   # specifically RAH F side
+    rule_overrides: {}
+
+  - id: Reid
+    name: Reid
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+    rule_overrides: {}
+
+  - id: Rogers
+    name: Rogers
+    active: true
+    scheduling:
+      max_consecutive_shifts: 4
+      group_b_site_preference: rah
+    rule_overrides: {}
+
+  - id: Rosenblum
+    name: Rosenblum
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Sachs
+    name: Sachs
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Sajko
+    name: Sajko
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+    rule_overrides: {}
+
+  - id: Samoraj
+    name: Samoraj
+    active: true
+    scheduling:
+      max_consecutive_shifts: 4
+      group_b_site_preference: rah
+    rule_overrides: {}
+
+  - id: ScheirerO
+    name: Scheirer O
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Schindler
+    name: Schindler
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Schonnop
+    name: Schonnop
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Sharma
+    name: Sharma
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Shih
+    name: Shih
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+    rule_overrides: {}
+
+  - id: Singh
+    name: Singh
+    active: true
+    scheduling:
+      max_consecutive_shifts: 4
+      group_b_site_preference: rah
+    rule_overrides: {}
+
+  - id: KS
+    name: Kevin Skoblenick
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Smith
+    name: Smith
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: rah
+    rule_overrides: {}
+
+  - id: Taylor
+    name: Taylor
+    active: true
+    scheduling:
+      max_consecutive_shifts: 4
+      group_b_site_preference: rah
+    rule_overrides: {}
+
+  - id: Thirsk
+    name: Thirsk
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: rah
+    rule_overrides: {}
+
+  - id: Tiessen
+    name: Tiessen
+    active: true
+    scheduling:
+      max_consecutive_shifts: 4
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Velji
+    name: Velji
+    active: true
+    scheduling:
+      max_consecutive_shifts: 4
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Walker
+    name: Walker
+    active: true
+    scheduling:
+      max_consecutive_shifts: 6
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Whiteside
+    name: Whiteside
+    active: true
+    scheduling:
+      max_consecutive_shifts: 4
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Williamson
+    name: Williamson
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: rah
+    rule_overrides: {}
+
+  - id: Wittmeier
+    name: Wittmeier
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Woods
+    name: Woods
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: rah
+    rule_overrides: {}
+
+  - id: YeungAlex
+    name: Yeung Alex
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+      group_b_site_preference: nehc
+    rule_overrides: {}
+
+  - id: Zhang
+    name: Zhang
+    active: true
+    scheduling:
+      max_consecutive_shifts: 2
+      group_b_site_preference: nehc
+    rule_overrides: {}

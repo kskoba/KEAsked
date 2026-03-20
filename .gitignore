@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+.env
+
+# PyInstaller build artifacts
+dist_backend/
+build_pyinstaller/
+*.spec.bak
+
+# Node / Electron
+frontend/node_modules/
+frontend/out/
+frontend/.vite/
+release/
+
+# Claude Code memory (local session data)
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+
+# Excel files with real physician data (keep only repo samples if desired)
+*.xlsx
+*.xls
+
+# Sensitive config — the real file has the API key; only the template is committed
+scheduler/config/scheduler_config.yaml

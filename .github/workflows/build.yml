@@ -21,23 +21,25 @@ jobs:
         run: pip install -r scheduler/requirements.txt pyinstaller
 
       - name: Inject API key into scheduler config
+        shell: bash
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          python -c "
+          python - <<'PYEOF'
           import re, os
           t = open('scheduler/config/scheduler_config.template.yaml', encoding='utf-8').read()
           key = os.environ.get('ANTHROPIC_API_KEY', '')
-          result = re.sub(r'anthropic_api_key: \"[^\"]*\"', f'anthropic_api_key: \"{key}\"', t)
+          result = re.sub(r'anthropic_api_key: "[^"]*"', f'anthropic_api_key: "{key}"', t)
           open('scheduler/config/scheduler_config.yaml', 'w', encoding='utf-8').write(result)
-          "
+          PYEOF
 
       - name: Bundle Python backend (PyInstaller)
-        run: >
-          pyinstaller scheduler_server.spec
-          --distpath dist_backend
-          --workpath build_pyinstaller
-          --noconfirm
+        shell: bash
+        run: |
+          pyinstaller scheduler_server.spec \
+            --distpath dist_backend \
+            --workpath build_pyinstaller \
+            --noconfirm
 
       - uses: actions/setup-node@v4
         with:
@@ -61,9 +63,9 @@ jobs:
           path: release/*.exe
           if-no-files-found: error
 
-  # ─── macOS ARM64 (Apple Silicon) ────────────────────────────────────────────
+  # ─── macOS ARM64 (Apple Silicon — M1/M2/M3) ─────────────────────────────────
   build-mac-arm64:
-    runs-on: macos-latest   # macos-14 = Apple Silicon (arm64)
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -78,13 +80,13 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          python -c "
+          python - <<'PYEOF'
           import re, os
           t = open('scheduler/config/scheduler_config.template.yaml', encoding='utf-8').read()
           key = os.environ.get('ANTHROPIC_API_KEY', '')
-          result = re.sub(r'anthropic_api_key: \"[^\"]*\"', f'anthropic_api_key: \"{key}\"', t)
+          result = re.sub(r'anthropic_api_key: "[^"]*"', f'anthropic_api_key: "{key}"', t)
           open('scheduler/config/scheduler_config.yaml', 'w', encoding='utf-8').write(result)
-          "
+          PYEOF
 
       - name: Bundle Python backend (PyInstaller)
         run: |
@@ -115,9 +117,9 @@ jobs:
           path: release/*.dmg
           if-no-files-found: error
 
-  # ─── macOS x64 (Intel) ──────────────────────────────────────────────────────
+  # ─── macOS x64 (Intel Mac) ───────────────────────────────────────────────────
   build-mac-x64:
-    runs-on: macos-13   # Intel x86_64
+    runs-on: macos-13
     steps:
       - uses: actions/checkout@v4
 
@@ -132,13 +134,13 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          python -c "
+          python - <<'PYEOF'
           import re, os
           t = open('scheduler/config/scheduler_config.template.yaml', encoding='utf-8').read()
           key = os.environ.get('ANTHROPIC_API_KEY', '')
-          result = re.sub(r'anthropic_api_key: \"[^\"]*\"', f'anthropic_api_key: \"{key}\"', t)
+          result = re.sub(r'anthropic_api_key: "[^"]*"', f'anthropic_api_key: "{key}"', t)
           open('scheduler/config/scheduler_config.yaml', 'w', encoding='utf-8').write(result)
-          "
+          PYEOF
 
       - name: Bundle Python backend (PyInstaller)
         run: |
@@ -189,8 +191,8 @@ jobs:
             | Platform | File |
             |---|---|
             | Windows (x64) | `KEA Physician Scheduler Setup *.exe` |
-            | macOS Apple Silicon (M1/M2/M3) | `KEA Physician Scheduler-*-arm64.dmg` |
-            | macOS Intel | `KEA Physician Scheduler-*-x64.dmg` |
+            | macOS Apple Silicon (M1/M2/M3) | `*-arm64.dmg` |
+            | macOS Intel | `*-x64.dmg` |
 
             > **macOS note:** The app is unsigned. On first launch, right-click → Open to bypass Gatekeeper.
           files: |

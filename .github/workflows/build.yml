@@ -52,9 +52,8 @@ jobs:
       - name: Build Windows installer
         working-directory: frontend
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npm run package:win
+        run: npx electron-vite build && npx electron-builder --win --publish=never
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
@@ -112,9 +111,8 @@ jobs:
       - name: Build macOS DMG
         working-directory: frontend
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npx electron-builder --mac --arm64
+        run: npx electron-builder --mac --arm64 --publish=never
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4

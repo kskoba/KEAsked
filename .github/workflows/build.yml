@@ -63,8 +63,10 @@ jobs:
           path: release/*.exe
           if-no-files-found: error
 
-  # ─── macOS ARM64 (Apple Silicon — M1/M2/M3) ─────────────────────────────────
-  build-mac-arm64:
+  # ─── macOS ARM64 (Apple Silicon — M1/M2/M3/M4) ──────────────────────────────
+  # Intel Mac users: install Rosetta 2 (System Preferences → General → Software
+  # Update → More Info) — the ARM64 binary runs transparently via Rosetta.
+  build-mac:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -103,78 +105,28 @@ jobs:
         working-directory: frontend
         run: npm ci
 
-      - name: Build macOS DMG (arm64)
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Build macOS DMG
         working-directory: frontend
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npx electron-builder --mac --arm64
 
-      - name: Upload macOS arm64 artifact
+      - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
-          name: macos-arm64-dmg
-          path: release/*.dmg
-          if-no-files-found: error
-
-  # ─── macOS x64 (Intel Mac) ───────────────────────────────────────────────────
-  build-mac-x64:
-    runs-on: macos-13
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install Python dependencies
-        run: pip install -r scheduler/requirements.txt pyinstaller
-
-      - name: Inject API key into scheduler config
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          python - <<'PYEOF'
-          import re, os
-          t = open('scheduler/config/scheduler_config.template.yaml', encoding='utf-8').read()
-          key = os.environ.get('ANTHROPIC_API_KEY', '')
-          result = re.sub(r'anthropic_api_key: "[^"]*"', f'anthropic_api_key: "{key}"', t)
-          open('scheduler/config/scheduler_config.yaml', 'w', encoding='utf-8').write(result)
-          PYEOF
-
-      - name: Bundle Python backend (PyInstaller)
-        run: |
-          pyinstaller scheduler_server.spec \
-            --distpath dist_backend \
-            --workpath build_pyinstaller \
-            --noconfirm
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install npm dependencies
-        working-directory: frontend
-        run: npm ci
-
-      - name: Build macOS DMG (x64)
-        working-directory: frontend
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npx electron-builder --mac --x64
-
-      - name: Upload macOS x64 artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-x64-dmg
+          name: macos-dmg
           path: release/*.dmg
           if-no-files-found: error
 
   # ─── GitHub Release (tag pushes only) ───────────────────────────────────────
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-windows, build-mac-arm64, build-mac-x64]
+    needs: [build-windows, build-mac]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -191,14 +143,12 @@ jobs:
             | Platform | File |
             |---|---|
             | Windows (x64) | `KEA Physician Scheduler Setup *.exe` |
-            | macOS Apple Silicon (M1/M2/M3) | `*-arm64.dmg` |
-            | macOS Intel | `*-x64.dmg` |
+            | macOS (Apple Silicon + Intel via Rosetta 2) | `*.dmg` |
 
-            > **macOS note:** The app is unsigned. On first launch, right-click → Open to bypass Gatekeeper.
+            > **macOS note:** The app is unsigned. On first launch, right-click the DMG → Open to bypass Gatekeeper.
           files: |
             windows-installer/*.exe
-            macos-arm64-dmg/*.dmg
-            macos-x64-dmg/*.dmg
+            macos-dmg/*.dmg
           draft: false
           prerelease: false
         env:

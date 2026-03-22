@@ -37,6 +37,7 @@ export default function ConflictModal({ slot, scheduleData, onAssigned, onClose 
   }, [onClose])
 
   const handleAssign = useCallback(async (physicianId) => {
+    const candidate = candidates.find(c => c.physician_id === physicianId)
     setAssigning(physicianId)
     setError(null)
     try {
@@ -48,12 +49,17 @@ export default function ConflictModal({ slot, scheduleData, onAssigned, onClose 
       }
       // Refresh the schedule from server
       const updated = await getSchedule()
-      onAssigned(updated)
+      onAssigned(updated, {
+        physicianName: candidate?.physician_name || physicianId,
+        violations: result.violations || [],
+        date: slot.date,
+        shiftCode: slot.shift.code,
+      })
     } catch (err) {
       setError(err.message)
       setAssigning(null)
     }
-  }, [slot, onAssigned])
+  }, [slot, onAssigned, candidates])
 
   const candidates = slot.candidates || []
   const shiftCode = slot.shift?.code || ''

@@ -14,6 +14,7 @@ import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 try:
     import yaml
@@ -78,6 +79,18 @@ class PhysicianConfig:
     # Values must be canonical site names (see VALID_SITES).
     forbidden_sites: list[str] = field(default_factory=list)
 
+    # Shift-type restriction: if True, physician may only be assigned 2400h shifts.
+    only_2400h: bool = False
+
+    # Soft scheduling preferences.
+    prefer_weekends: bool = False
+
+    # Per-physician weekend cap; overrides the global max_weekends if set.
+    max_weekends: Optional[int] = None
+
+    # If True, requested dates+shifts are treated as near-mandatory (high score bonus).
+    honor_all_requests: bool = False
+
     # Validation rule overrides.
     # Keys: "min_valid_days" | "min_valid_blocks" | "min_weekend_days" | "min_anchored_days"
     # Values: int (replacement threshold) | None (disable rule)
@@ -135,6 +148,11 @@ def _parse_physician(raw: dict) -> PhysicianConfig:
             )
         forbidden_sites.append(site_str)
 
+    raw_max_weekends = sched.get("max_weekends")
+    parsed_max_weekends: Optional[int] = (
+        int(raw_max_weekends) if raw_max_weekends is not None else None
+    )
+
     return PhysicianConfig(
         id=str(raw["id"]),
         name=str(raw["name"]),
@@ -147,6 +165,10 @@ def _parse_physician(raw: dict) -> PhysicianConfig:
         group_b_site_preference=raw_pref,
         forbidden_sites=forbidden_sites,
         rule_overrides=overrides,
+        only_2400h=bool(sched.get("only_2400h", False)),
+        prefer_weekends=bool(sched.get("prefer_weekends", False)),
+        max_weekends=parsed_max_weekends,
+        honor_all_requests=bool(sched.get("honor_all_requests", False)),
     )
 
 

@@ -72,6 +72,8 @@ physicians:
     scheduling:
       max_consecutive_shifts: 2
       group_b_site_preference: rah
+      only_2400h: true
+      honor_all_requests: true
     forbidden_sites:
       - NEHC
     rule_overrides:
@@ -422,7 +424,10 @@ physicians:
     active: true
     scheduling:
       max_consecutive_shifts: 4
+      max_weekends: 2
       group_b_site_preference: nehc
+      only_2400h: true
+      prefer_weekends: true
     rule_overrides: {}
 
   - id: Lefebvre

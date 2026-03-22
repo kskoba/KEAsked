@@ -164,7 +164,7 @@ function createLoadingWindow() {
     <body>
       <div class="spinner"></div>
       <h1>KEA Physician Scheduler</h1>
-      <p>Starting API server, please wait…</p>
+      <p>Starting API server, please wait...</p>
     </body>
     </html>
   `))

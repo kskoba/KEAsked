@@ -50,6 +50,8 @@ from scheduler.api.schemas import (
     ValidationIssueSchema,
     ViolationSchema,
 )
+import os
+
 from scheduler.backend.config import load_roster
 from scheduler.backend.generator import (
     Assignment,
@@ -58,6 +60,11 @@ from scheduler.backend.generator import (
     ScheduleResult,
     generate_schedule,
 )
+try:
+    from scheduler.backend.generator_cpsat import CpsatScheduleGenerator
+    _CPSAT_AVAILABLE = True
+except Exception:  # pragma: no cover
+    _CPSAT_AVAILABLE = False
 from scheduler.backend.importer import import_directory, import_single_file
 from scheduler.backend.importer_flat import import_flat_file
 from scheduler.backend.models import PhysicianSubmission
@@ -354,9 +361,15 @@ async def generate(body: GenerateCachedRequest) -> ScheduleResponse:
 
     roster = _state["roster"]
     cfg = _state["scheduler_config"]
-    n_iterations = 200
+    use_cpsat = os.environ.get("USE_CPSAT", "0") == "1" and _CPSAT_AVAILABLE
+    n_iterations = 400
+    cpsat_time_limit = 90.0
 
-    _state["progress"] = {"current": 0, "total": n_iterations, "running": True, "best_unfilled": None}
+    if use_cpsat:
+        # CP-SAT: indeterminate progress — show 50% "Solving…" until done.
+        _state["progress"] = {"current": 50, "total": 100, "running": True, "best_unfilled": None}
+    else:
+        _state["progress"] = {"current": 0, "total": n_iterations, "running": True, "best_unfilled": None}
 
     def progress_cb(current: int, total: int, best_score: float) -> None:
         _state["progress"]["current"] = current
@@ -365,10 +378,16 @@ async def generate(body: GenerateCachedRequest) -> ScheduleResponse:
         _state["progress"]["best_unfilled"] = round(-best_score / 1000)
 
     try:
-        gen = ScheduleGenerator(submissions, roster, cfg)
-        result = await asyncio.to_thread(
-            gen.run_best_of, n_iterations, body.year, body.month, progress_cb
-        )
+        if use_cpsat:
+            gen = CpsatScheduleGenerator(submissions, roster, cfg)
+            result = await asyncio.to_thread(
+                gen.generate, body.year, body.month, cpsat_time_limit, 8, progress_cb
+            )
+        else:
+            gen = ScheduleGenerator(submissions, roster, cfg)
+            result = await asyncio.to_thread(
+                gen.run_best_of, n_iterations, body.year, body.month, progress_cb
+            )
         # Post-solve repair: juggle adjacent assignments to fill remaining gaps
         if result.unfilled:
             result = await asyncio.to_thread(gen.repair_pass, result, 50)
@@ -391,7 +410,8 @@ async def generate(body: GenerateCachedRequest) -> ScheduleResponse:
         _state["progress"]["running"] = False
         raise HTTPException(status_code=500, detail=f"Generation failed: {exc}\n{traceback.format_exc()}")
 
-    _state["progress"] = {"current": n_iterations, "total": n_iterations, "running": False, "best_unfilled": len(result.unfilled)}
+    final_total = 100 if use_cpsat else n_iterations
+    _state["progress"] = {"current": final_total, "total": final_total, "running": False, "best_unfilled": len(result.unfilled)}
     _state["generator"] = gen
     _state["result"] = result
 
@@ -775,6 +795,18 @@ def manual_assign(body: ManualAssignRequest) -> ManualAssignResponse:
         if shift_obj:
             break
 
+    # If slot is already occupied, unassign the previous physician first
+    existing_assignment = next(
+        (a for a in result.assignments if a.date == d and a.shift.code == body.shift_code),
+        None,
+    )
+    if existing_assignment:
+        gen._unassign(existing_assignment.physician_id, d, shift_obj)
+        result.assignments = [
+            a for a in result.assignments
+            if not (a.date == d and a.shift.code == body.shift_code)
+        ]
+
     violations = gen.assign_manual(body.physician_id, d, shift_obj)
 
     # Update the result: remove from unfilled if it was there, add to assignments
@@ -801,6 +833,60 @@ def manual_assign(body: ManualAssignRequest) -> ManualAssignResponse:
             + (f" {len(violations)} rule(s) overridden." if violations else " No rule violations.")
         ),
     )
+
+
+@app.post("/api/check-violations")
+def check_violations(body: ManualAssignRequest):
+    """
+    Check rule violations for assigning a physician to a slot WITHOUT assigning.
+    Temporarily unassigns any current occupant for an accurate check, then restores.
+    """
+    gen: ScheduleGenerator | None = _state.get("generator")
+    result: ScheduleResult | None = _state.get("result")
+    if gen is None or result is None:
+        raise HTTPException(status_code=400, detail="No schedule in memory.")
+
+    if body.shift_code not in ALL_SHIFT_CODES:
+        raise HTTPException(status_code=400, detail=f"Unknown shift code: {body.shift_code!r}")
+
+    if body.physician_id not in gen.submissions:
+        raise HTTPException(
+            status_code=400, detail=f"Physician {body.physician_id!r} not in submissions."
+        )
+
+    try:
+        d = datetime.date.fromisoformat(body.date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid date: {body.date!r}")
+
+    shift_obj: Shift | None = None
+    for block in BLOCKS:
+        for s in block:
+            if s.code == body.shift_code:
+                shift_obj = s
+                break
+        if shift_obj:
+            break
+
+    # Temporarily unassign current occupant for accurate check
+    existing = next(
+        (a for a in result.assignments if a.date == d and a.shift.code == body.shift_code),
+        None,
+    )
+    if existing:
+        gen._unassign(existing.physician_id, d, shift_obj)
+
+    violations = gen._check_constraints(body.physician_id, d, shift_obj) or []
+
+    # Restore the previous occupant
+    if existing:
+        gen._assign(existing.physician_id, d, shift_obj)
+
+    return {
+        "violations": [
+            ViolationSchema(rule=v.rule, description=v.description) for v in violations
+        ]
+    }
 
 
 # ---------------------------------------------------------------------------

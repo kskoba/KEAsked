@@ -93,7 +93,7 @@ function truncateName(name, max = 13) {
   return name.slice(0, max - 1) + '…'
 }
 
-export default function ScheduleGrid({ scheduleData, onOpenConflict }) {
+export default function ScheduleGrid({ scheduleData, onOpenConflict, onReplaceAssignment, swapMode, swapFirst, onSwapClick }) {
   const { assignments = [], unfilled = [], on_calls = [], year, month } = scheduleData
 
   const dates = useMemo(() => {
@@ -164,6 +164,10 @@ export default function ScheduleGrid({ scheduleData, onOpenConflict }) {
             unfilledMap={unfilledMap}
             onCallsMap={onCallsMap}
             onOpenConflict={onOpenConflict}
+            onReplaceAssignment={onReplaceAssignment}
+            swapMode={swapMode}
+            swapFirst={swapFirst}
+            onSwapClick={onSwapClick}
           />
         ))}
       </div>
@@ -171,7 +175,7 @@ export default function ScheduleGrid({ scheduleData, onOpenConflict }) {
   )
 }
 
-function WeekBlock({ weekDates, dateSet, assignmentMap, unfilledMap, onCallsMap, onOpenConflict }) {
+function WeekBlock({ weekDates, dateSet, assignmentMap, unfilledMap, onCallsMap, onOpenConflict, onReplaceAssignment, swapMode, swapFirst, onSwapClick }) {
   return (
     <div className="overflow-auto rounded-lg border border-slate-200 shadow-sm">
       <table className="border-collapse text-xs whitespace-nowrap w-full">
@@ -286,6 +290,10 @@ function WeekBlock({ weekDates, dateSet, assignmentMap, unfilledMap, onCallsMap,
                       assignment={assignment}
                       unfilledSlot={slot}
                       onOpenConflict={onOpenConflict}
+                      onReplaceAssignment={onReplaceAssignment}
+                      swapMode={swapMode}
+                      swapFirst={swapFirst}
+                      onSwapClick={onSwapClick}
                     />
                   )
                 })}
@@ -298,7 +306,7 @@ function WeekBlock({ weekDates, dateSet, assignmentMap, unfilledMap, onCallsMap,
   )
 }
 
-function ShiftCell({ shiftCode, assignment, unfilledSlot, onOpenConflict }) {
+function ShiftCell({ shiftCode, assignment, unfilledSlot, onOpenConflict, onReplaceAssignment, swapMode, swapFirst, onSwapClick }) {
   const base = { minWidth: 110, height: 34, borderLeft: '1px solid #e2e8f0', borderBottom: '1px solid #e2e8f0' }
 
   if (unfilledSlot) {
@@ -319,10 +327,30 @@ function ShiftCell({ shiftCode, assignment, unfilledSlot, onOpenConflict }) {
     const name = assignment.physician_name || assignment.physician_id || '?'
     const badge = assignment.is_claude ? 'AI' : assignment.is_manual ? 'M' : null
     const badgeBg = assignment.is_claude ? 'bg-violet-500' : 'bg-amber-400'
+
+    // Check if this cell is the first selected in swap mode
+    const isSwapFirst = swapFirst &&
+      swapFirst.date === assignment.date &&
+      swapFirst.shift?.code === assignment.shift?.code
+
+    const cellBg = isSwapFirst ? '#fcd34d' : shiftBg(shiftCode)
+    const cellTitle = swapMode
+      ? (isSwapFirst ? `${name} — selected (click another to swap)` : `${name} — click to swap with selected`)
+      : `${name}${assignment.is_claude ? ' (Claude AI)' : assignment.is_manual ? ' (manual)' : ''} — click to replace`
+
+    const handleClick = () => {
+      if (swapMode) {
+        onSwapClick && onSwapClick(assignment)
+      } else {
+        onReplaceAssignment && onReplaceAssignment(assignment)
+      }
+    }
+
     return (
       <td
-        style={{ ...base, background: shiftBg(shiftCode) }}
-        title={name + (assignment.is_claude ? ' (Claude AI)' : assignment.is_manual ? ' (manual)' : '')}
+        style={{ ...base, background: cellBg, cursor: 'pointer', outline: isSwapFirst ? '2px solid #f59e0b' : undefined }}
+        title={cellTitle}
+        onClick={handleClick}
       >
         <div className="flex items-center h-full px-1.5 gap-1">
           <span className="truncate text-xs font-medium text-slate-800 flex-1">

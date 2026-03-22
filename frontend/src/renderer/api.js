@@ -99,14 +99,29 @@ export async function adjustSchedule(instruction, year, month) {
 }
 
 /**
- * Manually assign a physician to a shift slot.
+ * Manually assign a physician to a shift slot (replaces any existing occupant).
  * @param {string} date          ISO date string e.g. "2026-06-01"
- * @param {string} shiftCode     e.g. "RAH_A_D1"
+ * @param {string} shiftCode     e.g. "0600h RAH A side"
  * @param {string} physicianId
  * @returns {ManualAssignResponse}
  */
 export async function assignPhysician(date, shiftCode, physicianId) {
   return request('POST', '/api/assign', {
+    date,
+    shift_code: shiftCode,
+    physician_id: physicianId
+  })
+}
+
+/**
+ * Check rule violations for assigning a physician to a slot WITHOUT actually assigning.
+ * @param {string} date
+ * @param {string} shiftCode
+ * @param {string} physicianId
+ * @returns {{ violations: ViolationSchema[] }}
+ */
+export async function checkViolations(date, shiftCode, physicianId) {
+  return request('POST', '/api/check-violations', {
     date,
     shift_code: shiftCode,
     physician_id: physicianId

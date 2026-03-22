@@ -195,53 +195,200 @@ class ScheduleGenerator:
         self._days_in_month = days_in_month   # used by _score for pacing
         all_dates = [datetime.date(year, month, d) for d in range(1, days_in_month + 1)]
 
-        all_slots: list[tuple[datetime.date, Shift]] = [
+        def _effective_requested(sub) -> int:
+            """Requested shift count, with flex fallback for 0-request physicians."""
+            r = sub.shifts_requested
+            if r == 0 and sub.shifts_max > 0:
+                return min(10, sub.shifts_max)
+            return r
+
+        # Block-placement phases: largest consecutive runs first, singletons last.
+        # ── Pass A: fill every physician to their requested count ────────────
+        # Physicians are sorted each round by descending deficit (how far below
+        # their requested count they are) so under-scheduled physicians always
+        # get first pick of windows before anyone is filled beyond requested.
+        # Dates are reshuffled each block_size to avoid sequential date bias.
+        for block_size in range(4, 0, -1):
+            shuffled_dates = list(all_dates)
+            rng.shuffle(shuffled_dates)
+            made_progress = True
+            while made_progress:
+                made_progress = False
+                all_pids = list(self.submissions.keys())
+                # Sort by descending deficit, break ties randomly
+                all_pids.sort(
+                    key=lambda p: (
+                        -(max(0, _effective_requested(self.submissions[p]) - self._shift_count[p])),
+                        rng.random(),
+                    )
+                )
+                for pid in all_pids:
+                    sub = self.submissions[pid]
+                    cfg = (self.roster.get(pid)
+                           or self._roster_lower.get(pid.lower())
+                           or self._roster_by_name.get(pid.lower()))
+                    max_consec = cfg.max_consecutive_shifts if cfg else self._max_consec_default
+                    if block_size > max_consec:
+                        continue
+                    # Stop at requested — max fill happens in greedy cleanup
+                    req = _effective_requested(sub)
+                    if req - self._shift_count[pid] < block_size:
+                        continue
+                    window = self._find_block_window(pid, shuffled_dates, block_size, rng)
+                    if window is not None:
+                        for d, shift in window:
+                            self._assign(pid, d, shift)
+                        made_progress = True
+
+        # ── Deficit-fill pass ────────────────────────────────────────────────
+        # Ensure every physician reaches their requested count before the
+        # slot-priority cleanup runs.  Uses a multi-round approach (re-sorts
+        # by deficit after each assignment) and an exhaustive slot search so
+        # that physicians with sparse or constrained availability (e.g. those
+        # boxed in by consecutive limits from the block phase) are not missed.
+        def _best_eligible_slot(pid: str):
+            """Return (date, Shift) with highest score from all unfilled slots,
+            or None if the physician has no eligible slot anywhere."""
+            best_slot = None
+            best_s = float("-inf")
+            for d in all_dates:
+                for blk in BLOCKS:
+                    for sh in blk:
+                        if (d, sh.code) in self._slot_to_pid:
+                            continue
+                        if self._check_constraints(pid, d, sh) is None:
+                            s = self._score(pid, d, sh)
+                            if s > best_s:
+                                best_s = s
+                                best_slot = (d, sh)
+            return best_slot
+
+        made_deficit_progress = True
+        while made_deficit_progress:
+            made_deficit_progress = False
+            deficit_pids = [
+                p for p in self.submissions
+                if _effective_requested(self.submissions[p]) - self._shift_count[p] > 0
+            ]
+            if not deficit_pids:
+                break
+            deficit_pids.sort(
+                key=lambda p: -(
+                    _effective_requested(self.submissions[p]) - self._shift_count[p]
+                )
+            )
+            for pid in deficit_pids:
+                req = _effective_requested(self.submissions[pid])
+                if self._shift_count[pid] >= req:
+                    continue
+                slot = _best_eligible_slot(pid)
+                if slot is not None:
+                    self._assign(pid, slot[0], slot[1])
+                    made_deficit_progress = True
+                    break   # restart loop with refreshed deficit order
+
+        # ── Greedy cleanup pass ──────────────────────────────────────────────
+        # Fill any remaining empty slots slot-by-slot.
+        # Priority order: 2400h first, then 0600h, then weekends, then rest.
+        # Within each tier, hardest slots (fewest eligible physicians) go first.
+        # This mirrors the original algorithm and prevents late-month gaps.
+        remaining_slots: list[tuple[datetime.date, Shift]] = [
             (d, shift)
             for d in all_dates
             for block in BLOCKS
             for shift in block
+            if (d, shift.code) not in self._slot_to_pid
         ]
-        # Sort by (tier, difficulty, random) — difficulty-first ensures hard slots
-        # from any date in the month compete equally, giving a month-wide view
-        # instead of exhausting physicians on early dates first.
-        # Constraint 7 uses a bidirectional check so date-order doesn't matter.
-        all_slots.sort(key=lambda s: (
-            self._slot_priority(s[0], s[1])[0],   # tier
-            self._slot_difficulty(s[0], s[1]),      # hardest first
-            rng.random(),                           # random within same difficulty
+        remaining_slots.sort(key=lambda s: (
+            self._slot_priority(s[0], s[1])[0],   # tier: 2400h=0, 0600h=1, weekend=2, rest=3
+            self._slot_difficulty(s[0], s[1]),      # hardest (fewest options) first
+            rng.random(),                           # random tiebreak
         ))
-
-        result = ScheduleResult(year=year, month=month)
-
-        for d, shift in all_slots:
+        for d, shift in remaining_slots:
+            if (d, shift.code) in self._slot_to_pid:
+                continue  # already filled by a preceding step
             eligible = self._get_eligible(d, shift)
-            if not eligible:
-                candidates = self._near_miss_candidates(d, shift, max_n=10)
-                result.unfilled.append(
-                    UnfilledSlot(date=d, shift=shift, candidates=candidates)
-                )
-                result.issues.append(
-                    f"{d.strftime('%b %d')} {shift.code}: no eligible physician"
-                )
-            else:
-                scored = sorted(
+            if eligible:
+                best = max(
                     eligible,
                     key=lambda pid: self._score(pid, d, shift) + rng.uniform(-1.0, 1.0),
-                    reverse=True,
                 )
-                best = scored[0]
                 self._assign(best, d, shift)
-                result.assignments.append(
-                    Assignment(
-                        date=d,
-                        shift=shift,
-                        physician_id=best,
-                        physician_name=self.submissions[best].physician_name,
-                    )
-                )
+
+        # Collect filled and unfilled slots into the result
+        result = ScheduleResult(year=year, month=month)
+        for d in all_dates:
+            for block in BLOCKS:
+                for shift in block:
+                    pid = self._slot_to_pid.get((d, shift.code))
+                    if pid:
+                        result.assignments.append(Assignment(
+                            date=d, shift=shift,
+                            physician_id=pid,
+                            physician_name=self.submissions[pid].physician_name,
+                        ))
+                    else:
+                        candidates = self._near_miss_candidates(d, shift, max_n=10)
+                        result.unfilled.append(
+                            UnfilledSlot(date=d, shift=shift, candidates=candidates)
+                        )
+                        result.issues.append(
+                            f"{d.strftime('%b %d')} {shift.code}: no eligible physician"
+                        )
 
         result.stats = self._compute_stats(result)
         return result
+
+    def _find_block_window(
+        self,
+        pid: str,
+        all_dates: list[datetime.date],
+        block_size: int,
+        rng: random.Random,
+    ) -> list[tuple[datetime.date, Shift]] | None:
+        """
+        Find *block_size* consecutive calendar days with at least one unfilled,
+        eligible shift per day.  Uses trial-assign / undo so consecutive-run
+        constraints propagate correctly within the candidate window.
+        Returns the chosen (date, Shift) pairs, or None if no window exists.
+        """
+        n = len(all_dates)
+        max_start = n - block_size + 1
+        if max_start <= 0:
+            return None
+
+        start_indices = list(range(max_start))
+        rng.shuffle(start_indices)          # variety across seeds
+        for start in start_indices[:30]:    # cap search depth for performance
+            window_dates = all_dates[start:start + block_size]
+            trial: list[tuple[datetime.date, Shift]] = []
+            ok = True
+            for d in window_dates:
+                eligible: list[Shift] = []
+                for blk in BLOCKS:
+                    for shift in blk:
+                        if (d, shift.code) in self._slot_to_pid:
+                            continue    # slot already taken
+                        if self._check_constraints(pid, d, shift) is None:
+                            eligible.append(shift)
+                if not eligible:
+                    ok = False
+                    break
+                best = max(
+                    eligible,
+                    key=lambda s: self._score(pid, d, s) + rng.uniform(-1.0, 1.0),
+                )
+                self._assign(pid, d, best)  # tentative — always undone below
+                trial.append((d, best))
+
+            # Always undo tentative assignments regardless of outcome
+            for d, shift in trial:
+                self._unassign(pid, d, shift)
+
+            if ok and len(trial) == block_size:
+                return trial
+
+        return None
 
     def run_best_of(
         self,
@@ -254,6 +401,12 @@ class ScheduleGenerator:
         Run generation *n* times with different random seeds and return the
         result that best satisfies all parameters.
 
+        Two-phase Large Neighbourhood Search strategy:
+          - Phase 1 (first ceil(n/2) seeds): independent seeds from scratch.
+          - Phase 2 (remaining seeds): LNS warm-start — each iteration begins
+            from the best Phase-1 result, randomly destroys a subset of
+            assignments, then repairs via deficit-fill + greedy cleanup.
+
         Scoring (higher = better):
           - Primary:   minimise unfilled slots (-1000 each)
           - Secondary: minimise physicians below their minimum shift count (-10 each deficit)
@@ -261,7 +414,13 @@ class ScheduleGenerator:
         """
         best: ScheduleResult | None = None
         best_score = float("-inf")
-        for seed in range(n):
+
+        # Phase 1 gets the extra seed when n is odd (ceiling division).
+        phase1_n = (n + 1) // 2
+        phase2_n = n - phase1_n
+
+        # ── Phase 1: independent seeds from scratch ──────────────────────────
+        for seed in range(phase1_n):
             result = self.generate(year, month, seed=seed)
             s = self._rate_result(result)
             if s > best_score:
@@ -269,7 +428,176 @@ class ScheduleGenerator:
                 best_score = s
             if progress_callback:
                 progress_callback(seed + 1, n, best_score)
+
+        # ── Phase 2: LNS warm-start from the best Phase-1 result ─────────────
+        if phase2_n > 0 and best is not None:
+            lns_rng = random.Random(phase1_n * 1000 + 7)   # deterministic but separate RNG
+            for lns_iter in range(phase2_n):
+                # Identify physicians adjacent to unfilled slots — always destroy these
+                # because their current assignments are blocking the problem slots.
+                blocked_pids: set[str] = set()
+                if best.unfilled:
+                    days_in_month = calendar.monthrange(year, month)[1]
+                    all_dates_set = {
+                        datetime.date(year, month, d) for d in range(1, days_in_month + 1)
+                    }
+                    unfilled_dates = {u.date for u in best.unfilled}
+                    for asgn in best.assignments:
+                        # Adjacent = same day or one day before/after an unfilled slot
+                        if (
+                            asgn.date in unfilled_dates
+                            or (asgn.date + datetime.timedelta(days=1)) in unfilled_dates
+                            or (asgn.date - datetime.timedelta(days=1)) in unfilled_dates
+                        ):
+                            blocked_pids.add(asgn.physician_id)
+
+                # Randomly destroy destroy_k additional physicians
+                destroy_k = lns_rng.randint(6, 14)
+                all_pids = list(self.submissions.keys())
+                lns_rng.shuffle(all_pids)
+                destroyed_pids: set[str] = set(blocked_pids)
+                for pid in all_pids:
+                    if len(destroyed_pids) - len(blocked_pids) >= destroy_k:
+                        break
+                    if pid not in destroyed_pids:
+                        destroyed_pids.add(pid)
+
+                # Restore partial state: reset then re-assign everything except
+                # the assignments belonging to destroyed physicians.
+                result = self._generate_from_partial(
+                    year, month,
+                    preserved=[
+                        a for a in best.assignments
+                        if a.physician_id not in destroyed_pids
+                    ],
+                    rng=lns_rng,
+                )
+                s = self._rate_result(result)
+                if s > best_score:
+                    best = result
+                    best_score = s
+                current = phase1_n + lns_iter + 1
+                if progress_callback:
+                    progress_callback(current, n, best_score)
+
         return best  # type: ignore[return-value]
+
+    def _generate_from_partial(
+        self,
+        year: int,
+        month: int,
+        preserved: list,
+        rng: random.Random,
+    ) -> ScheduleResult:
+        """
+        Repair a partially-destroyed schedule via deficit-fill + greedy cleanup.
+
+        Resets internal state, re-assigns *preserved* assignments, then runs
+        only the deficit-fill pass and greedy cleanup pass on the remaining
+        open slots.  Returns a ScheduleResult in the same format as generate().
+        """
+        self._reset_state()
+        days_in_month = calendar.monthrange(year, month)[1]
+        self._days_in_month = days_in_month   # used by _score for pacing
+        all_dates = [datetime.date(year, month, d) for d in range(1, days_in_month + 1)]
+
+        def _effective_requested(sub) -> int:
+            r = sub.shifts_requested
+            if r == 0 and sub.shifts_max > 0:
+                return min(10, sub.shifts_max)
+            return r
+
+        # Re-apply preserved assignments to rebuild partial state
+        for asgn in preserved:
+            self._assign(asgn.physician_id, asgn.date, asgn.shift)
+
+        # ── Deficit-fill pass (same logic as generate()) ─────────────────────
+        def _best_eligible_slot(pid: str):
+            best_slot = None
+            best_s = float("-inf")
+            for d in all_dates:
+                for blk in BLOCKS:
+                    for sh in blk:
+                        if (d, sh.code) in self._slot_to_pid:
+                            continue
+                        if self._check_constraints(pid, d, sh) is None:
+                            s = self._score(pid, d, sh)
+                            if s > best_s:
+                                best_s = s
+                                best_slot = (d, sh)
+            return best_slot
+
+        made_deficit_progress = True
+        while made_deficit_progress:
+            made_deficit_progress = False
+            deficit_pids = [
+                p for p in self.submissions
+                if _effective_requested(self.submissions[p]) - self._shift_count[p] > 0
+            ]
+            if not deficit_pids:
+                break
+            deficit_pids.sort(
+                key=lambda p: -(
+                    _effective_requested(self.submissions[p]) - self._shift_count[p]
+                )
+            )
+            for pid in deficit_pids:
+                req = _effective_requested(self.submissions[pid])
+                if self._shift_count[pid] >= req:
+                    continue
+                slot = _best_eligible_slot(pid)
+                if slot is not None:
+                    self._assign(pid, slot[0], slot[1])
+                    made_deficit_progress = True
+                    break   # restart loop with refreshed deficit order
+
+        # ── Greedy cleanup pass ───────────────────────────────────────────────
+        remaining_slots: list[tuple[datetime.date, Shift]] = [
+            (d, shift)
+            for d in all_dates
+            for block in BLOCKS
+            for shift in block
+            if (d, shift.code) not in self._slot_to_pid
+        ]
+        remaining_slots.sort(key=lambda s: (
+            self._slot_priority(s[0], s[1])[0],
+            self._slot_difficulty(s[0], s[1]),
+            rng.random(),
+        ))
+        for d, shift in remaining_slots:
+            if (d, shift.code) in self._slot_to_pid:
+                continue
+            eligible = self._get_eligible(d, shift)
+            if eligible:
+                best_pid = max(
+                    eligible,
+                    key=lambda pid: self._score(pid, d, shift) + rng.uniform(-1.0, 1.0),
+                )
+                self._assign(best_pid, d, shift)
+
+        # Collect results
+        result = ScheduleResult(year=year, month=month)
+        for d in all_dates:
+            for block in BLOCKS:
+                for shift in block:
+                    pid = self._slot_to_pid.get((d, shift.code))
+                    if pid:
+                        result.assignments.append(Assignment(
+                            date=d, shift=shift,
+                            physician_id=pid,
+                            physician_name=self.submissions[pid].physician_name,
+                        ))
+                    else:
+                        candidates = self._near_miss_candidates(d, shift, max_n=10)
+                        result.unfilled.append(
+                            UnfilledSlot(date=d, shift=shift, candidates=candidates)
+                        )
+                        result.issues.append(
+                            f"{d.strftime('%b %d')} {shift.code}: no eligible physician"
+                        )
+
+        result.stats = self._compute_stats(result)
+        return result
 
     def _rate_result(self, result: ScheduleResult) -> float:
         score = -len(result.unfilled) * 1000.0
@@ -290,6 +618,15 @@ class ScheduleGenerator:
             score -= req_deficit * 2.0
         # Penalise singleton 2400h assignments (strong: -5 per singleton)
         score -= sum(singletons.values()) * 5.0
+        # Penalise per-physician Group A/B imbalance
+        for pid, sub in self.submissions.items():
+            slots = self._pid_to_slots[pid]
+            if not slots:
+                continue
+            a_count = sum(1 for _, s in slots if s.site_group == SiteGroup.A)
+            frac_a = a_count / len(slots)
+            imbalance = abs(frac_a - self._group_a_target)
+            score -= imbalance * len(slots) * 3.0
         return score
 
     # -------------------------------------------------------------------
@@ -408,6 +745,16 @@ class ScheduleGenerator:
                 description=f"{shift.site} is a forbidden site for this physician",
             ))
 
+        # 2b. Shift-type restriction: only_2400h physicians may only work 2400h shifts.
+        if cfg and cfg.only_2400h and shift.time != "2400h":
+            v.append(ViolationReason(
+                rule="shift_type_restriction",
+                description=(
+                    f"{cfg.name} is restricted to 2400h shifts only "
+                    f"(requested: {shift.time})"
+                ),
+            ))
+
         # 3. Already assigned on this calendar day
         if any(ad == d for ad, _ in self._pid_to_slots[pid]):
             v.append(ViolationReason(
@@ -519,15 +866,20 @@ class ScheduleGenerator:
         # 9. Weekend limit (hard block — frontend may override with confirmation)
         if d.weekday() in _WEEKEND_WEEKDAYS:
             wk = _weekend_key(d)
+            eff_max_weekends = (
+                cfg.max_weekends
+                if cfg and cfg.max_weekends is not None
+                else self._max_weekends
+            )
             if (
-                len(self._weekend_keys[pid]) >= self._max_weekends
+                len(self._weekend_keys[pid]) >= eff_max_weekends
                 and wk not in self._weekend_keys[pid]
             ):
                 v.append(ViolationReason(
                     rule="weekend_limit",
                     description=(
                         f"Would occupy weekend #{len(self._weekend_keys[pid]) + 1} "
-                        f"(limit {self._max_weekends} — requires confirmation)"
+                        f"(limit {eff_max_weekends} — requires confirmation)"
                     ),
                 ))
 
@@ -640,17 +992,18 @@ class ScheduleGenerator:
             elif pref == "rah_f" and shift.site == "RAH F side":
                 score += 3.0
 
-        # Group A/B balance: proportional bonus toward the 40/60 target.
-        # Physicians far below their Group A target get a strong boost for A shifts
-        # (and vice versa), correcting imbalances like Lali at 18% Group A.
+        # Group A/B balance: symmetric push toward the 40/60 target.
+        # deviation > 0 means too many A shifts; deviation < 0 means too few A shifts.
+        # For an A shift: reward when below target, penalise when above.
+        # For a B shift: reward when above target (corrects A-heavy), penalise when below.
+        # Using a single signed formula keeps the logic consistent and the
+        # coefficient (60) large enough to override most other soft factors.
         current_balance = self._group_a_fraction(pid)
-        target = self._group_a_target
+        deviation = current_balance - self._group_a_target
         if shift.site_group == SiteGroup.A:
-            a_deficit = max(0.0, target - current_balance)
-            score += a_deficit * 20.0   # up to +8 when physician is at 0% Group A
+            score -= deviation * 80.0   # negative deviation (need more A) → bonus
         elif shift.site_group == SiteGroup.B:
-            a_surplus = max(0.0, current_balance - target)
-            score += a_surplus * 20.0   # up to +12 when physician is at 100% Group A
+            score += deviation * 80.0   # positive deviation (too many A) → bonus for B
 
         # Priority by unmet minimum/requested, normalised so low-request physicians
         # are not drowned out by high-request ones.
@@ -666,18 +1019,23 @@ class ScheduleGenerator:
         min_deficit = max(0, effective_min - assigned)
         req_deficit = max(0, effective_requested - assigned)
 
-        # Fractional deficit: how far below minimum as a proportion (0-1).
+        # Fractional deficit: how far below minimum/requested as a proportion (0–1).
         # A physician at 0/3 (100% unmet) scores the same as one at 0/12 (100%
-        # unmet), so small requestors are not penalised for wanting fewer shifts.
+        # unmet), so small requestors are not crowded out by higher-volume ones.
         frac_min_deficit = min_deficit / max(effective_min, 1)
         frac_req_deficit = req_deficit / max(effective_requested, 1)
-        score += frac_min_deficit * 12.0   # unmet minimum — high priority
-        score += frac_req_deficit * 4.0    # below requested — moderate priority
+        score += frac_min_deficit * 30.0   # strong: unmet minimum dominates
+        score += frac_req_deficit * 10.0   # moderate: below requested
 
-        # Extra protection for physicians requesting ≤5 shifts: guarantee they
-        # fill their minimum before busier physicians take their slots.
+        # Absolute deficit bonus: each shift still owed adds a flat bonus so that
+        # a physician 3 shifts below their minimum always outbids someone who is
+        # already at or above their requested count, regardless of other factors.
+        score += min_deficit * 8.0
+        score += req_deficit * 3.0
+
+        # Extra protection for physicians requesting ≤5 shifts.
         if sub.shifts_requested <= 5 and min_deficit > 0:
-            score += 8.0
+            score += 12.0
             # Honour specific 2400h / 0600h requests for these physicians.
             night_unmet = max(0, sub.shifts_2400h_requested - self._anchor_count[pid])
             am_unmet    = max(0, sub.shifts_0600h_requested - self._anchor_count[pid])
@@ -722,6 +1080,22 @@ class ScheduleGenerator:
             score += 1.0
         else:
             score -= 0.5    # slight penalty for potential singleton
+
+        # Per-physician soft preferences loaded from config.
+        if cfg:
+            # prefer_weekends: bonus for weekend days (Fri/Sat/Sun)
+            if cfg.prefer_weekends and d.weekday() in _WEEKEND_WEEKDAYS:
+                score += 4.0
+
+            # prefer consecutive runs: extra bonus for extending an existing run
+            if self._has_adjacent(pid, d):
+                score += 3.0
+
+            # honor_all_requests: very high bonus when physician requested this exact shift
+            if cfg.honor_all_requests:
+                day_shifts = self._shift_avail.get((pid, d))
+                if day_shifts is not None and shift.code in day_shifts:
+                    score += 50.0
 
         # 2400h clustering: strongly prefer extending an existing night run over
         # creating a new isolated night.  +6 for continuing a run, -5 for a new

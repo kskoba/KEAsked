@@ -34,15 +34,26 @@ function SectionHeader({ title, open, onToggle, icon }) {
   )
 }
 
-export default function Sidebar({ scheduleData, onAdjust }) {
+export default function Sidebar({ scheduleData, importResult = null, physicianViolations = {} }) {
   const [statsOpen, setStatsOpen] = useState(true)
   const [issuesOpen, setIssuesOpen] = useState(true)
   const [rulesOpen, setRulesOpen] = useState(false)
-  const [instruction, setInstruction] = useState('')
-  const [adjusting, setAdjusting] = useState(false)
-  const [adjustResult, setAdjustResult] = useState(null)
 
   const { stats = {}, issues = [], assignments = [] } = scheduleData
+
+  // Build min/requested/max lookup from importResult
+  const physicianLimits = useMemo(() => {
+    if (!importResult?.physicians?.length) return {}
+    const map = {}
+    importResult.physicians.forEach(p => {
+      map[p.physician_name] = {
+        min: p.shifts_min,
+        requested: p.shifts_requested,
+        max: p.shifts_max,
+      }
+    })
+    return map
+  }, [importResult])
 
   // Per-physician Group A/B breakdown computed from assignments
   const physicianGroupCounts = useMemo(() => {
@@ -56,29 +67,10 @@ export default function Sidebar({ scheduleData, onAdjust }) {
     return counts
   }, [assignments])
 
-  async function handleAdjust() {
-    if (!instruction.trim() || !onAdjust) return
-    setAdjusting(true)
-    setAdjustResult(null)
-    try {
-      const result = await onAdjust(instruction.trim())
-      setAdjustResult(result)
-      setInstruction('')
-    } catch (err) {
-      setAdjustResult({ error: err.message })
-    } finally {
-      setAdjusting(false)
-    }
-  }
-
   const {
     total_slots = 0,
     filled_slots = 0,
     unfilled_slots = 0,
-    group_a_count = 0,
-    group_b_count = 0,
-    group_a_pct = 0,
-    group_b_pct = 0,
     physician_counts = {},
     physician_singletons = {}
   } = stats
@@ -93,6 +85,9 @@ export default function Sidebar({ scheduleData, onAdjust }) {
     (typeof i === 'string' ? i : i.message || '').toLowerCase().includes('warn') ||
     (typeof i === 'object' && i.severity === 'warning')
   )
+
+  // True if any physician has importResult data with min/max available
+  const hasLimits = Object.keys(physicianLimits).length > 0
 
   return (
     <aside className="w-80 flex-shrink-0 bg-white border-l border-slate-200 flex flex-col overflow-hidden">
@@ -134,43 +129,31 @@ export default function Sidebar({ scheduleData, onAdjust }) {
                 </div>
               </div>
 
-              {/* Group A */}
-              <div>
-                <div className="flex justify-between text-xs text-slate-600 mb-1">
-                  <span className="text-blue-700 font-medium">Group A (RAH A/B)</span>
-                  <span className="font-bold text-blue-700">{group_a_count} shifts ({Math.round(group_a_pct)}%)</span>
-                </div>
-                <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
-                  <div
-                    className="h-full rounded-full bg-blue-400 transition-all"
-                    style={{ width: `${Math.min(group_a_pct, 100)}%` }}
-                  />
-                </div>
-              </div>
-
-              {/* Group B */}
-              <div>
-                <div className="flex justify-between text-xs text-slate-600 mb-1">
-                  <span className="text-emerald-700 font-medium">Group B (I/NEHC/F)</span>
-                  <span className="font-bold text-emerald-700">{group_b_count} shifts ({Math.round(group_b_pct)}%)</span>
-                </div>
-                <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
-                  <div
-                    className="h-full rounded-full bg-emerald-400 transition-all"
-                    style={{ width: `${Math.min(group_b_pct, 100)}%` }}
-                  />
-                </div>
-              </div>
-
               {/* Per-physician counts */}
               {Object.keys(physician_counts).length > 0 && (
                 <div>
                   <p className="text-xs font-medium text-slate-600 mb-1">Shifts per Physician</p>
-                  <div className="flex justify-end gap-3 text-xs text-slate-400 mb-1 pr-1">
-                    <span className="w-6 text-right">shifts</span>
-                    <span className="w-6 text-right" title="Isolated 2400h night shifts (singletons)">solo↑</span>
+                  {/* Column headers */}
+                  <div className="flex items-center text-xs text-slate-400 mb-1 gap-1">
+                    <span className="flex-1" />
+                    {/* violations spacer */}
+                    <span className="w-5" />
+                    {/* shifts column */}
+                    <span
+                      className={`text-right font-medium ${hasLimits ? 'w-20' : 'w-7'}`}
+                      title={hasLimits ? 'Current shifts (requested/max)' : 'Shifts assigned'}
+                    >
+                      {hasLimits ? 'shifts (r/max)' : 'shifts'}
+                    </span>
+                    {/* singleton column */}
+                    <span
+                      className="w-8 text-right pr-2"
+                      title="Isolated 2400h night shifts (singletons)"
+                    >
+                      solo↑
+                    </span>
                   </div>
-                  <div className="space-y-2 max-h-64 overflow-auto">
+                  <div className="space-y-2 max-h-72 overflow-auto">
                     {Object.entries(physician_counts)
                       .sort((a, b) => b[1] - a[1])
                       .map(([name, count]) => {
@@ -178,13 +161,45 @@ export default function Sidebar({ scheduleData, onAdjust }) {
                         const g = physicianGroupCounts[name] || { a: 0, b: 0 }
                         const total = g.a + g.b
                         const aPct = total > 0 ? (g.a / total) * 100 : 50
+                        const limits = physicianLimits[name] || null
+                        const violations = physicianViolations[name] || []
+                        const violationCount = violations.length
+                        const violationTitle = violations
+                          .map(v => `${v.date} ${v.shiftCode}: ${v.description || v.rule}`)
+                          .join('\n')
+
                         return (
                           <div key={name}>
-                            <div className="flex items-center gap-2 text-xs">
+                            <div className="flex items-center gap-1 text-xs">
                               <span className="truncate flex-1 text-slate-700">{name}</span>
-                              <span className="flex-shrink-0 font-bold text-slate-800 w-6 text-right">{count}</span>
+                              {/* Violation badge */}
+                              {violationCount > 0 ? (
+                                <span
+                                  className="flex-shrink-0 w-5 h-5 rounded-full bg-red-500 text-white flex items-center justify-center font-bold cursor-help"
+                                  style={{ fontSize: 9 }}
+                                  title={`${violationCount} active rule violation${violationCount !== 1 ? 's' : ''}:\n${violationTitle}`}
+                                >
+                                  {violationCount}
+                                </span>
+                              ) : (
+                                <span className="flex-shrink-0 w-5" />
+                              )}
+                              {/* Shift count with optional req/max */}
+                              {limits ? (
+                                <span className="flex-shrink-0 w-20 text-right">
+                                  <span className="font-bold text-slate-800">{count}</span>
+                                  <span className="text-slate-400" style={{ fontSize: 9 }}>
+                                    {' '}({limits.requested}/{limits.max})
+                                  </span>
+                                </span>
+                              ) : (
+                                <span className="flex-shrink-0 w-7 text-right font-bold text-slate-800">
+                                  {count}
+                                </span>
+                              )}
+                              {/* Singleton count */}
                               <span
-                                className={`flex-shrink-0 w-6 text-right font-medium ${singletons > 0 ? 'text-amber-500' : 'text-slate-300'}`}
+                                className={`flex-shrink-0 w-8 text-right pr-2 font-medium ${singletons > 0 ? 'text-amber-500' : 'text-slate-300'}`}
                                 title={singletons > 0 ? `${singletons} isolated 2400h night(s)` : 'No isolated nights'}
                               >
                                 {singletons > 0 ? singletons : '-'}
@@ -293,53 +308,6 @@ export default function Sidebar({ scheduleData, onAdjust }) {
           )}
         </div>
 
-      </div>
-
-      {/* ── AI Adjustment Input ── */}
-      <div className="flex-shrink-0 border-t border-slate-200 bg-white p-3 space-y-2">
-        <p className="text-xs font-semibold text-slate-600 flex items-center gap-1">
-          <svg className="w-3.5 h-3.5 text-violet-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-          </svg>
-          AI Schedule Adjustment
-        </p>
-        <textarea
-          className="w-full text-xs border border-slate-200 rounded p-2 resize-none focus:outline-none focus:ring-1 focus:ring-violet-400 text-slate-700 placeholder-slate-300"
-          rows={2}
-          placeholder="e.g. Give Wittmeier 2 fewer shifts and give Lam-Rico 2 more"
-          value={instruction}
-          onChange={e => setInstruction(e.target.value)}
-          disabled={adjusting}
-          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAdjust() } }}
-        />
-        <button
-          onClick={handleAdjust}
-          disabled={adjusting || !instruction.trim()}
-          className="w-full py-1.5 text-xs font-semibold rounded bg-violet-500 text-white hover:bg-violet-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-        >
-          {adjusting ? 'Asking Claude…' : 'Apply'}
-        </button>
-        {adjustResult && (
-          <div className="text-xs space-y-1">
-            {adjustResult.error && (
-              <p className="text-red-600">{adjustResult.error}</p>
-            )}
-            {adjustResult.applied?.length > 0 && (
-              <div className="bg-emerald-50 rounded p-1.5 space-y-0.5">
-                {adjustResult.applied.map((a, i) => (
-                  <p key={i} className="text-emerald-700">✓ {a}</p>
-                ))}
-              </div>
-            )}
-            {adjustResult.rejected?.length > 0 && (
-              <div className="bg-amber-50 rounded p-1.5 space-y-0.5">
-                {adjustResult.rejected.map((r, i) => (
-                  <p key={i} className="text-amber-700">✗ {r}</p>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
       </div>
     </aside>
   )

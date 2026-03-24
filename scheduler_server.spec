@@ -6,19 +6,33 @@
 #
 # Output: dist_backend/scheduler_server  (or scheduler_server.exe on Windows)
 
+import glob
+import os
+
 block_cipher = None
 
-# collect_all gathers ortools' Python modules, native .pyd/.so binaries, and
-# any data files (e.g. shared libraries on Windows) that PyInstaller's static
-# analysis misses.  Without this, ortools may import successfully at the class
-# level but fail at runtime when the C extension tries to load its DLLs.
+# ---------------------------------------------------------------------------
+# Collect ortools binaries.
+#
+# ortools ships its C++ DLLs in a `.libs` subdirectory alongside the Python
+# package.  collect_all() misses this dot-prefixed directory, so we gather
+# those DLLs explicitly and place them at the bundle root where the OS DLL
+# loader can find them.
+# ---------------------------------------------------------------------------
 from PyInstaller.utils.hooks import collect_all
 _ortools_datas, _ortools_binaries, _ortools_hiddenimports = collect_all('ortools')
+
+try:
+    import ortools as _ortools_pkg
+    _ortools_libs_dir = os.path.join(os.path.dirname(_ortools_pkg.__file__), '.libs')
+    _libs_dlls = [(dll, '.') for dll in glob.glob(os.path.join(_ortools_libs_dir, '*.dll'))]
+except Exception:
+    _libs_dlls = []
 
 a = Analysis(
     ['scheduler/api/server.py'],
     pathex=['.'],
-    binaries=_ortools_binaries,
+    binaries=_ortools_binaries + _libs_dlls,
     datas=_ortools_datas,
     hiddenimports=_ortools_hiddenimports + [
         # uvicorn dynamic imports
@@ -92,7 +106,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,           # UPX compression breaks native extensions like ortools .pyd files
     upx_exclude=[],
     runtime_tmpdir=None,
     console=True,

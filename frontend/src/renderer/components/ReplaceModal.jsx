@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { checkViolations, assignPhysician, getSchedule } from '../api'
 
 const VIOLATION_COLORS = {
-  spacing_22h: 'bg-orange-100 text-orange-700 border-orange-200',
+  spacing_23h: 'bg-orange-100 text-orange-700 border-orange-200',
   weekend_limit: 'bg-pink-100 text-pink-700 border-pink-200',
   anchor_limit: 'bg-purple-100 text-purple-700 border-purple-200',
   consecutive_limit: 'bg-red-100 text-red-700 border-red-200',

@@ -14,7 +14,7 @@ async function downloadExport() {
   URL.revokeObjectURL(url)
 }
 
-export default function Header({ view, onBack }) {
+export default function Header({ view, onBack, hasSchedule, onViewSchedule }) {
   return (
     <header
       className="flex items-center justify-between px-6 py-3 shadow-md flex-shrink-0"
@@ -68,6 +68,17 @@ export default function Header({ view, onBack }) {
               Back to Setup
             </button>
           </div>
+        )}
+        {view === 'setup' && hasSchedule && (
+          <button
+            onClick={onViewSchedule}
+            className="flex items-center gap-2 px-4 py-1.5 rounded-md bg-sky-700 hover:bg-sky-600 text-white text-sm transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+            </svg>
+            View Schedule
+          </button>
         )}
 
         <span className="text-slate-500 text-xs">

@@ -84,6 +84,7 @@ physicians:
     active: true
     scheduling:
       max_consecutive_shifts: 3
+      prefer_singleton_nights: true
       group_b_site_preference: nehc
     rule_overrides: {}
 
@@ -229,6 +230,7 @@ physicians:
     scheduling:
       max_consecutive_shifts: 3
       group_b_site_preference: rah
+      prefer_singleton_nights: true
     rule_overrides: {}
 
   - id: Fanaeian
@@ -261,6 +263,11 @@ physicians:
     scheduling:
       max_consecutive_shifts: 2
       group_b_site_preference: nehc
+      no_call: true
+      avoid_mondays: true
+      max_consecutive_1800h: 2
+      forbidden_shift_times:
+        - 2000h
     forbidden_sites:
       - RAH A side
       - RAH B side
@@ -423,8 +430,9 @@ physicians:
     name: Lam-Rico
     active: true
     scheduling:
-      max_consecutive_shifts: 4
-      max_weekends: 2
+      max_consecutive_shifts: 5
+      max_consecutive_nights: 5
+      max_weekends: 5              # works all weekends; 5 exceeds any month's cluster count
       group_b_site_preference: nehc
       only_2400h: true
       prefer_weekends: true
@@ -501,11 +509,13 @@ physicians:
       max_consecutive_shifts: 2
       max_consecutive_nights: 2
       group_b_site_preference: nehc
+      cap_at_requested: true
+      rest_after_late_shift: true
+      forbidden_shift_times:
+        - 0600h
+        - 2400h
     forbidden_sites:
       - RAH I side
-      - RAH F side
-      - RAH A side
-      - RAH B side
     rule_overrides: {}
 
   - id: Meleshko
@@ -540,7 +550,6 @@ physicians:
       group_b_site_preference: nehc
     forbidden_sites:
       - RAH I side
-      - RAH F side
     rule_overrides: {}
 
   - id: Norum

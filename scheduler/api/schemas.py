@@ -25,6 +25,7 @@ class ShiftSchema(BaseModel):
 class ViolationSchema(BaseModel):
     rule: str
     description: str
+    is_hard: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +81,13 @@ class CandidateSchema(BaseModel):
     physician_id: str
     physician_name: str
     violations: list[ViolationSchema]
+    is_hard_blocked: bool = False   # True when a hard safety/competency rule is violated
+
+
+class CandidatesResponse(BaseModel):
+    date: str
+    shift_code: str
+    candidates: list[CandidateSchema]
 
 
 class UnfilledSlotSchema(BaseModel):
@@ -98,6 +106,8 @@ class ScheduleStatsSchema(BaseModel):
     group_b_pct: float
     physician_counts: dict[str, int]
     physician_singletons: dict[str, int]
+    solver_status: str | None = None
+    optimality_gap_pct: float | None = None
 
 
 class OnCallAssignmentSchema(BaseModel):
@@ -194,3 +204,7 @@ class AdjustResponse(BaseModel):
     schedule: ScheduleResponse
     applied: list[str]      # human-readable description of each applied change
     rejected: list[str]     # changes Claude suggested that failed validation
+
+
+class LoadScheduleRequest(BaseModel):
+    file: str               # absolute path to a previously exported schedule .xlsx

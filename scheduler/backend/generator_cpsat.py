@@ -34,6 +34,7 @@ from scheduler.backend.generator import (
     _DEFAULT_ANCHOR_MAX,
     _DEFAULT_MAX_CONSEC,
     _DEFAULT_MAX_WEEKENDS,
+    _HARD_VIOLATION_RULES,
     _WEEKEND_WEEKDAYS,
     _weekend_key,
 )
@@ -283,13 +284,18 @@ class CpsatScheduleGenerator:
                     for shift in block:
                         var = shifts[(pid, d_idx, shift.code)]
 
-                        # Unavailable block
+                        # Unavailable block — unless a flat-file specific shift overrides it.
+                        # Flat-file imports set _shift_avail entries per-shift rather than
+                        # per-block, so a physician may be available for a single shift even
+                        # if the full block is not in _avail.
                         if not avail_for_block:
-                            model.add(var == 0)
-                            continue
+                            if day_specific_shifts is None or shift.code not in day_specific_shifts:
+                                model.add(var == 0)
+                                continue
+                            # else: specific shift is explicitly available — fall through
 
-                        # Flat-file specific shift restriction
-                        if day_specific_shifts is not None and shift.code not in day_specific_shifts:
+                        # Flat-file specific shift restriction (when block IS available)
+                        elif day_specific_shifts is not None and shift.code not in day_specific_shifts:
                             model.add(var == 0)
                             continue
 
@@ -303,12 +309,22 @@ class CpsatScheduleGenerator:
                             model.add(var == 0)
                             continue
 
+                        # Forbidden shift times (e.g. no 0600h or 2400h)
+                        forbidden_times = set(cfg.forbidden_shift_times) if cfg else set()
+                        if shift.time in forbidden_times:
+                            model.add(var == 0)
+                            continue
+
         # ----------------------------------------------------------------
-        # HC-7: Max shifts hard cap
+        # HC-7: Max shifts hard cap (cap_at_requested overrides shifts_max)
         # ----------------------------------------------------------------
         for pid in pids:
             sub = self.submissions[pid]
-            hard_max = sub.shifts_max if sub.shifts_max > 0 else sub.shifts_requested
+            cfg = _get_cfg(pid)
+            if cfg and cfg.cap_at_requested and sub.shifts_requested > 0:
+                hard_max = sub.shifts_requested
+            else:
+                hard_max = sub.shifts_max if sub.shifts_max > 0 else sub.shifts_requested
             if hard_max > 0:
                 model.add(
                     sum(
@@ -337,7 +353,7 @@ class CpsatScheduleGenerator:
                     model.add(sum(window_vars) <= mc)
 
         # ----------------------------------------------------------------
-        # HC-9: 22h spacing between adjacent-day shifts
+        # HC-9: 23h spacing between adjacent-day shifts
         # For each pair of shifts on consecutive days (or 2-days-apart with
         # 2400h), add: var1 + var2 <= 1 if the gap would be < 22h.
         # ----------------------------------------------------------------
@@ -385,12 +401,13 @@ class CpsatScheduleGenerator:
         # ----------------------------------------------------------------
         # HC-11: Anchor shift limit (0600h + 2400h)
         # ----------------------------------------------------------------
-        # We use the global anchor_max as the cap.  Per-physician per-type
-        # caps require knowing the shift type at variable-selection time;
-        # we approximate by capping combined anchor count per physician.
+        # The global anchor_max is a FALLBACK for physicians who have not
+        # explicitly requested specific numbers of anchor shifts.  For
+        # physicians like LamRico who request 16 2400h shifts, the global
+        # cap of 4 must NOT override their explicit per-physician request —
+        # doing so is the bug that caused them to receive only 4-6 shifts.
         for pid in pids:
             sub = self.submissions[pid]
-            # Use the stricter of global cap and per-physician request+tol
             anchor_vars = []
             for d_idx in range(len(all_dates)):
                 for block in BLOCKS:
@@ -399,11 +416,12 @@ class CpsatScheduleGenerator:
                             anchor_vars.append(shifts[(pid, d_idx, shift.code)])
 
             if anchor_vars:
-                # Global cap
-                global_cap = self._anchor_max
+                pid_cap_2400 = 0
+                pid_cap_0600 = 0
+
                 # Per-physician 2400h cap
                 if sub.shifts_2400h_requested > 0:
-                    cap_2400 = sub.shifts_2400h_requested + self._anchor_tol
+                    pid_cap_2400 = sub.shifts_2400h_requested + self._anchor_tol
                     vars_2400 = [
                         shifts[(pid, d_idx, shift.code)]
                         for d_idx in range(len(all_dates))
@@ -412,10 +430,11 @@ class CpsatScheduleGenerator:
                         if shift.time == "2400h"
                     ]
                     if vars_2400:
-                        model.add(sum(vars_2400) <= cap_2400)
+                        model.add(sum(vars_2400) <= pid_cap_2400)
+
                 # Per-physician 0600h cap
                 if sub.shifts_0600h_requested > 0:
-                    cap_0600 = sub.shifts_0600h_requested + self._anchor_tol
+                    pid_cap_0600 = sub.shifts_0600h_requested + self._anchor_tol
                     vars_0600 = [
                         shifts[(pid, d_idx, shift.code)]
                         for d_idx in range(len(all_dates))
@@ -424,9 +443,14 @@ class CpsatScheduleGenerator:
                         if shift.time == "0600h"
                     ]
                     if vars_0600:
-                        model.add(sum(vars_0600) <= cap_0600)
-                # Combined global anchor cap
-                model.add(sum(anchor_vars) <= global_cap)
+                        model.add(sum(vars_0600) <= pid_cap_0600)
+
+                # Combined cap: use global default only when per-physician
+                # requested totals don't already exceed it.  This prevents the
+                # global cap from silently overriding explicit high-volume requests.
+                explicit_total = pid_cap_2400 + pid_cap_0600
+                effective_cap = max(self._anchor_max, explicit_total)
+                model.add(sum(anchor_vars) <= effective_cap)
 
         # ----------------------------------------------------------------
         # HC-12: Weekend limit
@@ -498,10 +522,17 @@ class CpsatScheduleGenerator:
         # Maximize: filled slots (primary) + soft bonuses
         #
         # Soft terms (all scaled so filled slots dominate):
-        #   +50  per slot filled that the physician specifically requested
-        #   -20  per shift below physician's minimum (min_deficit)
-        #   -2   per shift below physician's requested count (req_deficit)
-        #   -5   per singleton 2400h (approximated via penalty vars)
+        #   +50  per slot filled that the physician specifically requested (date bonus)
+        #   +50  per shift up to physician's requested count (capped IntVar)
+        #   +3   per shift assigned (small linear incentive to fill toward max)
+        #   +30  per Group A shift up to A-floor target (raises A:B balance incentive)
+        #   +6   per preferred Group B site shift (group_b_site_preference)
+        #   +20  per A→B or B→A consecutive pair (alternation reward)
+        #   -40  per A→A consecutive pair (penalty)
+        #   +18  per consecutive 2400h night pair (singleton clustering)
+        #   +10  per consecutive working-day pair, any shift type (reduces isolated days)
+        #   -30  per consecutive 2400h pair for prefer_singleton_nights physicians
+        #   -35  per 4-consecutive-day run (for physicians with mc >= 4)
         # ----------------------------------------------------------------
 
         # Total filled slots
@@ -525,14 +556,17 @@ class CpsatScheduleGenerator:
                 if day_shifts_req:
                     for shift_code in day_shifts_req:
                         if (pid, d_idx, shift_code) in shifts:
-                            weight = 50 if honor else 5
+                            weight = 150 if honor else 5
                             request_bonus_terms.append(
                                 weight * shifts[(pid, d_idx, shift_code)]
                             )
 
-        # Soft: per-physician min/req deficit penalty vars
-        # Instead of creating penalty vars (which would require integer variables),
-        # we use the shift count directly in the objective.
+        # Soft: per-physician requested-count bonus
+        # Use a capped IntVar so the marginal reward for the kth shift is:
+        #   k <= requested : +1000 (fill) + 50 (cap bonus) + 3 (linear) = 1053
+        #   k >  requested : +1000 (fill) + 3 (linear)                  = 1003
+        # This strongly prefers completing underscheduled physicians before
+        # overscheduling physicians already at their requested count.
         physician_shift_exprs: dict[str, object] = {}
         for pid in pids:
             physician_shift_exprs[pid] = sum(
@@ -542,48 +576,311 @@ class CpsatScheduleGenerator:
                 for shift in block
             )
 
+        # Per-physician per-day "worked any shift" BoolVar — used for run-length penalties.
+        # HC-2 guarantees sum of shift vars per (pid, day) is 0 or 1, so equality is safe.
+        worked_bool: dict[tuple, object] = {}
+        for pid in pids:
+            for d_idx in range(len(all_dates)):
+                day_vars = [
+                    shifts[(pid, d_idx, shift.code)]
+                    for block in BLOCKS
+                    for shift in block
+                ]
+                w = model.new_bool_var(f"w_{pid}_{d_idx}")
+                model.add(sum(day_vars) == w)
+                worked_bool[(pid, d_idx)] = w
+
         deficit_penalty_terms = []
         for pid in pids:
             sub = self.submissions[pid]
             effective_requested = sub.shifts_requested
             if effective_requested == 0 and sub.shifts_max > 0:
                 effective_requested = min(10, sub.shifts_max)
-            effective_min = sub.shifts_min if sub.shifts_min > 0 else effective_requested
 
-            # Reward for each shift assigned up to the min (strong signal)
-            min_weight = 20 if sub.shifts_requested <= 5 else 10
-            if effective_min > 0:
-                # Add capped reward: min(physician_total, effective_min) * min_weight
-                # Approximated as: physician_total * min_weight  (bounded by hard cap)
-                deficit_penalty_terms.append(
-                    min_weight * physician_shift_exprs[pid]
-                )
-            # Moderate reward for each shift assigned up to requested
             if effective_requested > 0:
-                deficit_penalty_terms.append(
-                    2 * physician_shift_exprs[pid]
-                )
+                # Capped bonus: strongly rewards filling up to requested count.
+                # new_int_var upper-bound = effective_requested, and the add()
+                # constraint forces bonus <= actual assigned count. The maximiser
+                # will push bonus up to min(assigned, requested).
+                bonus = model.new_int_var(0, effective_requested, f"reqbonus_{pid}")
+                model.add(bonus <= physician_shift_exprs[pid])
+                deficit_penalty_terms.append(50 * bonus)
 
-        # Soft: Group A/B balance per physician
-        # Reward Group A shifts when below target, Group B when above target.
-        # Use a moderate per-shift coefficient.
-        group_balance_terms = []
-        group_a_target_scaled = int(self._group_a_target * 100)  # e.g. 40
+            # Small linear term: slight incentive to fill toward max even above requested.
+            deficit_penalty_terms.append(3 * physician_shift_exprs[pid])
+
+        # Soft: Group A/B balance — consecutive alternation reward/penalty.
+        # Rather than a weak per-shift bonus, we reward A→B or B→A consecutive
+        # working pairs (+20) and penalise A→A consecutive pairs (-25).
+        # This directly enforces the user requirement: "if 2 shifts in a row,
+        # 1 should be Group A, 1 should be Group B."
+        #
+        # Step 1: create per-(physician, day) BoolVars for working Group A / Group B.
+        group_a_bool: dict[tuple, object] = {}  # (pid, d_idx) -> BoolVar
+        group_b_bool: dict[tuple, object] = {}
         for pid in pids:
+            for d_idx in range(len(all_dates)):
+                a_vars = [
+                    shifts[(pid, d_idx, shift.code)]
+                    for block in BLOCKS for shift in block
+                    if shift.site_group == SiteGroup.A
+                ]
+                b_vars = [
+                    shifts[(pid, d_idx, shift.code)]
+                    for block in BLOCKS for shift in block
+                    if shift.site_group == SiteGroup.B
+                ]
+                if a_vars:
+                    wa = model.new_bool_var(f"ga_{pid}_{d_idx}")
+                    # HC-2 ensures at most one shift per physician per day → sum is 0 or 1
+                    model.add(sum(a_vars) == wa)
+                    group_a_bool[(pid, d_idx)] = wa
+                if b_vars:
+                    wb = model.new_bool_var(f"gb_{pid}_{d_idx}")
+                    model.add(sum(b_vars) == wb)
+                    group_b_bool[(pid, d_idx)] = wb
+
+        # Step 1b: per-physician A-floor bonus.
+        # Rewards assigning Group A shifts up to the target A count (~38% of requested).
+        # Using a capped IntVar so the marginal value of an A shift drops once the
+        # target is met — avoids over-shooting in either direction.
+        group_balance_terms = []
+        for pid in pids:
+            sub = self.submissions[pid]
+            eff_req = sub.shifts_requested or min(10, sub.shifts_max)
+            target_a = max(1, round(eff_req * self._group_a_target))
+            a_total_expr = sum(
+                shifts[(pid, d_idx, shift.code)]
+                for d_idx in range(len(all_dates))
+                for block in BLOCKS
+                for shift in block
+                if shift.site_group == SiteGroup.A
+            )
+            a_floor = model.new_int_var(0, target_a, f"afloor_{pid}")
+            model.add(a_floor <= a_total_expr)
+            group_balance_terms.append(30 * a_floor)
+
+        # Step 1c: group_b_site_preference — small bonus for preferred Group B site shifts.
+        # This implements the per-physician within-Group-B site preference from physicians.yaml.
+        # Weight is small (+6) so it only influences tie-breaking within equivalent options.
+        _B_PREF_SITES: dict[str, frozenset] = {
+            "nehc":  frozenset({"NEHC"}),
+            "rah":   frozenset({"RAH I side", "RAH F side"}),
+            "rah_f": frozenset({"RAH F side"}),
+        }
+        for pid in pids:
+            cfg = _get_cfg(pid)
+            if not (cfg and cfg.group_b_site_preference):
+                continue
+            preferred_sites = _B_PREF_SITES.get(cfg.group_b_site_preference)
+            if not preferred_sites:
+                continue
             for d_idx in range(len(all_dates)):
                 for block in BLOCKS:
                     for shift in block:
-                        var = shifts[(pid, d_idx, shift.code)]
-                        if shift.site_group == SiteGroup.A:
-                            # Small reward for Group A shifts (up to target)
-                            group_balance_terms.append(2 * var)
-                        # Group B is the default — no extra reward
+                        if shift.site in preferred_sites:
+                            group_balance_terms.append(
+                                6 * shifts[(pid, d_idx, shift.code)]
+                            )
+
+        # Step 2: build objective terms for consecutive pairs
+        for pid in pids:
+            for d_idx in range(len(all_dates) - 1):
+                wa1 = group_a_bool.get((pid, d_idx))
+                wb1 = group_b_bool.get((pid, d_idx))
+                wa2 = group_a_bool.get((pid, d_idx + 1))
+                wb2 = group_b_bool.get((pid, d_idx + 1))
+
+                # Reward A→B alternation
+                if wa1 is not None and wb2 is not None:
+                    ab = model.new_bool_var(f"ab_{pid}_{d_idx}")
+                    model.add_implication(ab, wa1)
+                    model.add_implication(ab, wb2)
+                    model.add(wa1 + wb2 <= 1 + ab)
+                    group_balance_terms.append(20 * ab)
+
+                # Reward B→A alternation
+                if wb1 is not None and wa2 is not None:
+                    ba = model.new_bool_var(f"ba_{pid}_{d_idx}")
+                    model.add_implication(ba, wb1)
+                    model.add_implication(ba, wa2)
+                    model.add(wb1 + wa2 <= 1 + ba)
+                    group_balance_terms.append(20 * ba)
+
+                # Penalise A→A consecutive (prefer alternation)
+                if wa1 is not None and wa2 is not None:
+                    aa = model.new_bool_var(f"aa_{pid}_{d_idx}")
+                    model.add_implication(aa, wa1)
+                    model.add_implication(aa, wa2)
+                    model.add(wa1 + wa2 <= 1 + aa)
+                    group_balance_terms.append(-40 * aa)  # penalty when A follows A
+
+        # Soft: Singleton clustering — bonus for consecutive 2400h nights by the same physician.
+        # This encourages the solver to cluster night shifts into runs of 2+ days rather than
+        # spreading them as isolated singletons (which is harder on physicians and on the roster).
+        # We create a per-(physician, day) BoolVar = 1 iff physician works any 2400h on that day,
+        # then add +25 per consecutive-night pair.
+        night_bool: dict[tuple, object] = {}
+        for pid in pids:
+            for d_idx in range(len(all_dates)):
+                night_vars_for_day = [
+                    shifts[(pid, d_idx, shift.code)]
+                    for block in BLOCKS
+                    for shift in block
+                    if shift.time == "2400h"
+                ]
+                if night_vars_for_day:
+                    nb = model.new_bool_var(f"nb_{pid}_{d_idx}")
+                    # HC-2 guarantees at most one shift per physician per day,
+                    # so sum(night_vars_for_day) is 0 or 1 — safe to equate with a BoolVar.
+                    model.add(sum(night_vars_for_day) == nb)
+                    night_bool[(pid, d_idx)] = nb
+
+        clustering_bonus_terms = []
+        for pid in pids:
+            # Skip clustering bonus for physicians who prefer singleton nights.
+            pid_cfg = _get_cfg(pid)
+            if pid_cfg and pid_cfg.prefer_singleton_nights:
+                continue
+            for d_idx in range(len(all_dates) - 1):
+                nb1 = night_bool.get((pid, d_idx))
+                nb2 = night_bool.get((pid, d_idx + 1))
+                if nb1 is None or nb2 is None:
+                    continue
+                consec = model.new_bool_var(f"cnight_{pid}_{d_idx}")
+                # consec == (nb1 AND nb2): standard linearization
+                model.add_implication(consec, nb1)
+                model.add_implication(consec, nb2)
+                # If both are 1 the solver must set consec=1 (since we're maximizing)
+                model.add(nb1 + nb2 <= 1 + consec)
+                clustering_bonus_terms.append(18 * consec)
+
+        # Anti-clustering penalty for prefer_singleton_nights physicians.
+        # These physicians want isolated 2400h shifts, so consecutive nights are penalised.
+        for pid in pids:
+            pid_cfg = _get_cfg(pid)
+            if not (pid_cfg and pid_cfg.prefer_singleton_nights):
+                continue
+            for d_idx in range(len(all_dates) - 1):
+                nb1 = night_bool.get((pid, d_idx))
+                nb2 = night_bool.get((pid, d_idx + 1))
+                if nb1 is None or nb2 is None:
+                    continue
+                consec = model.new_bool_var(f"anti_cnight_{pid}_{d_idx}")
+                model.add_implication(consec, nb1)
+                model.add_implication(consec, nb2)
+                model.add(nb1 + nb2 <= 1 + consec)
+                clustering_bonus_terms.append(-30 * consec)  # penalty for consecutive nights
+
+        # Soft: Any-shift clustering bonus — reward consecutive working days.
+        # Mirrors the 2400h singleton logic but for all shift types: a bonus for
+        # each adjacent (day, day+1) pair where the physician works both days.
+        # This discourages isolated single-day assignments across the whole roster.
+        # Weight is kept below the 2400h bonus (12) since nights cluster more tightly.
+        any_cluster_terms = []
+        for pid in pids:
+            # Note: prefer_singleton_nights physicians are NOT excluded here.
+            # The anti-clustering penalty above handles their nights; we still
+            # want to reward consecutive day shifts for them.
+            for d_idx in range(len(all_dates) - 1):
+                wb1 = worked_bool.get((pid, d_idx))
+                wb2 = worked_bool.get((pid, d_idx + 1))
+                if wb1 is None or wb2 is None:
+                    continue
+                consec = model.new_bool_var(f"consec_any_{pid}_{d_idx}")
+                model.add_implication(consec, wb1)
+                model.add_implication(consec, wb2)
+                model.add(wb1 + wb2 <= 1 + consec)
+                any_cluster_terms.append(10 * consec)
+
+        # ----------------------------------------------------------------
+        # HC-11: Late-shift rest privilege (rest_after_late_shift)
+        # If a physician works a 1600h, 1800h, or 2000h shift on day d,
+        # they must have day d+1 off entirely.
+        # ----------------------------------------------------------------
+        _LATE_TIMES = {"1600h", "1800h", "2000h"}
+        for pid in pids:
+            cfg = _get_cfg(pid)
+            if not (cfg and cfg.rest_after_late_shift):
+                continue
+            for d_idx in range(len(all_dates) - 1):
+                for block in BLOCKS:
+                    for shift in block:
+                        if shift.time not in _LATE_TIMES:
+                            continue
+                        late_var = shifts[(pid, d_idx, shift.code)]
+                        for block2 in BLOCKS:
+                            for shift2 in block2:
+                                model.add_implication(
+                                    late_var,
+                                    shifts[(pid, d_idx + 1, shift2.code)].negated()
+                                )
+
+        # ----------------------------------------------------------------
+        # HC-12: Max consecutive days with 1800h shift
+        # ----------------------------------------------------------------
+        for pid in pids:
+            cfg = _get_cfg(pid)
+            mc1800 = cfg.max_consecutive_1800h if cfg else 3
+            if mc1800 >= 3:
+                continue  # default: no effective constraint
+            win = mc1800 + 1
+            for start in range(len(all_dates) - mc1800):
+                window_vars = [
+                    shifts[(pid, d_idx, shift.code)]
+                    for d_idx in range(start, start + win)
+                    for block in BLOCKS
+                    for shift in block
+                    if shift.time == "1800h"
+                ]
+                if window_vars:
+                    model.add(sum(window_vars) <= mc1800)
+
+        # Soft penalty for 4-consecutive-day runs.
+        # Physicians with max_consecutive_shifts >= 4 are ALLOWED to work 4 days in a
+        # row (hard constraint), but we discourage it as a last resort.
+        # Physicians with mc < 4 already cannot (HC-8), so skip them.
+        run_penalty_terms = []
+        for pid in pids:
+            if _max_consec(pid) < 4:
+                continue
+            for d_idx in range(len(all_dates) - 3):
+                w0 = worked_bool.get((pid, d_idx))
+                w1 = worked_bool.get((pid, d_idx + 1))
+                w2 = worked_bool.get((pid, d_idx + 2))
+                w3 = worked_bool.get((pid, d_idx + 3))
+                if w0 is None or w1 is None or w2 is None or w3 is None:
+                    continue
+                run4 = model.new_bool_var(f"run4_{pid}_{d_idx}")
+                model.add_implication(run4, w0)
+                model.add_implication(run4, w1)
+                model.add_implication(run4, w2)
+                model.add_implication(run4, w3)
+                model.add(w0 + w1 + w2 + w3 <= 3 + run4)
+                run_penalty_terms.append(-35 * run4)
+
+        # Soft: Monday avoidance penalty (-20 per Monday shift)
+        monday_penalty_terms = []
+        for pid in pids:
+            cfg = _get_cfg(pid)
+            if not (cfg and cfg.avoid_mondays):
+                continue
+            for d_idx, d in enumerate(all_dates):
+                if d.weekday() != 0:  # 0 = Monday
+                    continue
+                for block in BLOCKS:
+                    for shift in block:
+                        monday_penalty_terms.append(-5 * shifts[(pid, d_idx, shift.code)])
 
         # Composite objective (all terms are non-negative rewards; maximize)
         objective_terms = [1000 * filled_expr]
         objective_terms.extend(request_bonus_terms)
         objective_terms.extend(deficit_penalty_terms)
         objective_terms.extend(group_balance_terms)
+        objective_terms.extend(clustering_bonus_terms)
+        objective_terms.extend(any_cluster_terms)
+        objective_terms.extend(run_penalty_terms)
+        objective_terms.extend(monday_penalty_terms)
 
         model.maximize(sum(objective_terms))
 
@@ -614,9 +911,25 @@ class CpsatScheduleGenerator:
         # Extract solution
         # ----------------------------------------------------------------
         if status in (_cp_model.OPTIMAL, _cp_model.FEASIBLE):
-            return self._build_result(
+            result = self._build_result(
                 year, month, all_dates, shifts, solver, shift_by_code
             )
+            # Attach solver quality info to stats
+            if result.stats:
+                is_optimal = status == _cp_model.OPTIMAL
+                obj = solver.objective_value
+                bound = solver.best_objective_bound
+                if is_optimal or abs(bound) < 1e-6:
+                    gap_pct = 0.0
+                else:
+                    gap_pct = max(0.0, (bound - obj) / max(abs(bound), 1.0) * 100.0)
+                result.stats.solver_status = "optimal" if is_optimal else "feasible"
+                result.stats.optimality_gap_pct = round(gap_pct, 2)
+                logger.info(
+                    "CP-SAT quality: status=%s  obj=%.0f  bound=%.0f  gap=%.2f%%",
+                    result.stats.solver_status, obj, bound, gap_pct,
+                )
+            return result
 
         # No feasible solution found — return empty result with all slots unfilled
         logger.warning("CP-SAT: no feasible solution found (status=%s)", solver.status_name(status))
@@ -639,6 +952,54 @@ class CpsatScheduleGenerator:
     # ------------------------------------------------------------------
     # Post-solve result construction
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Mutable-state helpers (mirrors ScheduleGenerator for post-generation use)
+    # ------------------------------------------------------------------
+
+    def _assign(self, pid: str, d: datetime.date, shift: Shift) -> None:
+        self._slot_to_pid[(d, shift.code)] = pid
+        self._pid_to_slots[pid].append((d, shift))
+        self._shift_count[pid] += 1
+        if shift.time in ("0600h", "2400h"):
+            self._anchor_count[pid] += 1
+        if d.weekday() in _WEEKEND_WEEKDAYS:
+            self._weekend_keys[pid].add(_weekend_key(d))
+
+    def _unassign(self, pid: str, d: datetime.date, shift: Shift) -> None:
+        self._slot_to_pid.pop((d, shift.code), None)
+        self._pid_to_slots[pid] = [
+            (ad, s) for ad, s in self._pid_to_slots[pid]
+            if not (ad == d and s.code == shift.code)
+        ]
+        self._shift_count[pid] = max(0, self._shift_count[pid] - 1)
+        if shift.time in ("0600h", "2400h"):
+            self._anchor_count[pid] = max(0, self._anchor_count[pid] - 1)
+        if d.weekday() in _WEEKEND_WEEKDAYS:
+            self._weekend_keys[pid] = {
+                _weekend_key(ad) for ad, _ in self._pid_to_slots[pid]
+                if ad.weekday() in _WEEKEND_WEEKDAYS
+            }
+
+    def _check_constraints(
+        self, pid: str, d: datetime.date, shift: Shift, block_idx: int | None = None
+    ) -> list[ViolationReason] | None:
+        """Constraint check for post-generation use (check-violations endpoint)."""
+        if block_idx is None:
+            block_idx = SHIFT_TO_BLOCK[shift.code]
+        violations = self._check_constraints_simple(pid, d, shift, block_idx)
+        return violations if violations else None
+
+    def assign_manual(
+        self,
+        physician_id: str,
+        d: datetime.date,
+        shift: Shift,
+    ) -> list[ViolationReason]:
+        """Force-assign physician_id to (d, shift), returning any rule violations."""
+        violations = self._check_constraints(physician_id, d, shift) or []
+        self._assign(physician_id, d, shift)
+        return violations
 
     def _build_result(
         self,
@@ -699,15 +1060,11 @@ class CpsatScheduleGenerator:
     # Near-miss candidates (adapted from ScheduleGenerator)
     # ------------------------------------------------------------------
 
-    _HARD_DISQUALIFIERS = frozenset({
-        "availability",
-        "shift_not_available",
-        "forbidden_site",
-    })
-
     def _near_miss_candidates(
         self, d: datetime.date, shift: Shift, max_n: int = 10
     ) -> list[CandidateOption]:
+        # Only two things truly disqualify a physician: already working that day,
+        # or marked unavailable. All other violations are shown as warnings only.
         block_idx = SHIFT_TO_BLOCK[shift.code]
         results = []
         for pid, sub in self.submissions.items():
@@ -719,12 +1076,12 @@ class CpsatScheduleGenerator:
             if day_avail is None or not day_avail.wants_to_work:
                 continue
             violations = self._check_constraints_simple(pid, d, shift, block_idx)
-            if violations:
-                if any(v.rule in self._HARD_DISQUALIFIERS for v in violations):
-                    continue
-                fit = self._near_miss_score(pid, d, shift)
-                deficit = max(0, sub.shifts_requested - self._shift_count.get(pid, 0))
-                results.append((len(violations), -fit, -deficit, pid, violations))
+            # Exclude physicians who have hard violations — they are truly unavailable
+            if any(v.rule in _HARD_VIOLATION_RULES for v in violations):
+                continue
+            fit = self._near_miss_score(pid, d, shift)
+            deficit = max(0, sub.shifts_requested - self._shift_count.get(pid, 0))
+            results.append((len(violations), -fit, -deficit, pid, violations))
         results.sort()
         return [
             CandidateOption(
@@ -751,11 +1108,13 @@ class CpsatScheduleGenerator:
             or self._roster_by_name.get(pid.lower())
         )
 
-        if (pid, d, block_idx) not in self._avail:
-            v.append(ViolationReason(rule="availability", description=f"Not available for block {block_idx} on {d}"))
-
         day_specific = self._shift_avail.get((pid, d))
-        if day_specific is not None and shift.code not in day_specific:
+        if (pid, d, block_idx) not in self._avail:
+            # For flat-file imports, a specific shift in this block is still valid
+            # even if the full block isn't in _avail.
+            if day_specific is None or shift.code not in day_specific:
+                v.append(ViolationReason(rule="availability", description=f"Not available for block {block_idx} on {d}"))
+        elif day_specific is not None and shift.code not in day_specific:
             v.append(ViolationReason(rule="shift_not_available", description=f"Only available for: {', '.join(sorted(day_specific))}"))
 
         forbidden = cfg.forbidden_sites if cfg else []

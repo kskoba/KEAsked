@@ -53,6 +53,24 @@ class CandidateOption:
     physician_id: str
     physician_name: str
     violations: list[ViolationReason]
+    is_hard_blocked: bool = False   # True when a hard safety/competency rule is violated
+
+
+# Rules that constitute an absolute hard block — physician must not appear as
+# a selectable candidate in the ConflictModal.  Soft rules (weekend_limit,
+# anchor_limit, timed_separation, etc.) still show as warnings.
+_HARD_VIOLATION_RULES: frozenset[str] = frozenset({
+    "already_assigned_today",   # physically impossible: two shifts same day
+    "consecutive_limit",        # safety: max consecutive days
+    "spacing_23h",              # safety: 23 h minimum gap between shifts
+    "post_2400h_rest",          # safety: mandatory rest after overnight
+    "shift_type_restriction",   # competency: e.g. only_2400h physicians
+    "forbidden_site",           # competency: site they cannot work
+    "availability",             # physician said they cannot work this day/block
+    "shift_not_available",      # physician did not mark this specific shift
+    "max_shifts",               # hard cap on total shifts for the month
+    "niar_limit",               # safety: max consecutive overnight (2400h) shifts
+})
 
 
 @dataclass
@@ -73,6 +91,9 @@ class ScheduleStats:
     group_b_pct: float
     physician_counts: dict[str, int]    # physician_id -> shifts assigned
     physician_singletons: dict[str, int]  # physician_id -> isolated 2400h count
+    # CP-SAT quality fields (None when greedy solver used)
+    solver_status: str | None = None       # "optimal" | "feasible" | None
+    optimality_gap_pct: float | None = None  # % gap to proven upper bound; 0.0 = optimal
 
 
 @dataclass
@@ -617,7 +638,12 @@ class ScheduleGenerator:
             score -= min_deficit * min_weight
             score -= req_deficit * 2.0
         # Penalise singleton 2400h assignments (strong: -5 per singleton)
-        score -= sum(singletons.values()) * 5.0
+        # Skip physicians who prefer singleton nights.
+        for pid, n in singletons.items():
+            cfg = self.roster.get(pid)
+            if cfg and cfg.prefer_singleton_nights:
+                continue
+            score -= n * 5.0
         # Penalise per-physician Group A/B imbalance
         for pid, sub in self.submissions.items():
             slots = self._pid_to_slots[pid]
@@ -755,6 +781,15 @@ class ScheduleGenerator:
                 ),
             ))
 
+        # 2c. Forbidden shift times (e.g. no 0600h or 2400h)
+        if cfg and shift.time in cfg.forbidden_shift_times:
+            v.append(ViolationReason(
+                rule="shift_type_restriction",
+                description=(
+                    f"{cfg.name} cannot work {shift.time} shifts"
+                ),
+            ))
+
         # 3. Already assigned on this calendar day
         if any(ad == d for ad, _ in self._pid_to_slots[pid]):
             v.append(ViolationReason(
@@ -762,8 +797,11 @@ class ScheduleGenerator:
                 description=f"Already has a shift assigned on {d}",
             ))
 
-        # 4. Max shifts hard cap
-        hard_max = sub.shifts_max if sub.shifts_max > 0 else sub.shifts_requested
+        # 4. Max shifts hard cap (cap_at_requested overrides shifts_max)
+        if cfg and cfg.cap_at_requested and sub.shifts_requested > 0:
+            hard_max = sub.shifts_requested
+        else:
+            hard_max = sub.shifts_max if sub.shifts_max > 0 else sub.shifts_requested
         if self._shift_count[pid] >= hard_max:
             v.append(ViolationReason(
                 rule="max_shifts",
@@ -804,7 +842,7 @@ class ScheduleGenerator:
                 else:
                     actual_h = (shift.start_hour + gap * 24) - prev_shift.start_hour
                     v.append(ViolationReason(
-                        rule="spacing_22h",
+                        rule="spacing_23h",
                         description=(
                             f"Only {actual_h}h gap: {prev_shift.time} on "
                             f"{prev_date:%b %d} → {shift.time} on {d:%b %d} "
@@ -829,7 +867,7 @@ class ScheduleGenerator:
                 else:
                     actual_h = (nxt_shift.start_hour + fwd_gap * 24) - shift.start_hour
                     v.append(ViolationReason(
-                        rule="spacing_22h",
+                        rule="spacing_23h",
                         description=(
                             f"Only {actual_h}h gap: {shift.time} on "
                             f"{d:%b %d} → {nxt_shift.time} on {nxt_date:%b %d} "
@@ -944,6 +982,56 @@ class ScheduleGenerator:
                                     f"({'neither' if neither_at else 'both'} are)"
                                 ),
                             ))
+
+        # 11b. Rest after late shift (1600h/1800h/2000h → next day off)
+        _LATE_TIMES = {"1600h", "1800h", "2000h"}
+        if cfg and cfg.rest_after_late_shift:
+            # Check: previous day has a late shift → today is blocked
+            prev = self._prev_assigned(pid, d)
+            if prev:
+                prev_shift, prev_date = prev
+                if (d - prev_date).days == 1 and prev_shift.time in _LATE_TIMES:
+                    v.append(ViolationReason(
+                        rule="rest_after_late_shift",
+                        description=(
+                            f"Must rest day after {prev_shift.time} shift on {prev_date:%b %d}"
+                        ),
+                    ))
+            # Check: today has a late shift → next assigned day blocked
+            if shift.time in _LATE_TIMES:
+                nxt = self._next_assigned(pid, d)
+                if nxt:
+                    nxt_shift, nxt_date = nxt
+                    if (nxt_date - d).days == 1:
+                        v.append(ViolationReason(
+                            rule="rest_after_late_shift",
+                            description=(
+                                f"Late shift ({shift.time}) would block rest before "
+                                f"{nxt_shift.time} on {nxt_date:%b %d}"
+                            ),
+                        ))
+
+        # 11c. Max consecutive 1800h shifts
+        if cfg and cfg.max_consecutive_1800h < 3 and shift.time == "1800h":
+            mc1800 = cfg.max_consecutive_1800h
+            # Count consecutive 1800h run ending on the day before d
+            run = 0
+            check = d - datetime.timedelta(days=1)
+            while True:
+                s = self._shift_on_date(pid, check)
+                if s and s.time == "1800h":
+                    run += 1
+                    check -= datetime.timedelta(days=1)
+                else:
+                    break
+            if run >= mc1800:
+                v.append(ViolationReason(
+                    rule="consecutive_1800h_limit",
+                    description=(
+                        f"Would extend consecutive 1800h run to {run + 1} "
+                        f"(limit {mc1800})"
+                    ),
+                ))
 
         # 11. NIAR — max consecutive 2400h shifts
         if shift.time == "2400h":
@@ -1135,46 +1223,59 @@ class ScheduleGenerator:
     # Near-miss candidates for unfilled slots
     # -------------------------------------------------------------------
 
-    # Rules that disqualify a physician from being a candidate entirely.
-    # Violations of these mean the physician is truly unavailable or ineligible —
-    # offering them as a manual-override option would be misleading.
-    _HARD_DISQUALIFIERS = frozenset({
-        "availability",
-        "shift_not_available",
-        "forbidden_site",
-    })
-
     def _near_miss_candidates(
         self, d: datetime.date, shift: Shift, max_n: int = 10
     ) -> list[CandidateOption]:
+        """
+        Return up to max_n candidate physicians for a human to consider when
+        manually filling an unfilled slot.
+
+        Hard constraints (safety / competency) must BLOCK the physician from
+        the list entirely — they are never shown as an option.
+        Soft constraints are returned as warnings the human can choose to accept.
+
+        Hard-blocked rules: already_assigned_today, consecutive_limit,
+        spacing_23h, post_2400h_rest, forbidden_site, shift_type_restriction,
+        availability, shift_not_available, max_shifts, niar_limit.
+        """
         block_idx = SHIFT_TO_BLOCK[shift.code]
         results = []
         for pid, sub in self.submissions.items():
-            # Never offer someone already working this day
+            # Hard block: never offer someone already working this day — the
+            # constraint check below also catches this, but filtering here is
+            # an explicit fast-path so stale candidates data cannot sneak through.
             if any(ad == d for ad, _ in self._pid_to_slots[pid]):
                 continue
-            # Never offer someone who marked themselves unavailable on this day
+            # Hard block: never offer someone who marked themselves unavailable.
             day_avail = next((day for day in sub.days if day.date == d), None)
             if day_avail is None or not day_avail.wants_to_work:
                 continue
-            violations = self._check_constraints(pid, d, shift, block_idx)
-            if violations:
-                # Skip entirely if any hard disqualifier is present
-                if any(v.rule in self._HARD_DISQUALIFIERS for v in violations):
-                    continue
-                fit = self._near_miss_score(pid, d, shift)
-                # Sort: fewest violations → best fit → furthest below requested
-                deficit = max(0, sub.shifts_requested - self._shift_count[pid])
-                results.append((len(violations), -fit, -deficit, pid, violations))
+
+            violations = self._check_constraints(pid, d, shift, block_idx) or []
+
+            # Partition violations into hard and soft.
+            hard_viols = [v for v in violations if v.rule in _HARD_VIOLATION_RULES]
+            soft_viols = [v for v in violations if v.rule not in _HARD_VIOLATION_RULES]
+
+            # Physicians with any hard violation are excluded entirely.
+            if hard_viols:
+                continue
+
+            fit = self._near_miss_score(pid, d, shift)
+            deficit = max(0, sub.shifts_requested - self._shift_count[pid])
+            # Sort key: fewest soft violations first, then best fit, then most deficit
+            results.append((len(soft_viols), -fit, -deficit, pid, soft_viols))
+
         results.sort()
         # Return up to max_n — fewer is fine if fewer physicians qualify
         return [
             CandidateOption(
                 physician_id=pid,
                 physician_name=self.submissions[pid].physician_name,
-                violations=violations,
+                violations=soft_viols,
+                is_hard_blocked=False,
             )
-            for _, _, _, pid, violations in results[:max_n]
+            for _, _, _, pid, soft_viols in results[:max_n]
         ]
 
     def _near_miss_score(self, pid: str, d: datetime.date, shift: Shift) -> float:
@@ -1432,6 +1533,12 @@ class ScheduleGenerator:
         # pid -> [(date, call_type)] sorted weekdays first, then by date
         avail: dict[str, list[tuple[datetime.date, str]]] = {}
         for pid, sub in self.submissions.items():
+            # Skip physicians who cannot do call shifts
+            cfg_oc = (self.roster.get(pid)
+                      or self._roster_lower.get(pid.lower())
+                      or self._roster_by_name.get(pid.lower()))
+            if cfg_oc and cfg_oc.no_call:
+                continue
             days_list: list[tuple[datetime.date, str]] = []
             for day in sub.days:
                 if day.doc_available:

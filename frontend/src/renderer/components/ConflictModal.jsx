@@ -1,17 +1,18 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { assignPhysician, getSchedule } from '../api'
+import { assignPhysician, getSchedule, getCandidates } from '../api'
 
-// Colour palette for violation badges
+// Colour palette for soft-violation warning badges
 const VIOLATION_COLORS = {
-  spacing_22h: 'bg-orange-100 text-orange-700 border-orange-200',
   weekend_limit: 'bg-pink-100 text-pink-700 border-pink-200',
   anchor_limit: 'bg-purple-100 text-purple-700 border-purple-200',
-  consecutive_limit: 'bg-red-100 text-red-700 border-red-200',
-  forbidden_sites: 'bg-gray-100 text-gray-700 border-gray-200',
-  paired_exclusions: 'bg-yellow-100 text-yellow-700 border-yellow-200',
+  forbidden_time_pair: 'bg-orange-100 text-orange-700 border-orange-200',
+  timed_separation: 'bg-orange-100 text-orange-700 border-orange-200',
+  no_shared_weekend: 'bg-yellow-100 text-yellow-700 border-yellow-200',
+  cowork_condition: 'bg-yellow-100 text-yellow-700 border-yellow-200',
+  same_shift_consecutive: 'bg-blue-100 text-blue-700 border-blue-200',
   group_mix: 'bg-blue-100 text-blue-700 border-blue-200',
   singleton: 'bg-indigo-100 text-indigo-700 border-indigo-200',
-  night_q: 'bg-slate-100 text-slate-700 border-slate-200'
+  night_q: 'bg-slate-100 text-slate-700 border-slate-200',
 }
 
 function badgeClass(rule) {
@@ -29,6 +30,12 @@ export default function ConflictModal({ slot, scheduleData, onAssigned, onClose 
   const [assigning, setAssigning] = useState(null)  // physicianId being assigned
   const [error, setError] = useState(null)
 
+  // Live candidate list fetched fresh from the server on mount.
+  // Using live data avoids showing stale candidates (e.g. a physician who was
+  // manually assigned to another slot on the same day after generation).
+  const [liveCandidates, setLiveCandidates] = useState(null)   // null = loading
+  const [fetchError, setFetchError] = useState(null)
+
   // Close on Escape key
   useEffect(() => {
     function onKey(e) { if (e.key === 'Escape') onClose() }
@@ -36,8 +43,35 @@ export default function ConflictModal({ slot, scheduleData, onAssigned, onClose 
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
+  // Fetch fresh, server-side violation-checked candidates when the modal opens.
+  // The server excludes physicians with hard violations (same-day conflict,
+  // consecutive limit exceeded, 22 h gap violated, forbidden site, etc.) and
+  // only returns physicians with soft violations as assignable-with-warning.
+  useEffect(() => {
+    let cancelled = false
+    setFetchError(null)
+    setLiveCandidates(null)
+
+    getCandidates(slot.date, slot.shift.code)
+      .then(data => {
+        if (!cancelled) setLiveCandidates(data.candidates || [])
+      })
+      .catch(err => {
+        if (!cancelled) {
+          // Fallback: use stale candidates from the schedule response so the
+          // modal is still useful even if the live endpoint is unavailable.
+          setFetchError(err.message)
+          setLiveCandidates(slot.candidates || [])
+        }
+      })
+
+    return () => { cancelled = true }
+  }, [slot.date, slot.shift.code])
+
+  const candidates = liveCandidates  // null while loading
+
   const handleAssign = useCallback(async (physicianId) => {
-    const candidate = candidates.find(c => c.physician_id === physicianId)
+    const candidate = (candidates || []).find(c => c.physician_id === physicianId)
     setAssigning(physicianId)
     setError(null)
     try {
@@ -61,10 +95,11 @@ export default function ConflictModal({ slot, scheduleData, onAssigned, onClose 
     }
   }, [slot, onAssigned, candidates])
 
-  const candidates = slot.candidates || []
   const shiftCode = slot.shift?.code || ''
   const shiftTime = slot.shift?.time || ''
   const shiftSite = slot.shift?.site || ''
+
+  const isLoading = candidates === null
 
   return (
     <>
@@ -121,26 +156,45 @@ export default function ConflictModal({ slot, scheduleData, onAssigned, onClose 
             </div>
           )}
 
-          {candidates.length === 0 ? (
+          {fetchError && (
+            <div className="mb-3 p-3 bg-amber-50 border border-amber-200 rounded-md text-amber-700 text-xs">
+              Could not refresh candidates from server ({fetchError}). Showing cached list — hard-rule violations may not be reflected.
+            </div>
+          )}
+
+          {isLoading ? (
+            <div className="py-8 text-center text-slate-400 text-sm flex flex-col items-center gap-2">
+              <svg className="w-6 h-6 animate-spin text-slate-300" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
+              </svg>
+              Checking availability…
+            </div>
+          ) : candidates.length === 0 ? (
             <div className="py-8 text-center text-slate-400 text-sm">
-              No candidate physicians available for this slot.
+              No eligible physicians available for this slot.
+              <p className="text-xs mt-1 text-slate-300">
+                All physicians are either unavailable, already working that day, or would violate a hard rule (consecutive limit, 22 h gap, forbidden site, etc.).
+              </p>
             </div>
           ) : (
             <div className="space-y-3">
               <p className="text-xs text-slate-500 mb-3">
-                {candidates.length} candidate{candidates.length !== 1 ? 's' : ''} available.
-                Violations indicate rule conflicts — you may still assign.
+                {candidates.length} physician{candidates.length !== 1 ? 's' : ''} available.
+                {candidates.some(c => c.violations && c.violations.length > 0) && (
+                  <span> Warnings indicate soft-rule conflicts — you may still assign.</span>
+                )}
               </p>
 
               {candidates.map((candidate) => {
                 const isAssigning = assigning === candidate.physician_id
-                const hasViolations = candidate.violations && candidate.violations.length > 0
+                const hasWarnings = candidate.violations && candidate.violations.length > 0
 
                 return (
                   <div
                     key={candidate.physician_id}
                     className={`flex items-start gap-3 p-3 rounded-lg border ${
-                      hasViolations
+                      hasWarnings
                         ? 'border-amber-200 bg-amber-50'
                         : 'border-emerald-200 bg-emerald-50'
                     }`}
@@ -154,15 +208,15 @@ export default function ConflictModal({ slot, scheduleData, onAssigned, onClose 
                         <span className="text-xs text-slate-400 font-mono flex-shrink-0">
                           {candidate.physician_id}
                         </span>
-                        {!hasViolations && (
+                        {!hasWarnings && (
                           <span className="flex-shrink-0 text-xs bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full font-medium">
                             No violations
                           </span>
                         )}
                       </div>
 
-                      {/* Violation badges */}
-                      {hasViolations && (
+                      {/* Soft-violation warning badges */}
+                      {hasWarnings && (
                         <div className="flex flex-wrap gap-1.5">
                           {candidate.violations.map((v, vi) => {
                             const rule = typeof v === 'string' ? v : (v.rule || '')
@@ -181,12 +235,12 @@ export default function ConflictModal({ slot, scheduleData, onAssigned, onClose 
                       )}
                     </div>
 
-                    {/* Assign button */}
+                    {/* Assign button — always enabled for candidates (only soft warnings) */}
                     <button
                       onClick={() => handleAssign(candidate.physician_id)}
                       disabled={assigning !== null}
                       className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                        hasViolations
+                        hasWarnings
                           ? 'bg-amber-500 hover:bg-amber-400 text-white disabled:bg-slate-300'
                           : 'bg-emerald-500 hover:bg-emerald-400 text-white disabled:bg-slate-300'
                       } disabled:cursor-not-allowed`}
@@ -204,7 +258,7 @@ export default function ConflictModal({ slot, scheduleData, onAssigned, onClose 
                           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
                             <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                           </svg>
-                          Assign
+                          {hasWarnings ? 'Assign (override warnings)' : 'Assign'}
                         </>
                       )}
                     </button>

@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react'
 
 const SCHEDULING_RULES = [
-  { id: '22h_spacing', label: '22-hour spacing', desc: 'Minimum 22 hours between any two shifts for the same physician.' },
+  { id: '22h_spacing', label: '23-hour rule', desc: 'Minimum 23 hours between any two shifts for the same physician.' },
   { id: 'weekend_limit', label: 'Weekend limit', desc: 'Physicians are capped on the number of weekend shifts per schedule period.' },
   { id: 'anchor_limit', label: 'Anchor shift limit', desc: 'Limits the number of anchor (overnight/long) shifts per physician.' },
   { id: 'consecutive_limit', label: 'Consecutive shift limit', desc: 'No physician may work more than a defined number of consecutive days.' },
@@ -72,7 +72,9 @@ export default function Sidebar({ scheduleData, importResult = null, physicianVi
     filled_slots = 0,
     unfilled_slots = 0,
     physician_counts = {},
-    physician_singletons = {}
+    physician_singletons = {},
+    solver_status = null,
+    optimality_gap_pct = null,
   } = stats
 
   const fillPct = total_slots > 0 ? Math.round((filled_slots / total_slots) * 100) : 0
@@ -111,6 +113,36 @@ export default function Sidebar({ scheduleData, importResult = null, physicianVi
           />
           {statsOpen && (
             <div className="px-4 pb-4 space-y-4">
+              {/* CP-SAT optimality badge */}
+              {solver_status && (() => {
+                const isOptimal = solver_status === 'optimal'
+                const gap = optimality_gap_pct ?? 0
+                const label = isOptimal
+                  ? 'Optimal solution'
+                  : gap < 1
+                    ? `Near-optimal (${gap.toFixed(2)}% gap)`
+                    : gap < 5
+                      ? `Good solution (${gap.toFixed(1)}% gap)`
+                      : `Sub-optimal (${gap.toFixed(1)}% gap)`
+                const colors = isOptimal
+                  ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
+                  : gap < 1
+                    ? 'bg-sky-50 border-sky-300 text-sky-700'
+                    : gap < 5
+                      ? 'bg-amber-50 border-amber-300 text-amber-700'
+                      : 'bg-red-50 border-red-300 text-red-700'
+                const dotColor = isOptimal ? 'bg-emerald-500' : gap < 1 ? 'bg-sky-500' : gap < 5 ? 'bg-amber-500' : 'bg-red-500'
+                const tooltip = isOptimal
+                  ? 'CP-SAT proved this is the mathematically best possible schedule'
+                  : `Best solution found is within ${gap.toFixed(2)}% of the proven upper bound. More solver time may improve this.`
+                return (
+                  <div className={`flex items-center gap-2 px-3 py-2 rounded-md border text-xs font-medium ${colors}`} title={tooltip}>
+                    <span className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${dotColor}`} />
+                    <span>{label}</span>
+                  </div>
+                )
+              })()}
+
               {/* Fill rate */}
               <div>
                 <div className="flex justify-between text-xs text-slate-600 mb-1">
@@ -205,13 +237,18 @@ export default function Sidebar({ scheduleData, importResult = null, physicianVi
                                 {singletons > 0 ? singletons : '-'}
                               </span>
                             </div>
-                            {/* Group A/B balance bar */}
+                            {/* Group A/B balance bar with 40% target line */}
                             <div
-                              className="h-1.5 rounded-full overflow-hidden flex mt-0.5"
-                              title={`Group A: ${g.a} (${Math.round(aPct)}%)  Group B: ${g.b} (${Math.round(100 - aPct)}%)`}
+                              className="relative h-1.5 rounded-full overflow-hidden flex mt-0.5"
+                              title={`Group A: ${g.a} (${Math.round(aPct)}%)  Group B: ${g.b} (${Math.round(100 - aPct)}%)  Target: 40% A / 60% B`}
                             >
                               <div className="h-full bg-blue-400 transition-all" style={{ width: `${aPct}%` }} />
                               <div className="h-full bg-emerald-400 flex-1" />
+                              {/* Target line at 40% */}
+                              <div
+                                className="absolute top-0 bottom-0 w-px bg-white opacity-80"
+                                style={{ left: '40%' }}
+                              />
                             </div>
                           </div>
                         )

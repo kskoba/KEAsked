@@ -147,8 +147,6 @@ export default function ScheduleGrid({ scheduleData, onOpenConflict, onReplaceAs
           <span className="text-slate-600">Group B</span>
           <span className="inline-block w-3 h-3 rounded-sm bg-red-200 ml-2" />
           <span className="text-slate-600">Unfilled</span>
-          <span className="inline-block w-3 h-3 rounded-full bg-violet-500 ml-2" />
-          <span className="text-slate-600">Claude AI</span>
           <span className="inline-block w-3 h-3 rounded-full bg-amber-400 ml-2" />
           <span className="text-slate-600">Manual</span>
         </div>

@@ -127,3 +127,25 @@ export async function checkViolations(date, shiftCode, physicianId) {
     physician_id: physicianId
   })
 }
+
+/**
+ * Load a previously exported schedule xlsx as the active schedule.
+ * @param {string} file  Absolute path to the .xlsx file
+ * @returns {ScheduleResponse}
+ */
+export async function loadScheduleFromFile(file) {
+  return request('POST', '/api/load-schedule', { file })
+}
+
+/**
+ * Fetch fresh candidates for an unfilled slot.
+ * Hard-violation physicians are excluded entirely; soft violations are returned
+ * as warnings on each candidate.
+ * @param {string} date       ISO date string e.g. "2026-06-01"
+ * @param {string} shiftCode  e.g. "RAH_A_D1"
+ * @returns {{ date: string, shift_code: string, candidates: CandidateSchema[] }}
+ */
+export async function getCandidates(date, shiftCode) {
+  const params = new URLSearchParams({ date, shift_code: shiftCode })
+  return request('GET', `/api/candidates?${params}`)
+}

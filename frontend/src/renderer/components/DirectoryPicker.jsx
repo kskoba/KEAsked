@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { importSubmissions, importFlatFile, generateSchedule, detectFlatMonth, getGenerateProgress } from '../api'
+import { importSubmissions, importFlatFile, generateSchedule, detectFlatMonth, getGenerateProgress, loadScheduleFromFile } from '../api'
 
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -8,27 +8,30 @@ const MONTHS = [
 
 const currentDate = new Date()
 
-export default function DirectoryPicker({ onImportDone, onScheduleGenerated, importResult }) {
-  const [mode, setMode] = useState('flat')        // 'flat' | 'directory'
+export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onScheduleLoaded, importResult }) {
+  const [mode, setMode] = useState('flat')        // 'flat' | 'directory' | 'load'
   const [path, setPath] = useState('')
   const [month, setMonth] = useState(currentDate.getMonth() + 1)   // 1-based
   const [year, setYear] = useState(currentDate.getFullYear())
-  const [useClaude, setUseClaude] = useState(false)
   const [importing, setImporting] = useState(false)
   const [generating, setGenerating] = useState(false)
-  const [progress, setProgress] = useState(null)   // { current, total, best_unfilled }
+  const [loading, setLoading] = useState(false)   // for 'load' mode
+  const [progress, setProgress] = useState(null)   // { current, total, best_unfilled, solver, time_limit }
+  const [countdown, setCountdown] = useState(null)  // seconds remaining for CP-SAT
   const [importError, setImportError] = useState(null)
   const [generateError, setGenerateError] = useState(null)
+  const [loadError, setLoadError] = useState(null)
   const pollRef = useRef(null)
+  const countdownRef = useRef(null)
 
   async function handleBrowse() {
     let selected = null
     if (window.electronAPI) {
-      selected = mode === 'flat'
-        ? await window.electronAPI.openFile()
-        : await window.electronAPI.openDirectory()
+      selected = mode === 'directory'
+        ? await window.electronAPI.openDirectory()
+        : await window.electronAPI.openFile()
     } else {
-      selected = prompt(`Enter ${mode === 'flat' ? 'file' : 'directory'} path:`)
+      selected = prompt(`Enter ${mode === 'directory' ? 'directory' : 'file'} path:`)
     }
     if (!selected) return
     setPath(selected)
@@ -40,6 +43,20 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, imp
       } catch {
         // ignore — user can set manually
       }
+    }
+  }
+
+  async function handleLoadSchedule() {
+    if (!path) return
+    setLoading(true)
+    setLoadError(null)
+    try {
+      const result = await loadScheduleFromFile(path)
+      onScheduleLoaded(result)
+    } catch (err) {
+      setLoadError(err.message)
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -70,6 +87,21 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, imp
       try {
         const p = await getGenerateProgress()
         setProgress(p)
+        // Start countdown when we first learn this is a CP-SAT run
+        if (p.solver === 'cpsat' && p.running && !countdownRef.current) {
+          const secs = p.time_limit || 300
+          setCountdown(secs)
+          countdownRef.current = setInterval(() => {
+            setCountdown(prev => {
+              if (prev === null || prev <= 1) {
+                clearInterval(countdownRef.current)
+                countdownRef.current = null
+                return 0
+              }
+              return prev - 1
+            })
+          }, 1000)
+        }
         if (!p.running && p.current > 0) {
           clearInterval(pollRef.current)
           pollRef.current = null
@@ -78,20 +110,26 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, imp
     }, 600)
 
     try {
-      const result = await generateSchedule(year, month, useClaude)
+      const result = await generateSchedule(year, month, false)
       onScheduleGenerated(result)
     } catch (err) {
       setGenerateError(err.message)
     } finally {
       clearInterval(pollRef.current)
       pollRef.current = null
+      clearInterval(countdownRef.current)
+      countdownRef.current = null
       setGenerating(false)
       setProgress(null)
+      setCountdown(null)
     }
   }
 
-  // Clean up poll on unmount
-  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current) }, [])
+  // Clean up poll and countdown on unmount
+  useEffect(() => () => {
+    if (pollRef.current) clearInterval(pollRef.current)
+    if (countdownRef.current) clearInterval(countdownRef.current)
+  }, [])
 
   const canImport = path.trim().length > 0 && !importing && !generating
   const canGenerate = importResult !== null && !generating && !importing
@@ -113,11 +151,11 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, imp
 
       {/* Mode toggle */}
       <div className="flex gap-1 mb-5 p-1 bg-slate-100 rounded-lg w-fit">
-        {[['flat', 'Single flat file'], ['directory', 'Directory']].map(([val, label]) => (
+        {[['flat', 'Single flat file'], ['directory', 'Directory'], ['load', 'Load Saved Schedule']].map(([val, label]) => (
           <button
             key={val}
-            onClick={() => { setMode(val); setPath('') }}
-            disabled={importing || generating}
+            onClick={() => { setMode(val); setPath(''); setImportError(null); setGenerateError(null); setLoadError(null) }}
+            disabled={importing || generating || loading}
             className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
               mode === val
                 ? 'bg-white text-slate-800 shadow-sm'
@@ -132,21 +170,23 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, imp
       {/* Path row */}
       <div className="mb-5">
         <label className="block text-sm font-medium text-slate-700 mb-1">
-          {mode === 'flat' ? 'Preferences File (.xlsx)' : 'Submissions Directory'}
+          {mode === 'flat' ? 'Preferences File (.xlsx)' : mode === 'directory' ? 'Submissions Directory' : 'Schedule File (.xlsx)'}
         </label>
         <div className="flex gap-2">
           <input
             type="text"
             readOnly
             value={path}
-            placeholder={mode === 'flat'
-              ? 'Select the flat preferences Excel file…'
-              : 'Select the folder containing per-physician request files…'}
+            placeholder={
+              mode === 'flat' ? 'Select the flat preferences Excel file…' :
+              mode === 'directory' ? 'Select the folder containing per-physician request files…' :
+              'Select a previously exported schedule .xlsx…'
+            }
             className="flex-1 px-3 py-2 rounded-md border border-slate-300 bg-slate-50 text-slate-700 text-sm cursor-default focus:outline-none"
           />
           <button
             onClick={handleBrowse}
-            disabled={importing || generating}
+            disabled={importing || generating || loading}
             className="px-4 py-2 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-400 text-white text-sm font-medium rounded-md transition-colors"
           >
             Browse…
@@ -154,51 +194,37 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, imp
         </div>
       </div>
 
-      {/* Month / Year row */}
-      <div className="flex gap-4 mb-5">
-        <div className="flex-1">
-          <label className="block text-sm font-medium text-slate-700 mb-1">Month</label>
-          <select
-            value={month}
-            onChange={e => setMonth(Number(e.target.value))}
-            disabled={importing || generating}
-            className="w-full px-3 py-2 rounded-md border border-slate-300 bg-white text-slate-700 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400"
-          >
-            {MONTHS.map((name, idx) => (
-              <option key={name} value={idx + 1}>{name}</option>
-            ))}
-          </select>
-        </div>
+      {/* Month / Year row — hidden in load mode (auto-detected from file) */}
+      {mode !== 'load' && (
+        <div className="flex gap-4 mb-5">
+          <div className="flex-1">
+            <label className="block text-sm font-medium text-slate-700 mb-1">Month</label>
+            <select
+              value={month}
+              onChange={e => setMonth(Number(e.target.value))}
+              disabled={importing || generating}
+              className="w-full px-3 py-2 rounded-md border border-slate-300 bg-white text-slate-700 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400"
+            >
+              {MONTHS.map((name, idx) => (
+                <option key={name} value={idx + 1}>{name}</option>
+              ))}
+            </select>
+          </div>
 
-        <div className="w-36">
-          <label className="block text-sm font-medium text-slate-700 mb-1">Year</label>
-          <input
-            type="number"
-            value={year}
-            onChange={e => setYear(Number(e.target.value))}
-            min={2020}
-            max={2099}
-            disabled={importing || generating}
-            className="w-full px-3 py-2 rounded-md border border-slate-300 bg-white text-slate-700 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400"
-          />
+          <div className="w-36">
+            <label className="block text-sm font-medium text-slate-700 mb-1">Year</label>
+            <input
+              type="number"
+              value={year}
+              onChange={e => setYear(Number(e.target.value))}
+              min={2020}
+              max={2099}
+              disabled={importing || generating}
+              className="w-full px-3 py-2 rounded-md border border-slate-300 bg-white text-slate-700 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400"
+            />
+          </div>
         </div>
-      </div>
-
-      {/* Claude checkbox */}
-      <div className="flex items-center gap-3 mb-6">
-        <input
-          id="use-claude"
-          type="checkbox"
-          checked={useClaude}
-          onChange={e => setUseClaude(e.target.checked)}
-          disabled={importing || generating}
-          className="w-4 h-4 rounded border-slate-300 text-sky-500 focus:ring-sky-400"
-        />
-        <label htmlFor="use-claude" className="text-sm text-slate-700 cursor-pointer select-none">
-          Use Claude AI for resolving unfilled shifts
-        </label>
-        <span className="text-xs text-slate-400 italic">(requires Anthropic API key)</span>
-      </div>
+      )}
 
       {/* Error messages */}
       {importError && (
@@ -211,72 +237,130 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, imp
           <strong>Generate error:</strong> {generateError}
         </div>
       )}
+      {loadError && (
+        <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-md text-red-700 text-sm">
+          <strong>Load error:</strong> {loadError}
+        </div>
+      )}
 
       {/* Generation progress bar */}
       {generating && progress && (
         <div className="mb-4">
-          <div className="flex justify-between text-xs text-slate-500 mb-1">
-            <span>
-              Running iteration {progress.current} / {progress.total}
-              {progress.best_unfilled != null && ` — best so far: ${progress.best_unfilled} unfilled`}
-            </span>
-            <span>{progress.total > 0 ? Math.round(progress.current / progress.total * 100) : 0}%</span>
-          </div>
-          <div className="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
-            <div
-              className="bg-sky-500 h-2 rounded-full transition-all duration-300"
-              style={{ width: `${progress.total > 0 ? (progress.current / progress.total * 100) : 0}%` }}
-            />
-          </div>
+          {progress.solver === 'cpsat' ? (
+            <>
+              <div className="flex justify-between text-xs text-slate-500 mb-1">
+                <span className="font-medium text-sky-700">CP-SAT solver running…</span>
+                {countdown !== null && (
+                  <span className={`font-mono font-bold ${countdown <= 30 ? 'text-amber-600' : 'text-sky-700'}`}>
+                    {Math.floor(countdown / 60)}:{String(countdown % 60).padStart(2, '0')}
+                  </span>
+                )}
+              </div>
+              {/* Time-elapsed bar: fills left-to-right as solve progresses */}
+              <div className="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
+                <div
+                  className="h-2 rounded-full bg-sky-500 transition-all duration-1000"
+                  style={{
+                    width: countdown !== null
+                      ? `${((progress.time_limit || 300) - countdown) / (progress.time_limit || 300) * 100}%`
+                      : '5%'
+                  }}
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="flex justify-between text-xs text-slate-500 mb-1">
+                <span>
+                  Running iteration {progress.current} / {progress.total}
+                  {progress.best_unfilled != null && ` — best so far: ${progress.best_unfilled} unfilled`}
+                </span>
+                <span>{progress.total > 0 ? Math.round(progress.current / progress.total * 100) : 0}%</span>
+              </div>
+              <div className="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
+                <div
+                  className="bg-sky-500 h-2 rounded-full transition-all duration-300"
+                  style={{ width: `${progress.total > 0 ? (progress.current / progress.total * 100) : 0}%` }}
+                />
+              </div>
+            </>
+          )}
         </div>
       )}
 
       {/* Action buttons */}
       <div className="flex items-center gap-3">
-        <button
-          onClick={handleImport}
-          disabled={!canImport}
-          className="flex items-center gap-2 px-5 py-2.5 bg-sky-600 hover:bg-sky-500 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-medium text-sm rounded-md transition-colors"
-        >
-          {importing ? (
-            <>
-              <Spinner />
-              Importing…
-            </>
-          ) : (
-            <>
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3" />
-              </svg>
-              Import & Validate
-            </>
-          )}
-        </button>
+        {mode === 'load' ? (
+          <button
+            onClick={handleLoadSchedule}
+            disabled={!path.trim() || loading}
+            className="flex items-center gap-2 px-5 py-2.5 bg-sky-600 hover:bg-sky-500 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-medium text-sm rounded-md transition-colors"
+          >
+            {loading ? (
+              <>
+                <Spinner />
+                Loading…
+              </>
+            ) : (
+              <>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3" />
+                </svg>
+                Open Schedule
+              </>
+            )}
+          </button>
+        ) : (
+          <>
+            <button
+              onClick={handleImport}
+              disabled={!canImport}
+              className="flex items-center gap-2 px-5 py-2.5 bg-sky-600 hover:bg-sky-500 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-medium text-sm rounded-md transition-colors"
+            >
+              {importing ? (
+                <>
+                  <Spinner />
+                  Importing…
+                </>
+              ) : (
+                <>
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3" />
+                  </svg>
+                  Import & Validate
+                </>
+              )}
+            </button>
 
-        <button
-          onClick={handleGenerate}
-          disabled={!canGenerate}
-          className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-medium text-sm rounded-md transition-colors"
-        >
-          {generating ? (
-            <>
-              <Spinner />
-              Generating…
-            </>
-          ) : (
-            <>
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-              </svg>
-              Generate Schedule
-            </>
-          )}
-        </button>
+            <button
+              onClick={handleGenerate}
+              disabled={!canGenerate}
+              className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-medium text-sm rounded-md transition-colors"
+            >
+              {generating ? (
+                <>
+                  <Spinner />
+                  {countdown !== null
+                    ? `Solving… ${Math.floor(countdown / 60)}:${String(countdown % 60).padStart(2, '0')}`
+                    : 'Generating…'
+                  }
+                </>
+              ) : (
+                <>
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                  </svg>
+                  Generate Schedule
+                </>
+              )}
+            </button>
 
-        {importResult && (
-          <span className={`ml-auto text-sm font-medium ${validCount === totalCount ? 'text-emerald-600' : 'text-amber-600'}`}>
-            {validCount}/{totalCount} physicians valid
-          </span>
+            {importResult && (
+              <span className={`ml-auto text-sm font-medium ${validCount === totalCount ? 'text-emerald-600' : 'text-amber-600'}`}>
+                {validCount}/{totalCount} physicians valid
+              </span>
+            )}
+          </>
         )}
       </div>
     </div>

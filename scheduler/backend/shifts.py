@@ -59,7 +59,7 @@ _START_HOURS: dict[str, int] = {
     "2400h": 24,   # midnight; kept as 24 so spacing is always positive
 }
 
-_MIN_HOURS_BETWEEN_SHIFTS = 22
+_MIN_HOURS_BETWEEN_SHIFTS = 23
 
 
 # --------------------------------------------------------------------------- #
@@ -99,7 +99,7 @@ def hours_between(earlier: Shift, later: Shift) -> float:
 def is_spacing_ok(prev_shift: Shift, next_shift: Shift) -> bool:
     """
     Return True if assigning *next_shift* on the day after *prev_shift*
-    respects the 22-hour minimum gap between start times.
+    respects the 23-hour minimum gap between start times.
     """
     return hours_between(prev_shift, next_shift) >= _MIN_HOURS_BETWEEN_SHIFTS
 

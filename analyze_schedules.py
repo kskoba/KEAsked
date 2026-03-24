@@ -1,9 +1,529 @@
 import sys
 sys.stdout.reconfigure(encoding='utf-8')
 
+# ============================================================
+# JUNE 2026 SCHEDULE COMPARISON: AI (CP-SAT) vs HUMAN
+# ============================================================
+
 import openpyxl
 from collections import defaultdict
-from datetime import date, timedelta
+import math
+import yaml
+
+
+def parse_all_slots(path):
+    wb = openpyxl.load_workbook(path)
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    all_slots = []
+    day_cols = {}
+    i = 0
+    while i < len(rows):
+        row = rows[i]
+        v1 = str(row[1]).strip() if row[1] is not None else ''
+        if v1 in ('SUN', 'MON'):
+            day_row = rows[i+1] if i+1 < len(rows) else row
+            day_cols = {}
+            for ci, val in enumerate(day_row):
+                if val is None:
+                    continue
+                try:
+                    day_cols[ci] = int(float(str(val)))
+                except Exception:
+                    pass
+            i += 2
+            continue
+        v0 = str(row[0]).strip() if row[0] is not None else ''
+        is_time = (len(v0) >= 4 and '-' in v0 and any(c.isdigit() for c in v0[:4]))
+        if v0 and not is_time and v0 not in ('None', ''):
+            if i+1 < len(rows):
+                next_v0 = str(rows[i+1][0]).strip() if rows[i+1][0] is not None else ''
+                next_is_time = (len(next_v0) >= 4 and '-' in next_v0 and any(c.isdigit() for c in next_v0[:4]))
+                if next_is_time:
+                    for ci in day_cols:
+                        physician = row[ci] if ci < len(row) else None
+                        p = str(physician).strip() if physician is not None else None
+                        if p in ('None', '', '---', None):
+                            p = None
+                        all_slots.append({
+                            'date': day_cols[ci],
+                            'slot': v0.strip(),
+                            'physician': p,
+                            'shift_time': next_v0
+                        })
+                    i += 2
+                    continue
+        i += 1
+    return all_slots
+
+
+def load_requested(path):
+    wb = openpyxl.load_workbook(path)
+    ws = wb['Preferences']
+    rows = list(ws.iter_rows(values_only=True))
+    requested = {}
+    for row in rows[1:]:
+        if row[0] and row[1] and '2026-06' in str(row[1]):
+            physician = str(row[0]).strip()
+            if physician not in requested and row[4] is not None:
+                requested[physician] = int(row[4])
+    return requested
+
+
+def classify_group(shift_time, slot):
+    if slot in ('DOC', 'Day On Call'):
+        return 'A'
+    if slot in ('NOC', 'Night On Call'):
+        return 'B'
+    st = shift_time.replace(' ', '') if shift_time else ''
+    try:
+        start = int(st.split('-')[0][:4])
+    except Exception:
+        return 'A'
+    if start >= 1600:
+        return 'B'
+    return 'A'
+
+
+def find_singletons(assignments):
+    doc_day = defaultdict(lambda: defaultdict(list))
+    for a in assignments:
+        doc_day[a['physician']][a['date']].append(a)
+    singletons = []
+    for doc, days in doc_day.items():
+        sorted_dates = sorted(days.keys())
+        for i, d in enumerate(sorted_dates):
+            prev_d = sorted_dates[i-1] if i > 0 else None
+            next_d = sorted_dates[i+1] if i+1 < len(sorted_dates) else None
+            has_prev = (prev_d == d - 1)
+            has_next = (next_d == d + 1)
+            if not has_prev and not has_next:
+                singletons.append({'physician': doc, 'date': d})
+    return singletons
+
+
+def find_consecutive_violations(assignments, physician_max_map):
+    doc_day = defaultdict(set)
+    for a in assignments:
+        doc_day[a['physician']].add(a['date'])
+    violations = []
+    for doc, days in doc_day.items():
+        sorted_dates = sorted(days)
+        max_consec = physician_max_map.get(doc, 3)
+        run_len = 1
+        run_start = sorted_dates[0]
+        for i in range(1, len(sorted_dates)):
+            if sorted_dates[i] == sorted_dates[i-1] + 1:
+                run_len += 1
+            else:
+                if run_len > max_consec:
+                    violations.append({
+                        'physician': doc, 'start': run_start,
+                        'length': run_len, 'max': max_consec
+                    })
+                run_len = 1
+                run_start = sorted_dates[i]
+        if run_len > max_consec:
+            violations.append({
+                'physician': doc, 'start': run_start,
+                'length': run_len, 'max': max_consec
+            })
+    return violations
+
+
+# Load data
+ai_all = parse_all_slots(r'C:/Users/kskob/Dropbox/KEAclaude/KEAsked/Request-Imports/cpsat-schedule.xlsx')
+hu_all = parse_all_slots(r'C:/Users/kskob/Dropbox/KEAclaude/KEAsked/Request-Imports/June26-complete.xlsx')
+ai_raw = [a for a in ai_all if a['physician']]
+hu_raw = [a for a in hu_all if a['physician']]
+
+name_map_hu = {
+    'Lam N': 'N Lam', 'Hanson A': 'Amanda Hanson', 'Chang J': 'J Chang',
+    'MacKenzie': 'macKenzie', 'Yeung, Aref': 'Aref Yeung', 'Scheirer R': 'R Scheirer',
+    'Dong S': 'Dong', 'Yeung, Alex': 'Alex Yeung', 'Chang E': 'E Chang',
+    'Braun': 'BRAUN', 'Brown F': 'FBrown', 'Brown T': 'TBrown',
+    'Scheirer O': 'O Scheirer', 'Peterson C': 'Peterson', 'Zhang': 'ZHANG',
+}
+
+for a in hu_raw:
+    a['physician'] = name_map_hu.get(a['physician'].strip(), a['physician'].strip())
+
+requested_shifts = load_requested(
+    r'C:/Users/kskob/Dropbox/KEAclaude/KEAsked/Request-Imports/SingleJune.xlsx'
+)
+
+for a in ai_raw:
+    a['group'] = classify_group(a['shift_time'], a['slot'])
+for a in hu_raw:
+    a['group'] = classify_group(a['shift_time'], a['slot'])
+
+with open(r'C:/Users/kskob/Dropbox/KEAclaude/KEAsked/scheduler/config/physicians.yaml', 'r') as f:
+    yaml_data = yaml.safe_load(f)
+physician_max_yaml = {}
+for p in yaml_data['physicians']:
+    physician_max_yaml[p['name']] = p['scheduling'].get('max_consecutive_shifts', 3)
+
+yaml_name_map = {
+    'Amanda Hanson': 'Amanda Hanson', 'Aref Yeung': 'Aref Yeung',
+    'BRAUN': 'Braun', 'Alex Yeung': 'Yeung Alex', 'ZHANG': 'Zhang',
+    'macKenzie': 'Mackenzie', 'N Lam': 'Lam N', 'Lam-Rico': 'Lam-Rico',
+    'FBrown': 'Brown F', 'TBrown': 'Brown T', 'R Scheirer': 'R Scheirer',
+    'O Scheirer': 'O Scheirer', 'E Chang': 'E Chang', 'J Chang': 'J Chang',
+    'Skoblenick': 'Kevin Skoblenick',
+}
+
+
+def get_max_consec(doc):
+    if doc in physician_max_yaml:
+        return physician_max_yaml[doc]
+    mapped = yaml_name_map.get(doc, doc)
+    return physician_max_yaml.get(mapped, 3)
+
+
+ai_doc_max = {doc: get_max_consec(doc) for doc in set(a['physician'] for a in ai_raw)}
+hu_doc_max = {doc: get_max_consec(doc) for doc in set(a['physician'] for a in hu_raw)}
+
+ai_counts = defaultdict(int)
+for a in ai_raw:
+    ai_counts[a['physician']] += 1
+hu_counts = defaultdict(int)
+for a in hu_raw:
+    hu_counts[a['physician']] += 1
+
+ai_total = len(ai_all)
+ai_filled_n = len(ai_raw)
+ai_unfilled_n = ai_total - ai_filled_n
+hu_total = len(hu_all)
+hu_filled_n = len(hu_raw)
+hu_unfilled_n = hu_total - hu_filled_n
+ai_unfilled_slots = [(a['date'], a['slot'], a['shift_time']) for a in ai_all if not a['physician']]
+hu_unfilled_slots = [(a['date'], a['slot'], a['shift_time']) for a in hu_all if not a['physician']]
+
+all_physicians = sorted(set(list(ai_counts.keys()) + list(hu_counts.keys()) + list(requested_shifts.keys())))
+discrepancies = []
+for doc in all_physicians:
+    req = requested_shifts.get(doc, None)
+    hc = hu_counts.get(doc, 0)
+    ac = ai_counts.get(doc, 0)
+    h_diff = hc - req if req is not None else None
+    a_diff = ac - req if req is not None else None
+    discrepancies.append((doc, req, hc, ac, h_diff, a_diff))
+
+discrepancies_sorted = sorted(
+    discrepancies, key=lambda x: abs(x[5]) if x[5] is not None else 0, reverse=True
+)
+n_with_req = sum(1 for d, r, h, a, hd, ad in discrepancies if r is not None)
+ai_at_req = sum(1 for d, r, h, a, hd, ad in discrepancies if r is not None and ad == 0)
+hu_at_req = sum(1 for d, r, h, a, hd, ad in discrepancies if r is not None and hd == 0)
+ai_rmse_shifts = math.sqrt(
+    sum(ad**2 for _, r, h, a, hd, ad in discrepancies if r is not None and ad is not None) / n_with_req
+)
+hu_rmse_shifts = math.sqrt(
+    sum(hd**2 for _, r, h, a, hd, ad in discrepancies if r is not None and hd is not None) / n_with_req
+)
+
+
+def ab_breakdown(assignments):
+    counts = defaultdict(lambda: {'A': 0, 'B': 0})
+    for a in assignments:
+        counts[a['physician']][a['group']] += 1
+    return counts
+
+
+ai_ab = ab_breakdown(ai_raw)
+hu_ab = ab_breakdown(hu_raw)
+all_docs = sorted(set(list(ai_ab.keys()) + list(hu_ab.keys())))
+
+ab_data = []
+for doc in all_docs:
+    ha = hu_ab[doc]['A']
+    hb = hu_ab[doc]['B']
+    aa = ai_ab[doc]['A']
+    ab2 = ai_ab[doc]['B']
+    h_pct = ha / (ha+hb) * 100 if (ha+hb) > 0 else None
+    a_pct = aa / (aa+ab2) * 100 if (aa+ab2) > 0 else None
+    ai_gap = abs(a_pct - 40) if a_pct is not None else 999
+    hu_gap = abs(h_pct - 40) if h_pct is not None else 999
+    ab_data.append((doc, h_pct, a_pct, ai_gap, hu_gap))
+
+ab_data_sorted = sorted(ab_data, key=lambda x: x[3], reverse=True)
+valid_ai_ab = [x for x in ab_data if x[3] < 999]
+valid_hu_ab = [x for x in ab_data if x[4] < 999]
+ai_rmse_ab = math.sqrt(sum(x[3]**2 for x in valid_ai_ab) / len(valid_ai_ab))
+hu_rmse_ab = math.sqrt(sum(x[4]**2 for x in valid_hu_ab) / len(valid_hu_ab))
+ai_allA = sum(1 for d, hp, ap, aig, hug in ab_data if ap is not None and ap == 100)
+ai_allB = sum(1 for d, hp, ap, aig, hug in ab_data if ap is not None and ap == 0)
+hu_allA = sum(1 for d, hp, ap, aig, hug in ab_data if hp is not None and hp == 100)
+hu_allB = sum(1 for d, hp, ap, aig, hug in ab_data if hp is not None and hp == 0)
+
+ai_singletons = find_singletons(ai_raw)
+hu_singletons = find_singletons(hu_raw)
+ai_sing_counts = defaultdict(int)
+for s in ai_singletons:
+    ai_sing_counts[s['physician']] += 1
+hu_sing_counts = defaultdict(int)
+for s in hu_singletons:
+    hu_sing_counts[s['physician']] += 1
+
+ai_violations = find_consecutive_violations(ai_raw, ai_doc_max)
+hu_violations = find_consecutive_violations(hu_raw, hu_doc_max)
+
+SEP = "=" * 72
+
+# ─── SECTION 1 ─────────────────────────────────────────────────────────────
+
+# Use the intersection of slot types so both schedules are measured on identical
+# shift categories — this excludes AM/PM CALL (human-only) and any slot types
+# present in the AI Excel but absent from the human schedule, giving a fair denominator.
+_ai_slot_types = {a['slot'] for a in ai_all}
+_hu_slot_types = {a['slot'] for a in hu_all}
+_common_slot_types = _ai_slot_types & _hu_slot_types
+_ai_only_slots = _ai_slot_types - _hu_slot_types
+_hu_only_slots = _hu_slot_types - _ai_slot_types
+ai_common = [a for a in ai_all if a['slot'] in _common_slot_types]
+hu_common = [a for a in hu_all if a['slot'] in _common_slot_types]
+ai_com_fill = len([a for a in ai_common if a['physician']])
+hu_com_fill = len([a for a in hu_common if a['physician']])
+
+print(SEP)
+print("JUNE 2026 SCHEDULE COMPARISON: AI (CP-SAT) vs HUMAN (GOLD STANDARD)")
+print(SEP)
+print()
+print(SEP)
+print("SECTION 1: FILL RATE")
+print(SEP)
+if _ai_only_slots:
+    print(f"NOTE: AI-only slot types (excluded from common comparison): {sorted(_ai_only_slots)}")
+if _hu_only_slots:
+    print(f"NOTE: Human-only slot types (excluded from common comparison): {sorted(_hu_only_slots)}")
+print()
+print(f"{'Metric':<40} {'AI':>12} {'Human':>12}")
+print("-" * 66)
+print(f"{'Total defined slots (raw)':<40} {ai_total:>12} {hu_total:>12}")
+print(f"{'Common slot types (shared base)':<40} {len(ai_common):>12} {len(hu_common):>12}")
+print(f"{'Filled (common slots)':<40} {ai_com_fill:>12} {hu_com_fill:>12}")
+print(f"{'Unfilled (common slots)':<40} {len(ai_common)-ai_com_fill:>12} {len(hu_common)-hu_com_fill:>12}")
+ai_cfr = str(round(ai_com_fill/len(ai_common)*100, 1)) + '%'
+hu_cfr = str(round(hu_com_fill/len(hu_common)*100, 1)) + '%'
+print(f"{'Fill rate (common slots)':<40} {ai_cfr:>12} {hu_cfr:>12}")
+ai_unfilled_common = [(a['date'], a['slot'], a['shift_time']) for a in ai_common if not a['physician']]
+hu_unfilled_common = [(a['date'], a['slot'], a['shift_time']) for a in hu_common if not a['physician']]
+print(f"\nAI unfilled common slots ({len(ai_unfilled_common)}):")
+for u in sorted(ai_unfilled_common, key=lambda x: x[0]):
+    print(f"  Day {u[0]:2d}  {u[1]:<15}  {u[2]}")
+print(f"\nHuman unfilled common slots ({len(hu_unfilled_common)}):")
+for u in sorted(hu_unfilled_common, key=lambda x: x[0]):
+    print(f"  Day {u[0]:2d}  {u[1]:<15}  {u[2]}")
+
+# ─── SECTION 2 ─────────────────────────────────────────────────────────────
+
+print()
+print(SEP)
+print("SECTION 2: PER-PHYSICIAN SHIFT COUNT")
+print(SEP)
+print(f"{'Physician':<22} {'Req':>4} {'Human':>6} {'AI':>4} {'H-Req':>6} {'AI-Req':>7}")
+print("-" * 55)
+for doc, req, hc, ac, hd, ad in discrepancies_sorted:
+    if req is None:
+        continue
+    hd_s = ('+' + str(hd) if hd >= 0 else str(hd)) if hd is not None else 'N/A'
+    ad_s = ('+' + str(ad) if ad >= 0 else str(ad)) if ad is not None else 'N/A'
+    flag = '  ***' if ad is not None and abs(ad) >= 3 else ''
+    print(f"{doc:<22} {req:>4} {hc:>6} {ac:>4} {hd_s:>6} {ad_s:>7}{flag}")
+print()
+print(f"Physicians at exact requested count:  AI={ai_at_req}/{n_with_req}  Human={hu_at_req}/{n_with_req}")
+print(f"Shift count RMSE:  AI={ai_rmse_shifts:.2f}  Human={hu_rmse_shifts:.2f}")
+
+# ─── SECTION 3 ─────────────────────────────────────────────────────────────
+
+print()
+print(SEP)
+print("SECTION 3: GROUP A/B BALANCE (Target 40%A / 60%B)")
+print(SEP)
+print("Group A = day shifts (start < 1600), Group B = evening/night (start >= 1600)")
+print()
+print(f"{'Physician':<22} {'HU %A':>7} {'AI %A':>7} {'HU gap':>7} {'AI gap':>7}")
+print("-" * 57)
+for doc, hp, ap, ai_gap, hu_gap in ab_data_sorted:
+    hp_s = (str(round(hp, 1)) + '%') if hp is not None else 'N/A'
+    ap_s = (str(round(ap, 1)) + '%') if ap is not None else 'N/A'
+    agu = (str(round(ai_gap, 1)) + '%') if ai_gap < 999 else 'N/A'
+    hgu = (str(round(hu_gap, 1)) + '%') if hu_gap < 999 else 'N/A'
+    flag = '  <--' if ai_gap > 40 else ''
+    print(f"{doc:<22} {hp_s:>7} {ap_s:>7} {hgu:>7} {agu:>7}{flag}")
+print()
+print(f"A/B RMSE from 40%:  AI={ai_rmse_ab:.2f}%  Human={hu_rmse_ab:.2f}%")
+print(f"100% Group A (day-only):  AI={ai_allA}  Human={hu_allA}")
+print(f"100% Group B (night-only):  AI={ai_allB}  Human={hu_allB}")
+
+# ─── SECTION 4 ─────────────────────────────────────────────────────────────
+
+print()
+print(SEP)
+print("SECTION 4: SINGLETON ANALYSIS")
+print(SEP)
+print(f"Total singletons:  AI={len(ai_singletons)}  Human={len(hu_singletons)}")
+all_sing_docs = sorted(
+    set(list(ai_sing_counts.keys()) + list(hu_sing_counts.keys())),
+    key=lambda d: ai_sing_counts.get(d, 0) - hu_sing_counts.get(d, 0),
+    reverse=True
+)
+print(f"\n{'Physician':<22} {'Human':>6} {'AI':>4} {'Diff':>6}")
+print("-" * 42)
+for doc in all_sing_docs:
+    ac = ai_sing_counts.get(doc, 0)
+    hc = hu_sing_counts.get(doc, 0)
+    if ac > 0 or hc > 0:
+        diff_s = ('+' + str(ac-hc) if ac-hc >= 0 else str(ac-hc))
+        print(f"{doc:<22} {hc:>6} {ac:>4} {diff_s:>6}")
+
+# ─── SECTION 5 ─────────────────────────────────────────────────────────────
+
+print()
+print(SEP)
+print("SECTION 5: CONSECUTIVE VIOLATIONS")
+print(SEP)
+print(f"AI violations: {len(ai_violations)}")
+for v in sorted(ai_violations, key=lambda x: x['length'], reverse=True):
+    print(f"  {v['physician']:<22}  run={v['length']} days (max={v['max']}) start=day {v['start']}")
+print(f"\nHuman violations: {len(hu_violations)}")
+for v in sorted(hu_violations, key=lambda x: x['length'], reverse=True):
+    print(f"  {v['physician']:<22}  run={v['length']} days (max={v['max']}) start=day {v['start']}")
+
+# ─── SECTION 6 ─────────────────────────────────────────────────────────────
+
+print()
+print(SEP)
+print("SECTION 6: KEY STRUCTURAL DIFFERENCES")
+print(SEP)
+
+ai_late_unfilled = [a for a in ai_all if a['date'] >= 20 and not a['physician']]
+hu_late_unfilled = [a for a in hu_all if a['date'] >= 20 and not a['physician']]
+ai_late_all = [a for a in ai_raw if a['date'] >= 20]
+hu_late_all = [a for a in hu_raw if a['date'] >= 20]
+print(f"Late-month (days 20-30) coverage:")
+print(f"  AI:    {len(ai_late_all)} filled, {len(ai_late_unfilled)} unfilled slots")
+print(f"  Human: {len(hu_late_all)} filled, {len(hu_late_unfilled)} unfilled slots")
+
+ai_2400 = [a for a in ai_raw if '2400' in str(a['shift_time'])]
+hu_2400 = [a for a in hu_raw if '2400' in str(a['shift_time'])]
+print(f"\n2400h shift totals:  AI={len(ai_2400)}  Human={len(hu_2400)}")
+
+ai_2400_by_doc = defaultdict(int)
+for a in ai_2400:
+    ai_2400_by_doc[a['physician']] += 1
+hu_2400_by_doc = defaultdict(int)
+for a in hu_2400:
+    hu_2400_by_doc[a['physician']] += 1
+
+top_2400 = sorted(
+    set(list(ai_2400_by_doc.keys()) + list(hu_2400_by_doc.keys())),
+    key=lambda d: ai_2400_by_doc.get(d, 0) + hu_2400_by_doc.get(d, 0),
+    reverse=True
+)[:15]
+print(f"\n{'Physician':<22} {'AI 2400':>8} {'HU 2400':>9}")
+print("-" * 42)
+for doc in top_2400:
+    print(f"{doc:<22} {ai_2400_by_doc.get(doc,0):>8} {hu_2400_by_doc.get(doc,0):>9}")
+
+ai_end_docs = set(a['physician'] for a in ai_raw if a['date'] >= 25)
+hu_end_docs = set(a['physician'] for a in hu_raw if a['date'] >= 25)
+missing_late = hu_end_docs - ai_end_docs
+print(f"\nPhysicians in Human days 25-30 but MISSING from AI days 25-30:")
+for doc in sorted(missing_late):
+    print(f"  {doc}")
+
+print("\n2400h night clustering:")
+for label, raw2 in [("AI", ai_raw), ("Human", hu_raw)]:
+    night_by_doc = defaultdict(list)
+    for a in raw2:
+        if '2400' in str(a['shift_time']):
+            night_by_doc[a['physician']].append(a['date'])
+    clustered = 0
+    isolated = 0
+    for doc2, dates2 in night_by_doc.items():
+        sorted_d = sorted(dates2)
+        for i, d in enumerate(sorted_d):
+            prev2 = sorted_d[i-1] if i > 0 else None
+            nxt2 = sorted_d[i+1] if i+1 < len(sorted_d) else None
+            if prev2 == d-1 or nxt2 == d+1:
+                clustered += 1
+            else:
+                isolated += 1
+    total = clustered + isolated
+    if total > 0:
+        print(f"  {label}: {total} 2400h slots -- {clustered} clustered ({round(clustered/total*100)}%), "
+              f"{isolated} isolated ({round(isolated/total*100)}%)")
+
+# ─── SECTION 7 ─────────────────────────────────────────────────────────────
+
+print()
+print(SEP)
+print("SECTION 7: SUMMARY TABLE")
+print(SEP)
+print(f"{'Metric':<45} {'AI':>12} {'Human':>12}")
+print("-" * 72)
+print(f"{'Total defined slots':<45} {ai_total:>12} {hu_total:>12}")
+print(f"{'Filled slots':<45} {ai_filled_n:>12} {hu_filled_n:>12}")
+print(f"{'Unfilled slots':<45} {ai_unfilled_n:>12} {hu_unfilled_n:>12}")
+print(f"{'Common-slot fill rate':<45} {ai_cfr:>12} {hu_cfr:>12}")
+print(f"{'Total singletons':<45} {len(ai_singletons):>12} {len(hu_singletons):>12}")
+at_ai = str(ai_at_req) + '/' + str(n_with_req)
+at_hu = str(hu_at_req) + '/' + str(n_with_req)
+print(f"{'Physicians at exact requested count':<45} {at_ai:>12} {at_hu:>12}")
+print(f"{'Shift count RMSE':<45} {round(ai_rmse_shifts,2):>12} {round(hu_rmse_shifts,2):>12}")
+ai_ab_s = str(round(ai_rmse_ab, 2)) + '%'
+hu_ab_s = str(round(hu_rmse_ab, 2)) + '%'
+print(f"{'A/B balance RMSE from 40%':<45} {ai_ab_s:>12} {hu_ab_s:>12}")
+print(f"{'Physicians 100% Group A (day-only)':<45} {ai_allA:>12} {hu_allA:>12}")
+print(f"{'Physicians 100% Group B (night-only)':<45} {ai_allB:>12} {hu_allB:>12}")
+print(f"{'Consecutive violations':<45} {len(ai_violations):>12} {len(hu_violations):>12}")
+print(f"{'Late-month (20-30) unfilled slots':<45} {len(ai_late_unfilled):>12} {len(hu_late_unfilled):>12}")
+
+# ─── SECTION 8 ─────────────────────────────────────────────────────────────
+
+print()
+print(SEP)
+print("SECTION 8: WHAT THE AI SHOULD LEARN FROM THE HUMAN SCHEDULE")
+print(SEP)
+
+lam_ai = [a for a in ai_raw if a['physician'] == 'Lam-Rico']
+lam_hu = [a for a in hu_raw if a['physician'] == 'Lam-Rico']
+lam_ai_dates = sorted(set(a['date'] for a in lam_ai))
+lam_hu_dates = sorted(set(a['date'] for a in lam_hu))
+print(f"1. Lam-Rico under-scheduling: Req=16, AI={len(lam_ai)} (-12!), Human={len(lam_hu)} (+3)")
+print(f"   AI dates:    {lam_ai_dates}")
+print(f"   Human dates: {lam_hu_dates}")
+
+print("\n2. Physicians with ZERO AI assignments but assigned by Human:")
+for doc in sorted(hu_counts.keys()):
+    if ai_counts.get(doc, 0) == 0 and hu_counts[doc] > 0:
+        print(f"   {doc:<22} Human={hu_counts[doc]}")
+
+print("\n3. Physicians over-assigned by AI vs requested (AI-Req >= +3):")
+for doc, req, hc, ac, hd, ad in discrepancies_sorted:
+    if req is not None and ad is not None and ad >= 3:
+        print(f"   {doc:<22} Req={req} AI={ac} Human={hc} (over by {ad})")
+
+print("\n4. Physicians under-assigned by AI vs requested (AI-Req <= -3):")
+for doc, req, hc, ac, hd, ad in discrepancies_sorted:
+    if req is not None and ad is not None and ad <= -3:
+        print(f"   {doc:<22} Req={req} AI={ac} Human={hc} (under by {abs(ad)})")
+
+print("\n5. Day-only physicians in AI (should have ~40% night shifts):")
+day_only_big = [
+    (doc, hp, ap, aig, hug) for doc, hp, ap, aig, hug in ab_data
+    if ap is not None and ap == 100 and (ai_ab[doc]['A'] + ai_ab[doc]['B']) >= 5
+]
+for doc, hp, ap, aig, hug in sorted(day_only_big, key=lambda x: ai_ab[x[0]]['A'], reverse=True)[:12]:
+    total = ai_ab[doc]['A'] + ai_ab[doc]['B']
+    hp_s = str(round(hp, 0)) + '%' if hp is not None else 'N/A'
+    print(f"   {doc:<22} {total} shifts, 100% day -- Human had {hp_s} day")
+
+print()
+print(SEP)
+print("ANALYSIS COMPLETE")
+print(SEP)
 
 TIME_MAP = {
     '0600-1200': '0600h',

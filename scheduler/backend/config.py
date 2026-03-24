@@ -91,6 +91,32 @@ class PhysicianConfig:
     # If True, requested dates+shifts are treated as near-mandatory (high score bonus).
     honor_all_requests: bool = False
 
+    # If True, solver will not penalise isolated 2400h nights for this physician
+    # (i.e. singleton midnight shifts are acceptable / preferred).
+    prefer_singleton_nights: bool = False
+
+    # Shift-time restrictions: physician may never be assigned shifts at these
+    # start times (e.g. ["0600h", "2400h"]).
+    forbidden_shift_times: list[str] = field(default_factory=list)
+
+    # If True, physician cannot be assigned AM CALL (DOC) or PM CALL (NOC).
+    no_call: bool = False
+
+    # Soft preference: penalise Monday assignments (e.g. administrative days).
+    avoid_mondays: bool = False
+
+    # If True, physician must have the day off after any shift at 1600h, 1800h,
+    # or 2000h (late-shift rest privilege).
+    rest_after_late_shift: bool = False
+
+    # Max consecutive days that may have an 1800h shift (default 3 = no real
+    # limit for most; set to 2 for physicians who cannot work 1800h three days
+    # in a row).
+    max_consecutive_1800h: int = 3
+
+    # If True, hard-cap total shifts at shifts_requested rather than shifts_max.
+    cap_at_requested: bool = False
+
     # Validation rule overrides.
     # Keys: "min_valid_days" | "min_valid_blocks" | "min_weekend_days" | "min_anchored_days"
     # Values: int (replacement threshold) | None (disable rule)
@@ -153,6 +179,10 @@ def _parse_physician(raw: dict) -> PhysicianConfig:
         int(raw_max_weekends) if raw_max_weekends is not None else None
     )
 
+    # forbidden_shift_times
+    raw_forbidden_times: list = sched.get("forbidden_shift_times") or []
+    forbidden_shift_times = [str(t).strip() for t in raw_forbidden_times]
+
     return PhysicianConfig(
         id=str(raw["id"]),
         name=str(raw["name"]),
@@ -169,6 +199,13 @@ def _parse_physician(raw: dict) -> PhysicianConfig:
         prefer_weekends=bool(sched.get("prefer_weekends", False)),
         max_weekends=parsed_max_weekends,
         honor_all_requests=bool(sched.get("honor_all_requests", False)),
+        prefer_singleton_nights=bool(sched.get("prefer_singleton_nights", False)),
+        forbidden_shift_times=forbidden_shift_times,
+        no_call=bool(sched.get("no_call", False)),
+        avoid_mondays=bool(sched.get("avoid_mondays", False)),
+        rest_after_late_shift=bool(sched.get("rest_after_late_shift", False)),
+        max_consecutive_1800h=int(sched.get("max_consecutive_1800h", 3)),
+        cap_at_requested=bool(sched.get("cap_at_requested", False)),
     )
 
 

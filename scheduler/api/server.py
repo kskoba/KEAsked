@@ -31,6 +31,7 @@ from scheduler.api.schemas import (
     AdjustResponse,
     AssignmentSchema,
     CandidateSchema,
+    CandidatesResponse,
     DetectFlatResponse,
     GenerateCachedRequest,
     GenerateRequest,
@@ -43,6 +44,7 @@ from scheduler.api.schemas import (
     PhysicianInfo,
     PhysiciansResponse,
     ImportDirectoryResponse,
+    LoadScheduleRequest,
     ScheduleResponse,
     ScheduleStatsSchema,
     ShiftSchema,
@@ -58,6 +60,9 @@ from scheduler.backend.generator import (
     OnCallAssignment,
     ScheduleGenerator,
     ScheduleResult,
+    ScheduleStats,
+    UnfilledSlot,
+    _HARD_VIOLATION_RULES,
     generate_schedule,
 )
 try:
@@ -69,6 +74,15 @@ from scheduler.backend.importer import import_directory, import_single_file
 from scheduler.backend.importer_flat import import_flat_file
 from scheduler.backend.models import PhysicianSubmission
 from scheduler.backend.shifts import ALL_SHIFT_CODES, BLOCKS, SHIFT_TO_BLOCK, Shift
+
+
+def _v(v) -> ViolationSchema:
+    """Convert a ViolationReason to ViolationSchema, including is_hard flag."""
+    return ViolationSchema(
+        rule=v.rule,
+        description=v.description,
+        is_hard=v.rule in _HARD_VIOLATION_RULES,
+    )
 from scheduler.backend.validator import validate
 
 # ---------------------------------------------------------------------------
@@ -208,9 +222,10 @@ def _result_to_response(result: ScheduleResult) -> ScheduleResponse:
                         physician_id=c.physician_id,
                         physician_name=c.physician_name,
                         violations=[
-                            ViolationSchema(rule=v.rule, description=v.description)
+                            _v(v)
                             for v in c.violations
                         ],
+                        is_hard_blocked=c.is_hard_blocked,
                     )
                     for c in u.candidates
                 ],
@@ -229,6 +244,44 @@ def _result_to_response(result: ScheduleResult) -> ScheduleResponse:
             for oc in result.on_calls
         ],
     )
+
+
+# ---------------------------------------------------------------------------
+# Generator rebuild helper
+# ---------------------------------------------------------------------------
+
+def _require_generator() -> tuple:
+    """
+    Return (gen, result) from _state, rebuilding gen from cached submissions
+    if it was lost (e.g. after loading a schedule from file or server restart).
+
+    Raises HTTPException(400) if result or submissions are absent.
+    """
+    result: ScheduleResult | None = _state.get("result")
+    if result is None:
+        raise HTTPException(status_code=400, detail="No schedule in memory.")
+
+    gen: ScheduleGenerator | None = _state.get("generator")
+    if gen is not None:
+        return gen, result
+
+    # Generator absent — try to rebuild from cached submissions.
+    submissions: list[PhysicianSubmission] = _state.get("submissions") or []
+    if not submissions:
+        raise HTTPException(
+            status_code=400,
+            detail="No schedule in memory. Re-import physician preferences to enable this action.",
+        )
+    roster = _state.get("roster") or {}
+    cfg = _state.get("scheduler_config") or {}
+    if _CPSAT_AVAILABLE and os.environ.get("USE_CPSAT"):
+        gen = CpsatScheduleGenerator(submissions, roster, cfg)
+    else:
+        gen = ScheduleGenerator(submissions, roster, cfg)
+    for a in result.assignments:
+        gen._assign(a.physician_id, a.date, a.shift)
+    _state["generator"] = gen   # cache for subsequent calls
+    return gen, result
 
 
 # ---------------------------------------------------------------------------
@@ -363,13 +416,13 @@ async def generate(body: GenerateCachedRequest) -> ScheduleResponse:
     cfg = _state["scheduler_config"]
     use_cpsat = os.environ.get("USE_CPSAT", "0") == "1" and _CPSAT_AVAILABLE
     n_iterations = 400
-    cpsat_time_limit = 90.0
+    cpsat_time_limit = 600.0
 
     if use_cpsat:
         # CP-SAT: indeterminate progress — show 50% "Solving…" until done.
-        _state["progress"] = {"current": 50, "total": 100, "running": True, "best_unfilled": None}
+        _state["progress"] = {"current": 50, "total": 100, "running": True, "best_unfilled": None, "solver": "cpsat", "time_limit": int(cpsat_time_limit)}
     else:
-        _state["progress"] = {"current": 0, "total": n_iterations, "running": True, "best_unfilled": None}
+        _state["progress"] = {"current": 0, "total": n_iterations, "running": True, "best_unfilled": None, "solver": "greedy"}
 
     def progress_cb(current: int, total: int, best_score: float) -> None:
         _state["progress"]["current"] = current
@@ -760,6 +813,225 @@ def _build_export_workbook(result: ScheduleResult) -> openpyxl.Workbook:
     return wb
 
 
+# Reverse lookup: (site_label, time_label) -> (time_code, site_code)
+_EXPORT_SHIFT_LOOKUP: dict[tuple[str, str], tuple] = {
+    (site_label, time_label): (time_code, site_code)
+    for site_label, time_label, time_code, site_code in _EXPORT_SHIFTS
+}
+
+# Flat shift-code -> Shift object lookup (used by xlsx loader)
+_SHIFT_CODE_LOOKUP: dict[str, Shift] = {
+    shift.code: shift
+    for block in BLOCKS
+    for shift in block
+}
+
+
+def _parse_schedule_xlsx(path: Path, roster: dict) -> ScheduleResult:
+    """
+    Parse a previously exported schedule xlsx back into a ScheduleResult.
+
+    Reconstructs assignments, on-calls, unfilled slots, and stats.
+    Physician IDs are resolved from the roster by display name.
+    Fields not stored in the xlsx (solver_status, optimality_gap_pct,
+    candidate lists) are set to None / [].
+    """
+    wb = openpyxl.load_workbook(path, data_only=True)
+    ws = wb.active
+
+    # --- Year/month from sheet title (e.g. "2026-06") ---
+    try:
+        title = ws.title
+        year, month = int(title[:4]), int(title[5:7])
+    except Exception:
+        raise ValueError(
+            f"Cannot determine year/month from sheet title {ws.title!r}. "
+            "Expected format: YYYY-MM."
+        )
+
+    # --- Name → ID reverse lookup (case-insensitive fallback) ---
+    name_to_id: dict[str, str] = {}
+    for pid, cfg in roster.items():
+        name_to_id[cfg.name] = pid
+        name_to_id[cfg.name.lower()] = pid
+
+    def _resolve_id(name: str) -> str:
+        return (
+            name_to_id.get(name)
+            or name_to_id.get(name.lower())
+            or name
+        )
+
+    assignments: list[Assignment] = []
+    on_calls: list[OnCallAssignment] = []
+    unfilled: list[UnfilledSlot] = []
+
+    rows = list(ws.iter_rows(values_only=True))
+    i = 0
+    while i < len(rows):
+        row = rows[i]
+
+        # Detect week header: col B (index 1) == "SUN"
+        if row[1] != "SUN":
+            i += 1
+            continue
+
+        # Next row is the date number row
+        i += 1
+        if i >= len(rows):
+            break
+        date_row = rows[i]
+        col_to_date: dict[int, datetime.date] = {}
+        for c in range(1, 8):   # cols B–H → indices 1–7
+            val = date_row[c]
+            if val is not None and val != "":
+                try:
+                    col_to_date[c] = datetime.date(year, month, int(val))
+                except (ValueError, TypeError):
+                    pass
+
+        # Parse shift pairs until gap row or next week header
+        i += 1
+        while i < len(rows):
+            site_row = rows[i]
+
+            # Gap row (col A is None/empty) → end of week
+            if site_row[0] is None or str(site_row[0]).strip() == "":
+                i += 1
+                break
+
+            # site_row is Row A of a shift pair; next row is Row B (time label)
+            i += 1
+            if i >= len(rows):
+                break
+            time_row = rows[i]
+            i += 1
+
+            site_label = str(site_row[0]).strip()
+            time_label = str(time_row[0]).strip() if time_row[0] is not None else ""
+
+            entry = _EXPORT_SHIFT_LOOKUP.get((site_label, time_label))
+            if not entry:
+                continue
+            time_code, site_code = entry
+
+            for c, d in col_to_date.items():
+                cell_val = site_row[c]
+                name = str(cell_val).strip() if cell_val is not None else ""
+
+                if time_code is None:
+                    # On-call row (DOC / NOC)
+                    if name and name not in ("", "---", "None"):
+                        on_calls.append(OnCallAssignment(
+                            date=d,
+                            call_type=site_label,
+                            physician_id=_resolve_id(name),
+                            physician_name=name,
+                        ))
+                else:
+                    shift_code = f"{time_code} {site_code}"
+                    shift = _SHIFT_CODE_LOOKUP.get(shift_code)
+                    if shift is None:
+                        continue
+                    if name and name not in ("", "---", "None"):
+                        assignments.append(Assignment(
+                            date=d,
+                            shift=shift,
+                            physician_id=_resolve_id(name),
+                            physician_name=name,
+                        ))
+                    else:
+                        unfilled.append(UnfilledSlot(date=d, shift=shift, candidates=[]))
+
+    # --- Compute stats from reconstructed assignments ---
+    filled = len(assignments)
+    total = filled + len(unfilled)
+    group_a = sum(1 for a in assignments if a.shift.site_group.value == "A")
+    group_b = filled - group_a
+
+    physician_counts: dict[str, int] = {}
+    for a in assignments:
+        physician_counts[a.physician_id] = physician_counts.get(a.physician_id, 0) + 1
+
+    # Singleton 2400h detection (isolated night = no adjacent night within 1 day)
+    nights_by_pid: dict[str, list[datetime.date]] = {}
+    for a in assignments:
+        if a.shift.time == "2400h":
+            nights_by_pid.setdefault(a.physician_id, []).append(a.date)
+    physician_singletons: dict[str, int] = {}
+    for pid, dates in nights_by_pid.items():
+        dates_sorted = sorted(dates)
+        count = sum(
+            1 for j, d in enumerate(dates_sorted)
+            if not (j > 0 and (d - dates_sorted[j - 1]).days == 1)
+            and not (j < len(dates_sorted) - 1 and (dates_sorted[j + 1] - d).days == 1)
+        )
+        if count:
+            physician_singletons[pid] = count
+
+    stats = ScheduleStats(
+        total_slots=total,
+        filled_slots=filled,
+        unfilled_slots=len(unfilled),
+        group_a_count=group_a,
+        group_b_count=group_b,
+        group_a_pct=round(group_a / filled, 3) if filled else 0.0,
+        group_b_pct=round(group_b / filled, 3) if filled else 0.0,
+        physician_counts=physician_counts,
+        physician_singletons=physician_singletons,
+        solver_status=None,
+        optimality_gap_pct=None,
+    )
+
+    return ScheduleResult(
+        year=year,
+        month=month,
+        assignments=assignments,
+        unfilled=unfilled,
+        issues=[],
+        stats=stats,
+        on_calls=on_calls,
+    )
+
+
+@app.post("/api/load-schedule", response_model=ScheduleResponse)
+def load_schedule(body: LoadScheduleRequest) -> ScheduleResponse:
+    """
+    Load a previously exported schedule xlsx and make it the active schedule.
+
+    Manual assignment and swap endpoints require a generator (built during
+    normal import+generate). When loading from file, those features show an
+    error asking the user to re-import and regenerate.
+    """
+    fp = Path(body.file)
+    if not fp.is_file():
+        raise HTTPException(status_code=400, detail=f"File not found: {body.file}")
+    if fp.suffix.lower() != ".xlsx":
+        raise HTTPException(status_code=400, detail="File must be an .xlsx file.")
+
+    roster = _state.get("roster") or {}
+    if not roster:
+        try:
+            roster = load_roster()
+            _state["roster"] = roster
+        except Exception:
+            roster = {}
+
+    try:
+        result = _parse_schedule_xlsx(fp, roster)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to parse schedule: {exc}")
+
+    _state["result"] = result
+    _state["year"] = result.year
+    _state["month"] = result.month
+    # Do not clear generator — if the user previously imported for this month,
+    # manual assignment will still work. If months differ, the generator will
+    # be wrong but the assign endpoint guards against that.
+
+    return _result_to_response(result)
+
+
 @app.post("/api/assign", response_model=ManualAssignResponse)
 def manual_assign(body: ManualAssignRequest) -> ManualAssignResponse:
     """
@@ -767,10 +1039,7 @@ def manual_assign(body: ManualAssignRequest) -> ManualAssignResponse:
     The assignment is force-applied even if rules are violated.
     Returns the list of rules that were broken for display.
     """
-    gen: ScheduleGenerator | None = _state.get("generator")
-    result: ScheduleResult | None = _state.get("result")
-    if gen is None or result is None:
-        raise HTTPException(status_code=400, detail="No schedule in memory. Generate first.")
+    gen, result = _require_generator()
 
     if body.shift_code not in ALL_SHIFT_CODES:
         raise HTTPException(status_code=400, detail=f"Unknown shift code: {body.shift_code!r}")
@@ -827,7 +1096,7 @@ def manual_assign(body: ManualAssignRequest) -> ManualAssignResponse:
 
     return ManualAssignResponse(
         success=True,
-        violations=[ViolationSchema(rule=v.rule, description=v.description) for v in violations],
+        violations=[_v(v) for v in violations],
         message=(
             f"Assigned {sub.physician_name} to {body.shift_code} on {body.date}."
             + (f" {len(violations)} rule(s) overridden." if violations else " No rule violations.")
@@ -841,10 +1110,7 @@ def check_violations(body: ManualAssignRequest):
     Check rule violations for assigning a physician to a slot WITHOUT assigning.
     Temporarily unassigns any current occupant for an accurate check, then restores.
     """
-    gen: ScheduleGenerator | None = _state.get("generator")
-    result: ScheduleResult | None = _state.get("result")
-    if gen is None or result is None:
-        raise HTTPException(status_code=400, detail="No schedule in memory.")
+    gen, result = _require_generator()
 
     if body.shift_code not in ALL_SHIFT_CODES:
         raise HTTPException(status_code=400, detail=f"Unknown shift code: {body.shift_code!r}")
@@ -884,9 +1150,77 @@ def check_violations(body: ManualAssignRequest):
 
     return {
         "violations": [
-            ViolationSchema(rule=v.rule, description=v.description) for v in violations
+            _v(v) for v in violations
         ]
     }
+
+
+@app.get("/api/candidates", response_model=CandidatesResponse)
+def get_candidates(date: str, shift_code: str) -> CandidatesResponse:
+    """
+    Recalculate fresh candidates for an unfilled slot.
+
+    Unlike the candidates embedded in the schedule response (which are computed
+    at generation time and can become stale after manual assignments), this
+    endpoint uses the live generator state so it correctly reflects any
+    assignments made since generation.
+
+    Hard violations (consecutive_limit, spacing_23h, already_assigned_today,
+    etc.) cause a physician to be excluded from the list entirely.
+    Only soft violations are returned as warnings.
+    """
+    gen, result = _require_generator()
+
+    if shift_code not in ALL_SHIFT_CODES:
+        raise HTTPException(status_code=400, detail=f"Unknown shift code: {shift_code!r}")
+
+    try:
+        d = datetime.date.fromisoformat(date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid date: {date!r}")
+
+    shift_obj: Shift | None = None
+    for block in BLOCKS:
+        for s in block:
+            if s.code == shift_code:
+                shift_obj = s
+                break
+        if shift_obj:
+            break
+
+    if shift_obj is None:
+        raise HTTPException(status_code=400, detail=f"Shift not found: {shift_code!r}")
+
+    # Temporarily unassign current occupant so the check is accurate for
+    # the "slot is empty" case — restoring afterwards.
+    existing = next(
+        (a for a in result.assignments if a.date == d and a.shift.code == shift_code),
+        None,
+    )
+    if existing:
+        gen._unassign(existing.physician_id, d, shift_obj)
+
+    candidates = gen._near_miss_candidates(d, shift_obj, max_n=20)
+
+    if existing:
+        gen._assign(existing.physician_id, d, shift_obj)
+
+    return CandidatesResponse(
+        date=date,
+        shift_code=shift_code,
+        candidates=[
+            CandidateSchema(
+                physician_id=c.physician_id,
+                physician_name=c.physician_name,
+                violations=[
+                    _v(v)
+                    for v in c.violations
+                ],
+                is_hard_blocked=c.is_hard_blocked,
+            )
+            for c in candidates
+        ],
+    )
 
 
 # ---------------------------------------------------------------------------

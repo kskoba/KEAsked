@@ -27,8 +27,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from scheduler.api.schemas import (
-    AdjustRequest,
-    AdjustResponse,
     AssignmentSchema,
     CandidateSchema,
     CandidatesResponse,
@@ -182,10 +180,6 @@ def _load_scheduler_config() -> dict:
     import os
     with _SCHEDULER_CONFIG_PATH.open(encoding="utf-8") as fh:
         cfg = yaml.safe_load(fh)
-    # Inject Anthropic API key from config into environment if not already set.
-    api_key = cfg.get("anthropic_api_key", "")
-    if api_key and not os.environ.get("ANTHROPIC_API_KEY"):
-        os.environ["ANTHROPIC_API_KEY"] = api_key
     return cfg
 
 
@@ -209,7 +203,6 @@ def _result_to_response(result: ScheduleResult) -> ScheduleResponse:
                 physician_id=a.physician_id,
                 physician_name=a.physician_name,
                 is_manual=a.is_manual,
-                is_claude=a.is_claude,
             )
             for a in result.assignments
         ],
@@ -274,7 +267,7 @@ def _require_generator() -> tuple:
         )
     roster = _state.get("roster") or {}
     cfg = _state.get("scheduler_config") or {}
-    if _CPSAT_AVAILABLE and os.environ.get("USE_CPSAT"):
+    if _CPSAT_AVAILABLE:
         gen = CpsatScheduleGenerator(submissions, roster, cfg)
     else:
         gen = ScheduleGenerator(submissions, roster, cfg)
@@ -414,7 +407,7 @@ async def generate(body: GenerateCachedRequest) -> ScheduleResponse:
 
     roster = _state["roster"]
     cfg = _state["scheduler_config"]
-    use_cpsat = os.environ.get("USE_CPSAT", "0") == "1" and _CPSAT_AVAILABLE
+    use_cpsat = _CPSAT_AVAILABLE
     n_iterations = 400
     cpsat_time_limit = 600.0
 
@@ -444,12 +437,6 @@ async def generate(body: GenerateCachedRequest) -> ScheduleResponse:
         # Post-solve repair: juggle adjacent assignments to fill remaining gaps
         if result.unfilled:
             result = await asyncio.to_thread(gen.repair_pass, result, 50)
-        # Claude-assisted global improvement (runs before on-calls so it can
-        # reshape the regular schedule; only active when use_claude=True).
-        if body.use_claude:
-            await asyncio.to_thread(
-                _claude_improve_schedule, result, gen, submissions, roster
-            )
         # Sync issues list: only keep entries for slots that remain unfilled
         # (repair pass and Claude may have filled slots that still appear in issues)
         unfilled_keys = {
@@ -480,164 +467,6 @@ def get_schedule() -> ScheduleResponse:
     return _result_to_response(result)
 
 
-@app.post("/api/adjust", response_model=AdjustResponse)
-async def adjust_schedule(body: AdjustRequest) -> AdjustResponse:
-    """
-    Apply a free-text scheduling instruction via Claude.
-    Example: "give Wittmeier 2 fewer shifts and give Lam-Rico 2 more shifts"
-    Returns the updated schedule plus lists of applied/rejected operations.
-    """
-    result: ScheduleResult | None = _state.get("result")
-    gen: ScheduleGenerator | None = _state.get("generator")
-    if result is None or gen is None:
-        raise HTTPException(status_code=404, detail="No schedule generated yet.")
-
-    client = _get_anthropic_client()
-    if client is None:
-        raise HTTPException(status_code=503, detail="Claude API unavailable.")
-
-    # Build compact schedule summary per physician
-    per_phys: dict[str, list] = {}
-    for a in result.assignments:
-        per_phys.setdefault(a.physician_name, []).append(
-            f"{a.date} {a.shift.code}"
-        )
-    summary_lines = [
-        f"  {name} ({len(shifts)} shifts): {', '.join(sorted(shifts))}"
-        for name, shifts in sorted(per_phys.items())
-    ]
-
-    prompt = (
-        f"You are adjusting an emergency physician schedule.\n\n"
-        f"INSTRUCTION: {body.instruction}\n\n"
-        f"CURRENT SCHEDULE:\n" + "\n".join(summary_lines) + "\n\n"
-        f"RULES:\n"
-        f"- 22h minimum gap between consecutive shifts for the same physician\n"
-        f"- No consecutive Group A (RAH A side / RAH B side) assignments\n"
-        f"- Respect physician availability\n\n"
-        f"Output one operation per line. Use exactly these formats:\n"
-        f"REMOVE: physician_name | YYYY-MM-DD | shift_code\n"
-        f"ADD: physician_name | YYYY-MM-DD | shift_code\n"
-        f"MOVE: physician_name | YYYY-MM-DD | shift_code | YYYY-MM-DD | shift_code\n\n"
-        f"Only suggest operations directly required by the instruction. "
-        f"For remove operations prefer shifts on non-weekend days. "
-        f"For add operations only use dates/shifts that appear in the schedule above.\n"
-    )
-
-    try:
-        message = client.messages.create(
-            model="claude-opus-4-6",
-            max_tokens=1024,
-            messages=[{"role": "user", "content": prompt}],
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Claude API error: {exc}")
-
-    applied: list[str] = []
-    rejected: list[str] = []
-
-    for line in message.content[0].text.splitlines():
-        line = line.strip()
-        uline = line.upper()
-        if uline.startswith("REMOVE:"):
-            parts = [p.strip() for p in line[7:].split("|")]
-            if len(parts) != 3:
-                rejected.append(f"Bad REMOVE format: {line}"); continue
-            name, date_str, code = parts
-            try:
-                d = datetime.date.fromisoformat(date_str)
-            except ValueError:
-                rejected.append(f"Bad date in: {line}"); continue
-            pid = next((p for p, s in gen.submissions.items()
-                        if s.physician_name.lower() == name.lower()), None)
-            if pid is None:
-                rejected.append(f"Unknown physician: {name}"); continue
-            existing = next((a for a in result.assignments
-                             if a.physician_id == pid and a.date == d and a.shift.code == code), None)
-            if existing is None:
-                rejected.append(f"Assignment not found: {name} {date_str} {code}"); continue
-            gen._unassign(pid, d, existing.shift)
-            result.assignments = [a for a in result.assignments
-                                   if not (a.physician_id == pid and a.date == d and a.shift.code == code)]
-            applied.append(f"Removed {name} from {date_str} {code}")
-
-        elif uline.startswith("ADD:"):
-            parts = [p.strip() for p in line[4:].split("|")]
-            if len(parts) != 3:
-                rejected.append(f"Bad ADD format: {line}"); continue
-            name, date_str, code = parts
-            try:
-                d = datetime.date.fromisoformat(date_str)
-            except ValueError:
-                rejected.append(f"Bad date in: {line}"); continue
-            to_shift = next((s for block in BLOCKS for s in block if s.code == code), None)
-            if to_shift is None:
-                rejected.append(f"Unknown shift code: {code}"); continue
-            pid = next((p for p, s in gen.submissions.items()
-                        if s.physician_name.lower() == name.lower()), None)
-            if pid is None:
-                rejected.append(f"Unknown physician: {name}"); continue
-            if any(a.date == d and a.shift.code == code for a in result.assignments):
-                rejected.append(f"Slot already filled: {date_str} {code}"); continue
-            violations = gen._check_constraints(pid, d, to_shift)
-            if violations:
-                descs = "; ".join(v.description for v in violations)
-                rejected.append(f"Cannot add {name} to {date_str} {code}: {descs}"); continue
-            gen._assign(pid, d, to_shift)
-            result.assignments.append(Assignment(
-                date=d, shift=to_shift, physician_id=pid,
-                physician_name=gen.submissions[pid].physician_name, is_claude=True,
-            ))
-            result.unfilled = [u for u in result.unfilled
-                                if not (u.date == d and u.shift.code == code)]
-            applied.append(f"Added {name} to {date_str} {code}")
-
-        elif uline.startswith("MOVE:"):
-            parts = [p.strip() for p in line[5:].split("|")]
-            if len(parts) != 5:
-                rejected.append(f"Bad MOVE format: {line}"); continue
-            name, from_date_str, from_code, to_date_str, to_code = parts
-            try:
-                from_d = datetime.date.fromisoformat(from_date_str)
-                to_d = datetime.date.fromisoformat(to_date_str)
-            except ValueError:
-                rejected.append(f"Bad date in: {line}"); continue
-            pid = next((p for p, s in gen.submissions.items()
-                        if s.physician_name.lower() == name.lower()), None)
-            if pid is None:
-                rejected.append(f"Unknown physician: {name}"); continue
-            existing = next((a for a in result.assignments
-                             if a.physician_id == pid and a.date == from_d and a.shift.code == from_code), None)
-            if existing is None:
-                rejected.append(f"Assignment not found: {name} {from_date_str} {from_code}"); continue
-            to_shift = next((s for block in BLOCKS for s in block if s.code == to_code), None)
-            if to_shift is None:
-                rejected.append(f"Unknown shift code: {to_code}"); continue
-            if any(a.date == to_d and a.shift.code == to_code for a in result.assignments):
-                rejected.append(f"Destination slot occupied: {to_date_str} {to_code}"); continue
-            gen._unassign(pid, from_d, existing.shift)
-            violations = gen._check_constraints(pid, to_d, to_shift)
-            if violations:
-                gen._assign(pid, from_d, existing.shift)
-                descs = "; ".join(v.description for v in violations)
-                rejected.append(f"Cannot move {name} to {to_date_str} {to_code}: {descs}"); continue
-            gen._assign(pid, to_d, to_shift)
-            result.assignments = [a for a in result.assignments
-                                   if not (a.physician_id == pid and a.date == from_d and a.shift.code == from_code)]
-            result.assignments.append(Assignment(
-                date=to_d, shift=to_shift, physician_id=pid,
-                physician_name=gen.submissions[pid].physician_name, is_claude=True,
-            ))
-            applied.append(f"Moved {name} from {from_date_str} {from_code} → {to_date_str} {to_code}")
-
-    result.stats = gen._compute_stats(result)
-    _state["result"] = result
-
-    return AdjustResponse(
-        schedule=_result_to_response(result),
-        applied=applied,
-        rejected=rejected,
-    )
 
 
 @app.get("/api/export")
@@ -1223,239 +1052,6 @@ def get_candidates(date: str, shift_code: str) -> CandidatesResponse:
     )
 
 
-# ---------------------------------------------------------------------------
-# Claude API integration (global schedule improvement + unfilled slot fill)
-# ---------------------------------------------------------------------------
-
-def _get_anthropic_client():
-    """Return an Anthropic client, or None if the library is unavailable."""
-    try:
-        import anthropic
-        return anthropic.Anthropic()
-    except ImportError:
-        return None
-
-
-def _claude_improve_schedule(
-    result: ScheduleResult,
-    gen: ScheduleGenerator,
-    submissions: list[PhysicianSubmission],
-    roster: dict,
-) -> None:
-    """
-    Send the completed schedule to Claude for a full-context quality review.
-
-    Claude receives all scheduling rules and physician statistics and is asked to:
-      1. Suggest MOVE operations to improve schedule quality — each is validated
-         against all hard constraints before being applied.
-      2. For unfilled slots (if ≤5 remain), provide ranked candidate suggestions
-         with clinical reasoning — these are stored as issues for human review
-         and are NEVER auto-applied.
-
-    This function never assigns a physician to an unfilled slot automatically.
-    """
-    client = _get_anthropic_client()
-    if client is None:
-        result.issues.append("Claude API unavailable (anthropic not installed).")
-        return
-
-    prompt = _build_improvement_prompt(result, gen)
-    try:
-        message = client.messages.create(
-            model="claude-opus-4-6",
-            max_tokens=2048,
-            messages=[{"role": "user", "content": prompt}],
-        )
-    except Exception as exc:
-        result.issues.append(f"Claude API error during improvement pass: {exc}")
-        return
-
-    response_text = message.content[0].text
-    moves_applied = 0
-
-    for line in response_text.splitlines():
-        line = line.strip()
-        uline = line.upper()
-
-        if uline.startswith("MOVE:"):
-            parts = [p.strip() for p in line[5:].split("|")]
-            if len(parts) != 5:
-                continue
-            name, from_date_str, from_code, to_date_str, to_code = parts
-            try:
-                from_date = datetime.date.fromisoformat(from_date_str)
-                to_date   = datetime.date.fromisoformat(to_date_str)
-            except ValueError:
-                continue
-            pid = next(
-                (p for p, s in gen.submissions.items()
-                 if s.physician_name.lower() == name.lower()), None
-            )
-            if pid is None:
-                continue
-            existing = next(
-                (a for a in result.assignments
-                 if a.physician_id == pid and a.date == from_date
-                 and a.shift.code == from_code), None
-            )
-            if existing is None:
-                continue
-            to_shift = next(
-                (s for block in BLOCKS for s in block if s.code == to_code), None
-            )
-            if to_shift is None:
-                continue
-            if any(a.date == to_date and a.shift.code == to_code
-                   for a in result.assignments):
-                continue
-            gen._unassign(pid, from_date, existing.shift)
-            violations = gen._check_constraints(pid, to_date, to_shift)
-            if violations is not None:
-                gen._assign(pid, from_date, existing.shift)   # restore
-                continue
-            gen._assign(pid, to_date, to_shift)
-            result.assignments = [
-                a for a in result.assignments
-                if not (a.physician_id == pid and a.date == from_date
-                        and a.shift.code == from_code)
-            ]
-            result.assignments.append(Assignment(
-                date=to_date, shift=to_shift,
-                physician_id=pid,
-                physician_name=gen.submissions[pid].physician_name,
-                is_claude=True,
-            ))
-            moves_applied += 1
-
-        elif uline.startswith("RANK:"):
-            # Ranked suggestion for an unfilled slot — append as informational issue.
-            # Format: RANK: YYYY-MM-DD | shift_code | suggestions...
-            rest = line[5:].strip()
-            result.issues.append(f"💡 Claude suggestion: {rest}")
-
-    if moves_applied:
-        result.issues.append(f"Claude: {moves_applied} improvement move(s) applied.")
-
-
-def _build_improvement_prompt(result: ScheduleResult, gen: ScheduleGenerator) -> str:
-    """Build the full-context prompt for Claude's schedule review."""
-    import calendar as cal_mod
-
-    # Per-physician statistics
-    counts: dict[str, int] = {}
-    nights: dict[str, list[str]] = {}
-    group_a: dict[str, int] = {}
-    # Build consecutive-A sequences per physician for context
-    pid_assignments: dict[str, list] = {}
-    for a in result.assignments:
-        counts[a.physician_id] = counts.get(a.physician_id, 0) + 1
-        if a.shift.time == "2400h":
-            nights.setdefault(a.physician_id, []).append(str(a.date))
-        if a.shift.site_group.value == "A":
-            group_a[a.physician_id] = group_a.get(a.physician_id, 0) + 1
-        pid_assignments.setdefault(a.physician_id, []).append(a)
-
-    # Detect A-A sequences per physician
-    aa_violations: list[str] = []
-    for pid, assigns in pid_assignments.items():
-        sorted_assigns = sorted(assigns, key=lambda a: a.date)
-        for i in range(1, len(sorted_assigns)):
-            if (sorted_assigns[i].shift.site_group.value == "A"
-                    and sorted_assigns[i-1].shift.site_group.value == "A"):
-                name = gen.submissions[pid].physician_name
-                aa_violations.append(
-                    f"  {name}: {sorted_assigns[i-1].date} {sorted_assigns[i-1].shift.code}"
-                    f" → {sorted_assigns[i].date} {sorted_assigns[i].shift.code}"
-                )
-
-    phys_lines = []
-    for pid, sub in gen.submissions.items():
-        n = counts.get(pid, 0)
-        if n == 0:
-            continue
-        nights_list = sorted(nights.get(pid, []))
-        night_dates = {datetime.date.fromisoformat(d) for d in nights_list}
-        singletons = [
-            str(d) for d in sorted(night_dates)
-            if (d - datetime.timedelta(days=1)) not in night_dates
-            and (d + datetime.timedelta(days=1)) not in night_dates
-        ]
-        a_count = group_a.get(pid, 0)
-        a_pct = round(100 * a_count / n) if n else 0
-        issues_flag = []
-        if a_pct < 30:
-            issues_flag.append(f"GroupA only {a_pct}% (target 40%)")
-        if a_pct > 55:
-            issues_flag.append(f"GroupA too high {a_pct}%")
-        if singletons:
-            issues_flag.append(f"singleton nights: {singletons}")
-        flag_str = f" ⚠ {'; '.join(issues_flag)}" if issues_flag else ""
-        phys_lines.append(
-            f"  {sub.physician_name}: shifts={n}/{sub.shifts_requested}, "
-            f"groupA={a_pct}%, 2400h={nights_list}{flag_str}"
-        )
-
-    unfilled_lines = []
-    for u in result.unfilled:
-        cands = ", ".join(
-            f"{c.physician_name}({'; '.join(v.rule for v in c.violations)})"
-            for c in u.candidates[:5]
-        )
-        unfilled_lines.append(f"  {u.date} {u.shift.code} — candidates: {cands}")
-
-    month_name = cal_mod.month_name[result.month]
-    few_unfilled = len(result.unfilled) <= 5
-
-    rank_instruction = ""
-    if few_unfilled and result.unfilled:
-        rank_instruction = (
-            "\n\nFor each unfilled slot, provide a ranked list of candidates. "
-            "Output one line per slot:\n"
-            "RANK: YYYY-MM-DD | shift_code | 1. Name (reason); 2. Name (reason); 3. Name (reason)\n"
-            "Do NOT use MOVE to fill unfilled slots — only use RANK."
-        )
-
-    return f"""You are performing a full quality review of a {month_name} {result.year} emergency physician schedule.
-
-HARD RULES (never suggest violating these):
-- Minimum 22 hours between consecutive shifts for the same physician
-- After a 2400h night shift, next shift must start at 1200h or later if returning the next day
-- Maximum 3 consecutive working days
-- Each physician has a maximum shift count they must not exceed
-- Physicians cannot be assigned to forbidden sites
-
-SOFT TARGETS:
-- Each physician's shifts should be ~40% Group A (RAH A side / RAH B side), ~60% Group B
-- 2400h night shifts should be clustered in runs, not spread as isolated singletons
-- No two consecutive Group A assignments for the same physician in sequence
-- Physician shift counts should match their requested count
-
-CURRENT ISSUES:
-Consecutive Group-A sequences ({len(aa_violations)}):
-{chr(10).join(aa_violations) if aa_violations else "  None"}
-
-PHYSICIAN STATISTICS:
-{chr(10).join(phys_lines)}
-
-UNFILLED SLOTS ({len(result.unfilled)}):
-{chr(10).join(unfilled_lines) if unfilled_lines else "  None"}
-
-TASK:
-Suggest up to 10 specific MOVE operations that improve schedule quality while strictly respecting all hard rules above. Prioritise:
-1. Fixing Group A/B imbalance for physicians flagged with ⚠
-2. Clustering singleton 2400h nights
-3. Breaking consecutive Group-A sequences
-
-For each improvement output EXACTLY one line:
-MOVE: physician_name | YYYY-MM-DD | from_shift_code | YYYY-MM-DD | to_shift_code
-
-Moves will be validated against all hard constraints — violations are automatically rejected.
-Only suggest moves where the physician is realistically available on the target date.
-Do not suggest moves that obviously violate 22h spacing.{rank_instruction}
-"""
-
-
-# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 

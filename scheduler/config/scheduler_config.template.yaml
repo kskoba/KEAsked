@@ -137,11 +137,3 @@ linked_pairs: []
 #   linked_pairs:
 #     - [PhysicianA, PhysicianB]   # use physician IDs from physicians.yaml
 
-# ----------------------------------------------------------
-# Claude API key (optional)
-# ----------------------------------------------------------
-# Set this to enable Claude-assisted schedule improvement.
-# Set this to your Anthropic API key, or set the ANTHROPIC_API_KEY env var.
-# Alternatively, set the ANTHROPIC_API_KEY environment variable.
-# ----------------------------------------------------------
-anthropic_api_key: ""

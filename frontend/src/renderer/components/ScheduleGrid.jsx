@@ -323,8 +323,8 @@ function ShiftCell({ shiftCode, assignment, unfilledSlot, onOpenConflict, onRepl
 
   if (assignment) {
     const name = assignment.physician_name || assignment.physician_id || '?'
-    const badge = assignment.is_claude ? 'AI' : assignment.is_manual ? 'M' : null
-    const badgeBg = assignment.is_claude ? 'bg-violet-500' : 'bg-amber-400'
+    const badge = assignment.is_manual ? 'M' : null
+    const badgeBg = 'bg-amber-400'
 
     // Check if this cell is the first selected in swap mode
     const isSwapFirst = swapFirst &&
@@ -334,7 +334,7 @@ function ShiftCell({ shiftCode, assignment, unfilledSlot, onOpenConflict, onRepl
     const cellBg = isSwapFirst ? '#fcd34d' : shiftBg(shiftCode)
     const cellTitle = swapMode
       ? (isSwapFirst ? `${name} — selected (click another to swap)` : `${name} — click to swap with selected`)
-      : `${name}${assignment.is_claude ? ' (Claude AI)' : assignment.is_manual ? ' (manual)' : ''} — click to replace`
+      : `${name}${assignment.is_manual ? ' (manual)' : ''} — click to replace`
 
     const handleClick = () => {
       if (swapMode) {

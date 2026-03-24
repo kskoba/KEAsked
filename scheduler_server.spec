@@ -35,8 +35,6 @@ a = Analysis(
         'starlette.routing',
         'starlette.middleware',
         'starlette.middleware.cors',
-        # anthropic client
-        'anthropic',
         # pydantic
         'pydantic',
         'pydantic.v1',

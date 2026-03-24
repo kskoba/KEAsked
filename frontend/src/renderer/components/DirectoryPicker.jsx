@@ -110,7 +110,7 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
     }, 600)
 
     try {
-      const result = await generateSchedule(year, month, false)
+      const result = await generateSchedule(year, month)
       onScheduleGenerated(result)
     } catch (err) {
       setGenerateError(err.message)

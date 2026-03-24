@@ -67,8 +67,8 @@ export async function detectFlatMonth(file) {
 /**
  * Generate a schedule from previously imported submissions.
  */
-export async function generateSchedule(year, month, useClaude) {
-  return request('POST', '/api/generate', { year, month, use_claude: useClaude })
+export async function generateSchedule(year, month) {
+  return request('POST', '/api/generate', { year, month })
 }
 
 /**
@@ -85,17 +85,6 @@ export async function getGenerateProgress() {
  */
 export async function getSchedule() {
   return request('GET', '/api/schedule')
-}
-
-/**
- * Apply a free-text scheduling instruction via Claude.
- * @param {string} instruction  e.g. "give Wittmeier 2 fewer shifts"
- * @param {number} year
- * @param {number} month
- * @returns {AdjustResponse}
- */
-export async function adjustSchedule(instruction, year, month) {
-  return request('POST', '/api/adjust', { instruction, year, month })
 }
 
 /**

@@ -20,18 +20,9 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r scheduler/requirements.txt pyinstaller
 
-      - name: Inject API key into scheduler config
+      - name: Copy scheduler config
         shell: bash
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          python - <<'PYEOF'
-          import re, os
-          t = open('scheduler/config/scheduler_config.template.yaml', encoding='utf-8').read()
-          key = os.environ.get('ANTHROPIC_API_KEY', '')
-          result = re.sub(r'anthropic_api_key: "[^"]*"', f'anthropic_api_key: "{key}"', t)
-          open('scheduler/config/scheduler_config.yaml', 'w', encoding='utf-8').write(result)
-          PYEOF
+        run: cp scheduler/config/scheduler_config.template.yaml scheduler/config/scheduler_config.yaml
 
       - name: Bundle Python backend (PyInstaller)
         shell: bash
@@ -77,17 +68,8 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r scheduler/requirements.txt pyinstaller
 
-      - name: Inject API key into scheduler config
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          python - <<'PYEOF'
-          import re, os
-          t = open('scheduler/config/scheduler_config.template.yaml', encoding='utf-8').read()
-          key = os.environ.get('ANTHROPIC_API_KEY', '')
-          result = re.sub(r'anthropic_api_key: "[^"]*"', f'anthropic_api_key: "{key}"', t)
-          open('scheduler/config/scheduler_config.yaml', 'w', encoding='utf-8').write(result)
-          PYEOF
+      - name: Copy scheduler config
+        run: cp scheduler/config/scheduler_config.template.yaml scheduler/config/scheduler_config.yaml
 
       - name: Bundle Python backend (PyInstaller)
         run: |

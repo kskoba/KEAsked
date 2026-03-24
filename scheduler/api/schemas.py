@@ -74,7 +74,6 @@ class AssignmentSchema(BaseModel):
     physician_id: str
     physician_name: str
     is_manual: bool
-    is_claude: bool = False
 
 
 class CandidateSchema(BaseModel):
@@ -168,7 +167,6 @@ class GenerateRequest(BaseModel):
     directory: str
     year: int
     month: int
-    use_claude: bool = False    # if True, call Claude API for unfilled slots
 
 
 class ImportRequest(BaseModel):
@@ -186,24 +184,11 @@ class ImportFlatRequest(BaseModel):
 class GenerateCachedRequest(BaseModel):
     year: int
     month: int
-    use_claude: bool = False
 
 
 class DetectFlatResponse(BaseModel):
     year: int
     month: int
-
-
-class AdjustRequest(BaseModel):
-    instruction: str    # free-text, e.g. "give Wittmeier 2 less shifts"
-    year: int
-    month: int
-
-
-class AdjustResponse(BaseModel):
-    schedule: ScheduleResponse
-    applied: list[str]      # human-readable description of each applied change
-    rejected: list[str]     # changes Claude suggested that failed validation
 
 
 class LoadScheduleRequest(BaseModel):

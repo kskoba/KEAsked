@@ -38,7 +38,6 @@ class Assignment:
     physician_id: str
     physician_name: str
     is_manual: bool = False        # True when assigned by a human after generation
-    is_claude: bool = False        # True when assigned by the Claude improvement pass
 
 
 @dataclass

@@ -174,7 +174,7 @@ class CpsatScheduleGenerator:
         if not _ORTOOLS_AVAILABLE:
             logger.warning("Falling back to greedy ScheduleGenerator (ortools not installed).")
             from scheduler.backend.generator import ScheduleGenerator
-            gen = ScheduleGenerator(self.submissions, self.roster, self.config)
+            gen = ScheduleGenerator(list(self.submissions.values()), self.roster, self.config)
             return gen.run_best_of(
                 400, year, month,
                 progress_callback=progress_callback,

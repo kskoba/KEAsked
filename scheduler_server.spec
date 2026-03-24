@@ -52,6 +52,14 @@ a = Analysis(
         'scheduler.backend.models',
         'scheduler.backend.shifts',
         'scheduler.backend.validator',
+        'scheduler.backend.generator_cpsat',
+        # ortools / CP-SAT
+        'ortools',
+        'ortools.sat',
+        'ortools.sat.python',
+        'ortools.sat.python.cp_model',
+        'ortools.util',
+        'ortools.util.python',
     ],
     hookspath=[],
     hooksconfig={},
@@ -59,7 +67,6 @@ a = Analysis(
     excludes=[
         'tkinter',
         'matplotlib',
-        'numpy',
         'pandas',
         'scipy',
         'PIL',

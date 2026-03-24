@@ -23,6 +23,7 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
   const [loadError, setLoadError] = useState(null)
   const pollRef = useRef(null)
   const countdownRef = useRef(null)
+  const countdownStartedRef = useRef(false)
 
   async function handleBrowse() {
     let selected = null
@@ -81,14 +82,16 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
     setGenerating(true)
     setGenerateError(null)
     setProgress({ current: 0, total: 200, best_unfilled: null })
+    countdownStartedRef.current = false
 
     // Start polling progress every 600ms
     pollRef.current = setInterval(async () => {
       try {
         const p = await getGenerateProgress()
         setProgress(p)
-        // Start countdown when we first learn this is a CP-SAT run
-        if (p.solver === 'cpsat' && p.running && !countdownRef.current) {
+        // Start countdown when we first learn this is a CP-SAT run (only once per generate)
+        if (p.solver === 'cpsat' && p.running && !countdownStartedRef.current) {
+          countdownStartedRef.current = true
           const secs = p.time_limit || 300
           setCountdown(secs)
           countdownRef.current = setInterval(() => {
@@ -249,8 +252,10 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
           {progress.solver === 'cpsat' ? (
             <>
               <div className="flex justify-between text-xs text-slate-500 mb-1">
-                <span className="font-medium text-sky-700">CP-SAT solver running…</span>
-                {countdown !== null && (
+                <span className="font-medium text-sky-700">
+                  {countdown === 0 ? 'Finishing up…' : 'CP-SAT solver running…'}
+                </span>
+                {countdown !== null && countdown > 0 && (
                   <span className={`font-mono font-bold ${countdown <= 30 ? 'text-amber-600' : 'text-sky-700'}`}>
                     {Math.floor(countdown / 60)}:{String(countdown % 60).padStart(2, '0')}
                   </span>

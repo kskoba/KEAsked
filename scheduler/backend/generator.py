@@ -348,9 +348,8 @@ class ScheduleGenerator:
                             physician_name=self.submissions[pid].physician_name,
                         ))
                     else:
-                        candidates = self._near_miss_candidates(d, shift, max_n=10)
                         result.unfilled.append(
-                            UnfilledSlot(date=d, shift=shift, candidates=candidates)
+                            UnfilledSlot(date=d, shift=shift, candidates=[])
                         )
                         result.issues.append(
                             f"{d.strftime('%b %d')} {shift.code}: no eligible physician"
@@ -608,9 +607,8 @@ class ScheduleGenerator:
                             physician_name=self.submissions[pid].physician_name,
                         ))
                     else:
-                        candidates = self._near_miss_candidates(d, shift, max_n=10)
                         result.unfilled.append(
-                            UnfilledSlot(date=d, shift=shift, candidates=candidates)
+                            UnfilledSlot(date=d, shift=shift, candidates=[])
                         )
                         result.issues.append(
                             f"{d.strftime('%b %d')} {shift.code}: no eligible physician"

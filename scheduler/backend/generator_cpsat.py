@@ -952,7 +952,8 @@ class CpsatScheduleGenerator:
         self._weekend_keys: dict[str, set] = defaultdict(set)
         for d in all_dates:
             for shift in all_shifts_obj:
-                result.unfilled.append(UnfilledSlot(date=d, shift=shift, candidates=[]))
+                candidates = self._near_miss_candidates(d, shift)
+                result.unfilled.append(UnfilledSlot(date=d, shift=shift, candidates=candidates))
                 result.issues.append(f"{d.strftime('%b %d')} {shift.code}: no eligible physician")
         result.stats = self._compute_stats(result)
         return result
@@ -1053,11 +1054,9 @@ class CpsatScheduleGenerator:
                             physician_name=self.submissions[assigned_pid].physician_name,
                         ))
                     else:
-                        # Candidates are computed lazily via /api/candidates when
-                        # the user clicks an unfilled slot — skip here to avoid
-                        # O(slots × physicians) blocking work after the solve.
+                        candidates = self._near_miss_candidates(d, shift)
                         result.unfilled.append(
-                            UnfilledSlot(date=d, shift=shift, candidates=[])
+                            UnfilledSlot(date=d, shift=shift, candidates=candidates)
                         )
                         result.issues.append(
                             f"{d.strftime('%b %d')} {shift.code}: no eligible physician"

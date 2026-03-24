@@ -8,12 +8,19 @@
 
 block_cipher = None
 
+# collect_all gathers ortools' Python modules, native .pyd/.so binaries, and
+# any data files (e.g. shared libraries on Windows) that PyInstaller's static
+# analysis misses.  Without this, ortools may import successfully at the class
+# level but fail at runtime when the C extension tries to load its DLLs.
+from PyInstaller.utils.hooks import collect_all
+_ortools_datas, _ortools_binaries, _ortools_hiddenimports = collect_all('ortools')
+
 a = Analysis(
     ['scheduler/api/server.py'],
     pathex=['.'],
-    binaries=[],
-    datas=[],
-    hiddenimports=[
+    binaries=_ortools_binaries,
+    datas=_ortools_datas,
+    hiddenimports=_ortools_hiddenimports + [
         # uvicorn dynamic imports
         'uvicorn.logging',
         'uvicorn.loops',
@@ -53,13 +60,6 @@ a = Analysis(
         'scheduler.backend.shifts',
         'scheduler.backend.validator',
         'scheduler.backend.generator_cpsat',
-        # ortools / CP-SAT
-        'ortools',
-        'ortools.sat',
-        'ortools.sat.python',
-        'ortools.sat.python.cp_model',
-        'ortools.util',
-        'ortools.util.python',
     ],
     hookspath=[],
     hooksconfig={},

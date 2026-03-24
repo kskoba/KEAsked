@@ -55,11 +55,12 @@ logger = logging.getLogger(__name__)
 try:
     from ortools.sat.python import cp_model as _cp_model
     _ORTOOLS_AVAILABLE = True
-except ImportError:
+except Exception as _ortools_err:
     _ORTOOLS_AVAILABLE = False
     logger.warning(
-        "ortools is not installed — CpsatScheduleGenerator will fall back to "
-        "the greedy ScheduleGenerator.  Install with: pip install ortools"
+        "ortools not available (%s: %s) — CpsatScheduleGenerator will fall back "
+        "to the greedy ScheduleGenerator.",
+        type(_ortools_err).__name__, _ortools_err,
     )
 
 

@@ -19,8 +19,14 @@ from __future__ import annotations
 import calendar
 import datetime
 import logging
+import sys
 from collections import defaultdict
 from typing import Callable, Optional
+
+# PyInstaller frozen binaries on Windows cannot safely use CP-SAT's internal
+# worker threads (they deadlock after solve() returns when calling value()).
+# Force single-worker mode in that environment.
+_FROZEN = getattr(sys, 'frozen', False)
 
 from scheduler.backend.config import PhysicianConfig
 from scheduler.backend.generator import (
@@ -889,12 +895,15 @@ class CpsatScheduleGenerator:
         # ----------------------------------------------------------------
         solver = _cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = time_limit
-        solver.parameters.num_search_workers = num_workers
+        # PyInstaller frozen binaries deadlock with multiple CP-SAT workers
+        effective_workers = 1 if _FROZEN else num_workers
+        solver.parameters.num_search_workers = effective_workers
         solver.parameters.log_search_progress = False
 
         logger.info(
-            "CP-SAT: starting solve for %d-%02d with time_limit=%.0fs, workers=%d",
-            year, month, time_limit, num_workers,
+            "CP-SAT: starting solve for %d-%02d with time_limit=%.0fs, workers=%d%s",
+            year, month, time_limit, effective_workers,
+            " (frozen binary — single worker)" if _FROZEN else "",
         )
         status = solver.solve(model)
         logger.info(

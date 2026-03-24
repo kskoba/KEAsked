@@ -23,9 +23,6 @@ import sys
 from collections import defaultdict
 from typing import Callable, Optional
 
-# PyInstaller frozen binaries on Windows cannot safely use CP-SAT's internal
-# worker threads (they deadlock after solve() returns when calling value()).
-# Force single-worker mode in that environment.
 _FROZEN = getattr(sys, 'frozen', False)
 
 from scheduler.backend.config import PhysicianConfig
@@ -64,6 +61,31 @@ except ImportError:
         "ortools is not installed — CpsatScheduleGenerator will fall back to "
         "the greedy ScheduleGenerator.  Install with: pip install ortools"
     )
+
+
+# ---------------------------------------------------------------------------
+# Solution callback — captures variable values during the solve so we never
+# need to call solver.value() after solve() returns (which can deadlock in
+# PyInstaller frozen binaries when worker threads have not fully terminated).
+# ---------------------------------------------------------------------------
+
+class _SolutionCallback(_cp_model.CpSolverSolutionCallback if _ORTOOLS_AVAILABLE else object):
+    """Saves the best solution's shift-variable values on each improving solution."""
+
+    def __init__(self, shift_vars: dict):
+        if _ORTOOLS_AVAILABLE:
+            super().__init__()
+        self._shift_vars = shift_vars          # (pid, d_idx, shift_code) -> IntVar
+        self.best_values: dict = {}            # (pid, d_idx, shift_code) -> 0 or 1
+        self.best_objective: float = float('-inf')
+        self.best_bound: float = 0.0
+
+    def on_solution_callback(self) -> None:
+        obj = self.objective_value
+        if obj > self.best_objective:
+            self.best_objective = obj
+            self.best_values = {k: self.value(v) for k, v in self._shift_vars.items()}
+            self.best_bound = self.best_objective_bound
 
 
 # ---------------------------------------------------------------------------
@@ -895,39 +917,42 @@ class CpsatScheduleGenerator:
         # ----------------------------------------------------------------
         solver = _cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = time_limit
-        # PyInstaller frozen binaries deadlock with multiple CP-SAT workers
-        effective_workers = 1 if _FROZEN else num_workers
-        solver.parameters.num_search_workers = effective_workers
+        solver.parameters.num_search_workers = num_workers
         solver.parameters.log_search_progress = False
 
+        # Solution callback: saves variable values on each improving solution so
+        # we use the saved dict in _build_result instead of calling solver.value()
+        # after solve() returns (avoids potential thread-state issues in frozen binaries).
+        solution_cb = _SolutionCallback(shifts)
+
         logger.info(
-            "CP-SAT: starting solve for %d-%02d with time_limit=%.0fs, workers=%d%s",
-            year, month, time_limit, effective_workers,
-            " (frozen binary — single worker)" if _FROZEN else "",
+            "CP-SAT: starting solve for %d-%02d with time_limit=%.0fs, workers=%d",
+            year, month, time_limit, num_workers,
         )
-        status = solver.solve(model)
+        status = solver.solve(model, solution_cb)
+        wall_time = solver.wall_time
         logger.info(
             "CP-SAT: status=%s  objective=%.0f  wall_time=%.1fs",
             solver.status_name(status),
-            solver.objective_value,
-            solver.wall_time,
+            solution_cb.best_objective if solution_cb.best_values else 0.0,
+            wall_time,
         )
 
         if progress_callback:
-            progress_callback(100, 100, -solver.objective_value)
+            progress_callback(100, 100, -solution_cb.best_objective)
 
         # ----------------------------------------------------------------
         # Extract solution
         # ----------------------------------------------------------------
-        if status in (_cp_model.OPTIMAL, _cp_model.FEASIBLE):
+        if status in (_cp_model.OPTIMAL, _cp_model.FEASIBLE) and solution_cb.best_values:
             result = self._build_result(
-                year, month, all_dates, shifts, solver, shift_by_code
+                year, month, all_dates, solution_cb.best_values, shift_by_code
             )
             # Attach solver quality info to stats
             if result.stats:
                 is_optimal = status == _cp_model.OPTIMAL
-                obj = solver.objective_value
-                bound = solver.best_objective_bound
+                obj = solution_cb.best_objective
+                bound = solution_cb.best_bound
                 if is_optimal or abs(bound) < 1e-6:
                     gap_pct = 0.0
                 else:
@@ -1015,8 +1040,7 @@ class CpsatScheduleGenerator:
         year: int,
         month: int,
         all_dates: list[datetime.date],
-        shifts: dict,
-        solver,
+        saved_values: dict,
         shift_by_code: dict[str, Shift],
     ) -> ScheduleResult:
         """Convert CP-SAT solution values into a ScheduleResult."""
@@ -1035,7 +1059,7 @@ class CpsatScheduleGenerator:
                 for shift in block:
                     assigned_pid = None
                     for pid in pids:
-                        val = solver.value(shifts[(pid, d_idx, shift.code)])
+                        val = saved_values.get((pid, d_idx, shift.code), 0)
                         if val:
                             assigned_pid = pid
                             break

@@ -1056,4 +1056,15 @@ def get_candidates(date: str, shift_code: str) -> CandidatesResponse:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    import logging
+    import os
+    log_path = Path(os.environ.get("CONFIG_DIR", ".")).parent / "scheduler_debug.log"
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(str(log_path), encoding="utf-8"),
+        ],
+    )
     uvicorn.run(app, host="127.0.0.1", port=5000, log_level="warning", access_log=False)

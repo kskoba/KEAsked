@@ -67,8 +67,8 @@ export async function detectFlatMonth(file) {
 /**
  * Generate a schedule from previously imported submissions.
  */
-export async function generateSchedule(year, month) {
-  return request('POST', '/api/generate', { year, month })
+export async function generateSchedule(year, month, timeLimitSeconds) {
+  return request('POST', '/api/generate', { year, month, time_limit_seconds: timeLimitSeconds ?? null })
 }
 
 /**

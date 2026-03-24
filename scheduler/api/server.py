@@ -409,7 +409,7 @@ async def generate(body: GenerateCachedRequest) -> ScheduleResponse:
     cfg = _state["scheduler_config"]
     use_cpsat = _CPSAT_AVAILABLE
     n_iterations = 400
-    cpsat_time_limit = 600.0
+    cpsat_time_limit = float(body.time_limit_seconds) if body.time_limit_seconds else 600.0
 
     if use_cpsat:
         # CP-SAT: indeterminate progress — show 50% "Solving…" until done.

@@ -15,6 +15,7 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
   const [year, setYear] = useState(currentDate.getFullYear())
   const [importing, setImporting] = useState(false)
   const [generating, setGenerating] = useState(false)
+  const [timeLimitMinutes, setTimeLimitMinutes] = useState(10)
   const [loading, setLoading] = useState(false)   // for 'load' mode
   const [progress, setProgress] = useState(null)   // { current, total, best_unfilled, solver, time_limit }
   const [countdown, setCountdown] = useState(null)  // seconds remaining for CP-SAT
@@ -113,7 +114,7 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
     }, 600)
 
     try {
-      const result = await generateSchedule(year, month)
+      const result = await generateSchedule(year, month, timeLimitMinutes * 60)
       onScheduleGenerated(result)
     } catch (err) {
       setGenerateError(err.message)
@@ -225,6 +226,32 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
               disabled={importing || generating}
               className="w-full px-3 py-2 rounded-md border border-slate-300 bg-white text-slate-700 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400"
             />
+          </div>
+        </div>
+      )}
+
+      {/* Solver time limit */}
+      {mode !== 'load' && (
+        <div className="mb-5">
+          <label className="block text-sm font-medium text-slate-700 mb-2">
+            Solver Time Limit
+            <span className="ml-2 text-slate-400 font-normal">— longer runs get closer to optimal</span>
+          </label>
+          <div className="flex gap-2">
+            {[5, 10, 20, 30, 60].map(mins => (
+              <button
+                key={mins}
+                onClick={() => setTimeLimitMinutes(mins)}
+                disabled={generating}
+                className={`px-3 py-1.5 text-sm font-medium rounded-md border transition-colors ${
+                  timeLimitMinutes === mins
+                    ? 'bg-sky-600 border-sky-600 text-white'
+                    : 'bg-white border-slate-300 text-slate-600 hover:border-sky-400 hover:text-sky-600'
+                }`}
+              >
+                {mins < 60 ? `${mins} min` : '1 hr'}
+              </button>
+            ))}
           </div>
         </div>
       )}

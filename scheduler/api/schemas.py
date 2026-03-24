@@ -184,6 +184,7 @@ class ImportFlatRequest(BaseModel):
 class GenerateCachedRequest(BaseModel):
     year: int
     month: int
+    time_limit_seconds: int | None = None  # None → use server default (600s)
 
 
 class DetectFlatResponse(BaseModel):

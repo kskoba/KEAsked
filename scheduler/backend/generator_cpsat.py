@@ -52,16 +52,13 @@ from scheduler.backend.shifts import (
 
 logger = logging.getLogger(__name__)
 
+_ortools_import_error: Exception | None = None
 try:
     from ortools.sat.python import cp_model as _cp_model
     _ORTOOLS_AVAILABLE = True
 except Exception as _ortools_err:
     _ORTOOLS_AVAILABLE = False
-    logger.warning(
-        "ortools not available (%s: %s) — CpsatScheduleGenerator will fall back "
-        "to the greedy ScheduleGenerator.",
-        type(_ortools_err).__name__, _ortools_err,
-    )
+    _ortools_import_error = _ortools_err
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +198,10 @@ class CpsatScheduleGenerator:
             midpoint (50%) as a "Solving…" indicator and once on completion.
         """
         if not _ORTOOLS_AVAILABLE:
-            logger.warning("Falling back to greedy ScheduleGenerator (ortools not installed).")
+            logger.warning(
+                "ortools not available (%s: %s) — falling back to greedy ScheduleGenerator.",
+                type(_ortools_import_error).__name__, _ortools_import_error,
+            )
             from scheduler.backend.generator import ScheduleGenerator
             gen = ScheduleGenerator(list(self.submissions.values()), self.roster, self.config)
             return gen.run_best_of(

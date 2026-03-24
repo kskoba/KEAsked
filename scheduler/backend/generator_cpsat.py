@@ -918,7 +918,7 @@ class CpsatScheduleGenerator:
         solver = _cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = time_limit
         solver.parameters.num_search_workers = num_workers
-        solver.parameters.log_search_progress = False
+        solver.parameters.log_search_progress = True  # TODO: disable after diagnosis
 
         # Solution callback: saves variable values on each improving solution so
         # we use the saved dict in _build_result instead of calling solver.value()

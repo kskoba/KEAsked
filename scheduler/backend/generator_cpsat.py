@@ -1097,22 +1097,37 @@ class CpsatScheduleGenerator:
     def _near_miss_candidates(
         self, d: datetime.date, shift: Shift, max_n: int = 10
     ) -> list[CandidateOption]:
-        # Only two things truly disqualify a physician: already working that day,
-        # or marked unavailable. All other violations are shown as warnings only.
+        # Hard disqualifiers (physician never shown as a candidate):
+        #   1. Already assigned a shift on this day
+        #   2. Another shift start within the minimum spacing window (default 22h)
+        #   3. Marked unavailable for this day
+        # Everything else (site restrictions, max shifts, etc.) is a soft warning.
+        min_spacing = self.config.get('spacing', {}).get('min_hours_between_shifts', 22)
         block_idx = SHIFT_TO_BLOCK[shift.code]
+        _SHIFT_HOUR = {"0600h": 6, "1000h": 10, "1700h": 17, "1800h": 18, "2400h": 24}
+        _EPOCH = datetime.date(2000, 1, 1)
+        proposed_abs = (d - _EPOCH).days * 24 + _SHIFT_HOUR.get(shift.time, 0)
         results = []
         for pid, sub in self.submissions.items():
-            # Never offer someone already working this day
-            if any(ad == d for ad, _ in self._pid_to_slots.get(pid, [])):
+            pid_slots = self._pid_to_slots.get(pid, [])
+            # Hard block 1: already working this day
+            if any(ad == d for ad, _ in pid_slots):
                 continue
-            # Never offer someone who marked themselves unavailable on this day
+            # Hard block 2: marked unavailable for this day
             day_avail = next((day for day in sub.days if day.date == d), None)
             if day_avail is None or not day_avail.wants_to_work:
                 continue
-            violations = self._check_constraints_simple(pid, d, shift, block_idx)
-            # Exclude physicians who have hard violations — they are truly unavailable
-            if any(v.rule in _HARD_VIOLATION_RULES for v in violations):
+            # Hard block 3: another shift within minimum spacing
+            too_close = False
+            for existing_date, existing_shift in pid_slots:
+                existing_abs = (existing_date - _EPOCH).days * 24 + _SHIFT_HOUR.get(existing_shift.time, 0)
+                if abs(proposed_abs - existing_abs) < min_spacing:
+                    too_close = True
+                    break
+            if too_close:
                 continue
+            # Soft violations — shown as warnings but do not block the candidate
+            violations = self._check_constraints_simple(pid, d, shift, block_idx)
             fit = self._near_miss_score(pid, d, shift)
             deficit = max(0, sub.shifts_requested - self._shift_count.get(pid, 0))
             results.append((len(violations), -fit, -deficit, pid, violations))

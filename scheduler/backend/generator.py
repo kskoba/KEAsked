@@ -1229,52 +1229,52 @@ class ScheduleGenerator:
         Return up to max_n candidate physicians for a human to consider when
         manually filling an unfilled slot.
 
-        Hard constraints (safety / competency) must BLOCK the physician from
-        the list entirely — they are never shown as an option.
-        Soft constraints are returned as warnings the human can choose to accept.
-
-        Hard-blocked rules: already_assigned_today, consecutive_limit,
-        spacing_23h, post_2400h_rest, forbidden_site, shift_type_restriction,
-        availability, shift_not_available, max_shifts, niar_limit.
+        Only three things hard-block a physician (exclude them entirely):
+          1. Already assigned a shift on this day.
+          2. Another shift within the minimum spacing window (default 22 h).
+          3. Marked unavailable for this day.
+        All other constraint violations are returned as soft warnings.
         """
+        min_spacing = self.config.get('spacing', {}).get('min_hours_between_shifts', 22)
         block_idx = SHIFT_TO_BLOCK[shift.code]
+        _SHIFT_HOUR = {"0600h": 6, "1000h": 10, "1700h": 17, "1800h": 18, "2400h": 24}
+        _EPOCH = datetime.date(2000, 1, 1)
+        proposed_abs = (d - _EPOCH).days * 24 + _SHIFT_HOUR.get(shift.time, 0)
         results = []
         for pid, sub in self.submissions.items():
-            # Hard block: never offer someone already working this day — the
-            # constraint check below also catches this, but filtering here is
-            # an explicit fast-path so stale candidates data cannot sneak through.
-            if any(ad == d for ad, _ in self._pid_to_slots[pid]):
+            pid_slots = self._pid_to_slots[pid]
+            # Hard block 1: already working this day
+            if any(ad == d for ad, _ in pid_slots):
                 continue
-            # Hard block: never offer someone who marked themselves unavailable.
+            # Hard block 2: marked unavailable for this day
             day_avail = next((day for day in sub.days if day.date == d), None)
             if day_avail is None or not day_avail.wants_to_work:
                 continue
-
-            violations = self._check_constraints(pid, d, shift, block_idx) or []
-
-            # Partition violations into hard and soft.
-            hard_viols = [v for v in violations if v.rule in _HARD_VIOLATION_RULES]
-            soft_viols = [v for v in violations if v.rule not in _HARD_VIOLATION_RULES]
-
-            # Physicians with any hard violation are excluded entirely.
-            if hard_viols:
+            # Hard block 3: another shift within minimum spacing
+            too_close = False
+            for existing_date, existing_shift in pid_slots:
+                existing_abs = (existing_date - _EPOCH).days * 24 + _SHIFT_HOUR.get(existing_shift.time, 0)
+                if abs(proposed_abs - existing_abs) < min_spacing:
+                    too_close = True
+                    break
+            if too_close:
                 continue
 
+            violations = self._check_constraints(pid, d, shift, block_idx) or []
+            # All violations are soft warnings — shown to the user but do not block
             fit = self._near_miss_score(pid, d, shift)
             deficit = max(0, sub.shifts_requested - self._shift_count[pid])
-            # Sort key: fewest soft violations first, then best fit, then most deficit
-            results.append((len(soft_viols), -fit, -deficit, pid, soft_viols))
+            results.append((len(violations), -fit, -deficit, pid, violations))
 
         results.sort()
-        # Return up to max_n — fewer is fine if fewer physicians qualify
         return [
             CandidateOption(
                 physician_id=pid,
                 physician_name=self.submissions[pid].physician_name,
-                violations=soft_viols,
+                violations=violations,
                 is_hard_blocked=False,
             )
-            for _, _, _, pid, soft_viols in results[:max_n]
+            for _, _, _, pid, violations in results[:max_n]
         ]
 
     def _near_miss_score(self, pid: str, d: datetime.date, shift: Shift) -> float:

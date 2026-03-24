@@ -434,11 +434,15 @@ async def generate(body: GenerateCachedRequest) -> ScheduleResponse:
             result = await asyncio.to_thread(
                 gen.run_best_of, n_iterations, body.year, body.month, progress_cb
             )
+        # Preserve CP-SAT solver quality fields — repair_pass/_compute_stats creates
+        # a fresh ScheduleStats that loses these, so we save and restore them.
+        _solver_status = result.stats.solver_status if result.stats else None
+        _optimality_gap_pct = result.stats.optimality_gap_pct if result.stats else None
         # Post-solve repair: juggle adjacent assignments to fill remaining gaps
         if result.unfilled:
             result = await asyncio.to_thread(gen.repair_pass, result, 50)
         # Sync issues list: only keep entries for slots that remain unfilled
-        # (repair pass and Claude may have filled slots that still appear in issues)
+        # (repair pass may have filled slots that still appear in issues)
         unfilled_keys = {
             f"{u.date.strftime('%b %d')} {u.shift.code}" for u in result.unfilled
         }
@@ -446,6 +450,10 @@ async def generate(body: GenerateCachedRequest) -> ScheduleResponse:
             if result.unfilled else []
         # Assign on-call shifts after the regular schedule is complete
         result = await asyncio.to_thread(gen.assign_on_calls, result)
+        # Restore solver quality fields lost by repair_pass/_compute_stats
+        if result.stats and _solver_status:
+            result.stats.solver_status = _solver_status
+            result.stats.optimality_gap_pct = _optimality_gap_pct
     except Exception as exc:
         _state["progress"]["running"] = False
         raise HTTPException(status_code=500, detail=f"Generation failed: {exc}\n{traceback.format_exc()}")
@@ -922,6 +930,15 @@ def manual_assign(body: ManualAssignRequest) -> ManualAssignResponse:
             is_manual=True,
         )
     )
+
+    # Recalculate stats so the sidebar reflects the updated assignment/unfilled counts.
+    # Preserve CP-SAT solver quality fields which _compute_stats doesn't set.
+    _old_status = result.stats.solver_status if result.stats else None
+    _old_gap = result.stats.optimality_gap_pct if result.stats else None
+    result.stats = gen._compute_stats(result)
+    if result.stats and _old_status:
+        result.stats.solver_status = _old_status
+        result.stats.optimality_gap_pct = _old_gap
 
     return ManualAssignResponse(
         success=True,

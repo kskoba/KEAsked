@@ -127,14 +127,14 @@ jobs:
           security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain
 
       # ── Sign, notarize, and package ────────────────────────────────────────
-      # CSC_LINK / CSC_KEY_PASSWORD tell electron-builder where the cert is.
-      # APPLE_* env vars are picked up by scripts/notarize.js (afterSign hook)
-      # which calls notarytool and then staples the ticket to the .app.
+      # The cert is already in the keychain from the previous step — do NOT set
+      # CSC_LINK/CSC_KEY_PASSWORD or electron-builder will try to re-import it
+      # (causing a "wrong password" conflict). It will auto-discover the
+      # Developer ID Application identity from the search keychain instead.
+      # APPLE_* env vars are picked up by scripts/notarize.js (afterSign hook).
       - name: Build macOS DMG (sign + notarize)
         working-directory: frontend
         env:
-          CSC_LINK: ${{ secrets.APPLE_CERTIFICATE }}
-          CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}

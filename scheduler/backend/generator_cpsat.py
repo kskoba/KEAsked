@@ -164,6 +164,15 @@ class CpsatScheduleGenerator:
                 if day.requested_shifts:
                     self._shift_avail[(sub.physician_id, day.date)] = day.requested_shifts
 
+        # Mutable assignment state — initialized here so _assign/_unassign work
+        # even when called before generate() (e.g. when rebuilding from a loaded
+        # schedule via _require_generator).
+        self._pid_to_slots: dict[str, list] = defaultdict(list)
+        self._slot_to_pid: dict[tuple, str] = {}
+        self._shift_count: dict[str, int] = defaultdict(int)
+        self._anchor_count: dict[str, int] = defaultdict(int)
+        self._weekend_keys: dict[str, set] = defaultdict(set)
+
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------

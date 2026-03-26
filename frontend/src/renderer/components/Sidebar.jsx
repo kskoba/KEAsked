@@ -42,15 +42,16 @@ export default function Sidebar({ scheduleData, importResult = null, physicianVi
   const { stats = {}, issues = [], assignments = [] } = scheduleData
 
   // Build min/requested/max lookup from importResult
+  // Keys: exact name, lowercase name, and physician_id (all pointing to same entry)
   const physicianLimits = useMemo(() => {
     if (!importResult?.physicians?.length) return {}
     const map = {}
     importResult.physicians.forEach(p => {
-      map[p.physician_name] = {
-        min: p.shifts_min,
-        requested: p.shifts_requested,
-        max: p.shifts_max,
-      }
+      const entry = { min: p.shifts_min, requested: p.shifts_requested, max: p.shifts_max }
+      if (p.physician_name) map[p.physician_name] = entry
+      if (p.physician_name) map[p.physician_name.toLowerCase()] = entry
+      if (p.physician_id) map[p.physician_id] = entry
+      if (p.physician_id) map[p.physician_id.toLowerCase()] = entry
     })
     return map
   }, [importResult])
@@ -193,7 +194,7 @@ export default function Sidebar({ scheduleData, importResult = null, physicianVi
                         const g = physicianGroupCounts[name] || { a: 0, b: 0 }
                         const total = g.a + g.b
                         const aPct = total > 0 ? (g.a / total) * 100 : 50
-                        const limits = physicianLimits[name] || null
+                        const limits = physicianLimits[name] || physicianLimits[name?.toLowerCase()] || null
                         const violations = physicianViolations[name] || []
                         const violationCount = violations.length
                         const violationTitle = violations

@@ -138,9 +138,13 @@ def _resolve_pid(gen, physician_id: str) -> str:
     Return the canonical physician_id key used in gen.submissions.
 
     Tries in order:
-      1. Exact match
+      1. Exact match on submission keys
       2. Case-insensitive match on submission keys
       3. Case-insensitive match on physician_name inside submissions
+      4. Cross-reference via current schedule: find physician_name for this id
+         in the current result, then match that name against submission names.
+         Handles cases where per-xlsx ids (e.g. "AYeung") differ from
+         flat-file or synthetic submission keys (e.g. "Alex Yeung").
 
     Raises HTTPException(400) if no match is found.
     """
@@ -155,6 +159,21 @@ def _resolve_pid(gen, physician_id: str) -> str:
     for key, sub in gen.submissions.items():
         if sub.physician_name.lower() == lower:
             return key
+    # Cross-reference via current schedule result:
+    # find the physician_name stored in existing assignments for this id,
+    # then match that display name against submission physician_names.
+    result = _state.get("result")
+    if result:
+        pid_name: str | None = None
+        for a in result.assignments:
+            if a.physician_id.lower() == lower:
+                pid_name = a.physician_name
+                break
+        if pid_name:
+            pid_name_lower = pid_name.lower()
+            for key, sub in gen.submissions.items():
+                if sub.physician_name.lower() == pid_name_lower:
+                    return key
     raise HTTPException(
         status_code=400,
         detail=f"Physician {physician_id!r} is not in current submissions.",

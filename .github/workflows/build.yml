@@ -140,11 +140,6 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npx electron-builder --mac --arm64 --publish=never
 
-      # Staple the notarization ticket to the DMG itself so it passes
-      # Gatekeeper checks when distributed without internet access.
-      - name: Staple notarization ticket to DMG
-        run: xcrun stapler staple release/*.dmg
-
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:

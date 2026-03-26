@@ -17,6 +17,9 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
   const [generating, setGenerating] = useState(false)
   const [timeLimitMinutes, setTimeLimitMinutes] = useState(10)
   const [loading, setLoading] = useState(false)   // for 'load' mode
+  // Preferences sub-section in 'load' mode
+  const [prefPath, setPrefPath] = useState('')
+  const [prefMode, setPrefMode] = useState('flat')  // 'flat' | 'directory'
   const [progress, setProgress] = useState(null)   // { current, total, best_unfilled, solver, time_limit }
   const [countdown, setCountdown] = useState(null)  // seconds remaining for CP-SAT
   const [importError, setImportError] = useState(null)
@@ -48,11 +51,37 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
     }
   }
 
+  async function handleBrowsePref() {
+    let selected = null
+    if (window.electronAPI) {
+      selected = prefMode === 'directory'
+        ? await window.electronAPI.openDirectory()
+        : await window.electronAPI.openFile()
+    } else {
+      selected = prompt(`Enter ${prefMode === 'directory' ? 'directory' : 'file'} path:`)
+    }
+    if (selected) setPrefPath(selected)
+  }
+
   async function handleLoadSchedule() {
     if (!path) return
     setLoading(true)
     setLoadError(null)
     try {
+      // Step 1: import preferences if provided
+      let prefResult = null
+      if (prefPath.trim()) {
+        try {
+          prefResult = prefMode === 'flat'
+            ? await importFlatFile(prefPath, year, month)
+            : await importSubmissions(prefPath, year, month)
+          onImportDone(prefResult)
+        } catch (err) {
+          setLoadError(`Preferences import failed: ${err.message}`)
+          return
+        }
+      }
+      // Step 2: load the schedule (backend validates month consistency)
       const result = await loadScheduleFromFile(path)
       onScheduleLoaded(result)
     } catch (err) {
@@ -158,7 +187,7 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
         {[['flat', 'Single flat file'], ['directory', 'Directory'], ['load', 'Load Saved Schedule']].map(([val, label]) => (
           <button
             key={val}
-            onClick={() => { setMode(val); setPath(''); setImportError(null); setGenerateError(null); setLoadError(null) }}
+            onClick={() => { setMode(val); setPath(''); setPrefPath(''); setImportError(null); setGenerateError(null); setLoadError(null) }}
             disabled={importing || generating || loading}
             className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
               mode === val
@@ -198,7 +227,7 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
         </div>
       </div>
 
-      {/* Month / Year row — hidden in load mode (auto-detected from file) */}
+      {/* Month / Year row */}
       {mode !== 'load' && (
         <div className="flex gap-4 mb-5">
           <div className="flex-1">
@@ -214,7 +243,6 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
               ))}
             </select>
           </div>
-
           <div className="w-36">
             <label className="block text-sm font-medium text-slate-700 mb-1">Year</label>
             <input
@@ -226,6 +254,91 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
               disabled={importing || generating}
               className="w-full px-3 py-2 rounded-md border border-slate-300 bg-white text-slate-700 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400"
             />
+          </div>
+        </div>
+      )}
+
+      {/* Physician preferences sub-section — only in load mode */}
+      {mode === 'load' && (
+        <div className="mb-5 p-4 bg-slate-50 border border-slate-200 rounded-lg">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-sm font-medium text-slate-700">
+              Physician Preferences
+              <span className="ml-2 text-slate-400 font-normal">(optional — enables accurate constraint checking)</span>
+            </span>
+          </div>
+
+          {/* Pref mode toggle */}
+          <div className="flex gap-1 mb-3 p-1 bg-slate-200 rounded-md w-fit">
+            {[['flat', 'Flat file'], ['directory', 'Directory']].map(([val, label]) => (
+              <button
+                key={val}
+                onClick={() => { setPrefMode(val); setPrefPath('') }}
+                disabled={loading}
+                className={`px-2.5 py-1 text-xs font-medium rounded transition-colors ${
+                  prefMode === val ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {/* Month / year for preferences */}
+          <div className="flex gap-3 mb-3">
+            <div className="flex-1">
+              <label className="block text-xs font-medium text-slate-600 mb-1">Month</label>
+              <select
+                value={month}
+                onChange={e => setMonth(Number(e.target.value))}
+                disabled={loading}
+                className="w-full px-2 py-1.5 rounded border border-slate-300 bg-white text-slate-700 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400"
+              >
+                {MONTHS.map((name, idx) => (
+                  <option key={name} value={idx + 1}>{name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="w-28">
+              <label className="block text-xs font-medium text-slate-600 mb-1">Year</label>
+              <input
+                type="number"
+                value={year}
+                onChange={e => setYear(Number(e.target.value))}
+                min={2020}
+                max={2099}
+                disabled={loading}
+                className="w-full px-2 py-1.5 rounded border border-slate-300 bg-white text-slate-700 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400"
+              />
+            </div>
+          </div>
+
+          {/* Pref path row */}
+          <div className="flex gap-2">
+            <input
+              type="text"
+              readOnly
+              value={prefPath}
+              placeholder={prefMode === 'flat' ? 'Select flat preferences file…' : 'Select submissions directory…'}
+              className="flex-1 px-3 py-1.5 rounded border border-slate-300 bg-white text-slate-700 text-sm cursor-default focus:outline-none"
+            />
+            <button
+              onClick={handleBrowsePref}
+              disabled={loading}
+              className="px-3 py-1.5 bg-slate-600 hover:bg-slate-500 disabled:bg-slate-300 text-white text-sm font-medium rounded transition-colors"
+            >
+              Browse…
+            </button>
+            {prefPath && (
+              <button
+                onClick={() => setPrefPath('')}
+                disabled={loading}
+                className="px-2 py-1.5 text-slate-400 hover:text-slate-600 text-sm"
+                title="Clear"
+              >
+                ✕
+              </button>
+            )}
           </div>
         </div>
       )}

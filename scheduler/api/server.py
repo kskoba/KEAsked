@@ -70,8 +70,55 @@ except Exception:  # pragma: no cover
     _CPSAT_AVAILABLE = False
 from scheduler.backend.importer import import_directory, import_single_file
 from scheduler.backend.importer_flat import import_flat_file
-from scheduler.backend.models import PhysicianSubmission
+from scheduler.backend.models import DayAvailability, PhysicianSubmission
 from scheduler.backend.shifts import ALL_SHIFT_CODES, BLOCKS, SHIFT_TO_BLOCK, Shift
+
+
+def _synthetic_submissions(result: ScheduleResult, roster: dict) -> list[PhysicianSubmission]:
+    """
+    Build minimal PhysicianSubmission objects from a loaded schedule result so
+    that _require_generator() can reconstruct the generator without real
+    preference data.  Every physician in the roster is marked available for
+    every day of the schedule month — constraint checks will still run and
+    produce warnings, but manual assignments won't be blocked by missing subs.
+    """
+    year, month = result.year, result.month
+    num_days = calendar.monthrange(year, month)[1]
+    all_blocks = frozenset(range(5))   # blocks 0-4
+
+    # Count existing assigned shifts per physician from the result
+    shift_counts: dict[str, int] = {}
+    for a in result.assignments:
+        shift_counts[a.physician_id] = shift_counts.get(a.physician_id, 0) + 1
+
+    # All physician IDs — from roster plus any in the schedule not in roster
+    pids_in_result = {a.physician_id for a in result.assignments}
+    all_pids = set(roster.keys()) | pids_in_result
+
+    subs = []
+    for pid in all_pids:
+        info = roster.get(pid, {})
+        name = info.get("name", pid) if isinstance(info, dict) else pid
+        n = shift_counts.get(pid, 0)
+        days = [
+            DayAvailability(
+                date=datetime.date(year, month, d),
+                wants_to_work=True,
+                available_blocks=all_blocks,
+            )
+            for d in range(1, num_days + 1)
+        ]
+        subs.append(PhysicianSubmission(
+            physician_id=pid,
+            physician_name=name,
+            year=year,
+            month=month,
+            shifts_requested=n,
+            shifts_min=0,
+            shifts_max=n + 2,
+            days=days,
+        ))
+    return subs
 
 
 def _v(v) -> ViolationSchema:
@@ -836,9 +883,9 @@ def load_schedule(body: LoadScheduleRequest) -> ScheduleResponse:
     """
     Load a previously exported schedule xlsx and make it the active schedule.
 
-    Manual assignment and swap endpoints require a generator (built during
-    normal import+generate). When loading from file, those features show an
-    error asking the user to re-import and regenerate.
+    Builds synthetic PhysicianSubmission objects (all days available) so that
+    manual assignment and swap endpoints work without re-importing preferences.
+    Constraint violations will still be reported as warnings.
     """
     fp = Path(body.file)
     if not fp.is_file():
@@ -859,12 +906,36 @@ def load_schedule(body: LoadScheduleRequest) -> ScheduleResponse:
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Failed to parse schedule: {exc}")
 
+    # Validate month consistency with already-imported preferences
+    existing_subs: list[PhysicianSubmission] = _state.get("submissions") or []
+    if existing_subs:
+        sub_year = existing_subs[0].year
+        sub_month = existing_subs[0].month
+        if (sub_year, sub_month) != (result.year, result.month):
+            import calendar as _cal
+            sub_mon_name = _cal.month_name[sub_month]
+            sched_mon_name = _cal.month_name[result.month]
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Month mismatch: imported preferences are for {sub_mon_name} {sub_year} "
+                    f"but the schedule is for {sched_mon_name} {result.year}. "
+                    f"Re-import preferences for {sched_mon_name} {result.year} first, "
+                    f"or load the schedule without preferences."
+                ),
+            )
+
     _state["result"] = result
     _state["year"] = result.year
     _state["month"] = result.month
-    # Do not clear generator — if the user previously imported for this month,
-    # manual assignment will still work. If months differ, the generator will
-    # be wrong but the assign endpoint guards against that.
+    _state["generator"] = None   # will be rebuilt on first assign call
+
+    # If no real submissions were imported, build synthetic ones so manual
+    # assignment still works (constraint checks will fire as warnings).
+    if not existing_subs:
+        cfg = _state.get("scheduler_config") or _load_scheduler_config()
+        _state["submissions"] = _synthetic_submissions(result, roster)
+        _state["scheduler_config"] = cfg
 
     return _result_to_response(result)
 

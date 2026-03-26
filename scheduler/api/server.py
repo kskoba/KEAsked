@@ -100,8 +100,8 @@ def _synthetic_submissions(result: ScheduleResult, roster: dict) -> list[Physici
 
     subs = []
     for pid in all_pids:
-        info = roster.get(pid, {})
-        name = info.get("name", pid) if isinstance(info, dict) else pid
+        info = roster.get(pid)
+        name = getattr(info, 'name', pid) if info is not None else pid
         n = shift_counts.get(pid, 0)
         days = [
             DayAvailability(
@@ -131,6 +131,36 @@ def _v(v) -> ViolationSchema:
         description=v.description,
         is_hard=v.rule in _HARD_VIOLATION_RULES,
     )
+
+
+def _resolve_pid(gen, physician_id: str) -> str:
+    """
+    Return the canonical physician_id key used in gen.submissions.
+
+    Tries in order:
+      1. Exact match
+      2. Case-insensitive match on submission keys
+      3. Case-insensitive match on physician_name inside submissions
+
+    Raises HTTPException(400) if no match is found.
+    """
+    if physician_id in gen.submissions:
+        return physician_id
+    lower = physician_id.lower()
+    # Case-insensitive ID lookup
+    for key in gen.submissions:
+        if key.lower() == lower:
+            return key
+    # Name-based lookup (handles xlsx display names that became physician_ids)
+    for key, sub in gen.submissions.items():
+        if sub.physician_name.lower() == lower:
+            return key
+    raise HTTPException(
+        status_code=400,
+        detail=f"Physician {physician_id!r} is not in current submissions.",
+    )
+
+
 from scheduler.backend.validator import validate
 
 # ---------------------------------------------------------------------------
@@ -955,15 +985,24 @@ def manual_assign(body: ManualAssignRequest) -> ManualAssignResponse:
     if body.shift_code not in ALL_SHIFT_CODES:
         raise HTTPException(status_code=400, detail=f"Unknown shift code: {body.shift_code!r}")
 
-    if body.physician_id not in gen.submissions:
-        raise HTTPException(
-            status_code=400, detail=f"Physician {body.physician_id!r} not in current submissions."
-        )
+    pid = _resolve_pid(gen, body.physician_id)
 
     try:
         d = datetime.date.fromisoformat(body.date)
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid date: {body.date!r}")
+
+    # Hard block: physician already has a different shift on this day
+    same_day = [
+        a for a in result.assignments
+        if a.physician_id == pid and a.date == d and a.shift.code != body.shift_code
+    ]
+    if same_day:
+        sub_name = gen.submissions[pid].physician_name
+        raise HTTPException(
+            status_code=400,
+            detail=f"{sub_name} already has a shift on {body.date} ({same_day[0].shift.code}). A physician cannot work two shifts on the same day.",
+        )
 
     # Find the Shift object
     shift_obj: Shift | None = None
@@ -987,10 +1026,10 @@ def manual_assign(body: ManualAssignRequest) -> ManualAssignResponse:
             if not (a.date == d and a.shift.code == body.shift_code)
         ]
 
-    violations = gen.assign_manual(body.physician_id, d, shift_obj)
+    violations = gen.assign_manual(pid, d, shift_obj)
 
     # Update the result: remove from unfilled if it was there, add to assignments
-    sub = gen.submissions[body.physician_id]
+    sub = gen.submissions[pid]
     result.unfilled = [
         u for u in result.unfilled
         if not (u.date == d and u.shift.code == body.shift_code)
@@ -1035,10 +1074,7 @@ def check_violations(body: ManualAssignRequest):
     if body.shift_code not in ALL_SHIFT_CODES:
         raise HTTPException(status_code=400, detail=f"Unknown shift code: {body.shift_code!r}")
 
-    if body.physician_id not in gen.submissions:
-        raise HTTPException(
-            status_code=400, detail=f"Physician {body.physician_id!r} not in submissions."
-        )
+    pid = _resolve_pid(gen, body.physician_id)
 
     try:
         d = datetime.date.fromisoformat(body.date)
@@ -1062,7 +1098,7 @@ def check_violations(body: ManualAssignRequest):
     if existing:
         gen._unassign(existing.physician_id, d, shift_obj)
 
-    violations = gen._check_constraints(body.physician_id, d, shift_obj) or []
+    violations = gen._check_constraints(pid, d, shift_obj) or []
 
     # Restore the previous occupant
     if existing:

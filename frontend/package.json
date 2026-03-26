@@ -43,11 +43,14 @@
     "win": {
       "target": [{ "target": "nsis", "arch": ["x64"] }]
     },
+    "afterSign": "scripts/notarize.js",
     "mac": {
-      "target": [{ "target": "dmg" }],
+      "target": [{ "target": "dmg", "arch": ["arm64"] }],
       "category": "public.app-category.productivity",
-      "hardenedRuntime": false,
-      "identity": null
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
     },
     "nsis": {
       "oneClick": false,
@@ -62,6 +65,7 @@
     "react-dom": "^18.3.0"
   },
   "devDependencies": {
+    "@electron/notarize": "^2.3.0",
     "@vitejs/plugin-react": "^4.3.0",
     "autoprefixer": "^10.4.0",
     "electron": "^30.0.0",

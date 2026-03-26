@@ -54,8 +54,13 @@ jobs:
           if-no-files-found: error
 
   # ─── macOS ARM64 (Apple Silicon — M1/M2/M3/M4) ──────────────────────────────
-  # Intel Mac users: install Rosetta 2 (System Preferences → General → Software
-  # Update → More Info) — the ARM64 binary runs transparently via Rosetta.
+  # Intel Mac users: install Rosetta 2 — the ARM64 binary runs via Rosetta.
+  # Requires GitHub secrets:
+  #   APPLE_CERTIFICATE              — base64-encoded Developer ID Application .p12
+  #   APPLE_CERTIFICATE_PASSWORD     — password for that .p12
+  #   APPLE_ID                       — Apple ID email used for notarization
+  #   APPLE_APP_SPECIFIC_PASSWORD    — app-specific password (appleid.apple.com)
+  #   APPLE_TEAM_ID                  — 10-character Team ID (developer.apple.com)
   build-mac:
     runs-on: macos-latest
     steps:
@@ -90,11 +95,55 @@ jobs:
         working-directory: frontend
         run: npm run build
 
-      - name: Build macOS DMG
+      # ── Certificate import ─────────────────────────────────────────────────
+      # Creates a short-lived keychain, imports the Developer ID cert so that
+      # electron-builder (via CSC_LINK / CSC_KEY_PASSWORD) can sign the app.
+      - name: Import Developer ID certificate
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+
+          # Decode the .p12
+          echo "$CERTIFICATE_BASE64" | base64 --decode -o "$RUNNER_TEMP/certificate.p12"
+
+          # Create and configure a temporary keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Import the certificate (allow codesign to use it without prompts)
+          security import "$RUNNER_TEMP/certificate.p12" \
+            -P "$CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Add the keychain to the search list
+          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain
+
+      # ── Sign, notarize, and package ────────────────────────────────────────
+      # CSC_LINK / CSC_KEY_PASSWORD tell electron-builder where the cert is.
+      # APPLE_* env vars are picked up by scripts/notarize.js (afterSign hook)
+      # which calls notarytool and then staples the ticket to the .app.
+      - name: Build macOS DMG (sign + notarize)
         working-directory: frontend
         env:
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          CSC_LINK: ${{ secrets.APPLE_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npx electron-builder --mac --arm64 --publish=never
+
+      # Staple the notarization ticket to the DMG itself so it passes
+      # Gatekeeper checks when distributed without internet access.
+      - name: Staple notarization ticket to DMG
+        run: xcrun stapler staple release/*.dmg
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
@@ -125,7 +174,7 @@ jobs:
             | Windows (x64) | `KEA Physician Scheduler Setup *.exe` |
             | macOS (Apple Silicon + Intel via Rosetta 2) | `*.dmg` |
 
-            > **macOS note:** The app is unsigned. On first launch, right-click the DMG → Open to bypass Gatekeeper.
+            > **macOS note:** The app is signed and notarized. Double-click the DMG to install normally.
           files: |
             windows-installer/*.exe
             macos-dmg/*.dmg

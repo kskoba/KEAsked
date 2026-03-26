@@ -7,6 +7,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+!frontend/build/
 .venv/
 venv/
 env/
@@ -47,3 +48,6 @@ npm-debug.log*
 
 # Sensitive config — the real file has the API key; only the template is committed
 scheduler/config/scheduler_config.yaml
+
+# Local certificates and credentials (never push)
+certs/

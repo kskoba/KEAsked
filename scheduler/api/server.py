@@ -38,7 +38,10 @@ from scheduler.api.schemas import (
     ManualAssignRequest,
     ManualAssignResponse,
     PhysicianImportResult,
+    AssignOnCallRequest,
     OnCallAssignmentSchema,
+    OnCallCandidateSchema,
+    OnCallCandidatesResponse,
     PhysicianInfo,
     PhysiciansResponse,
     ImportDirectoryResponse,
@@ -1138,6 +1141,124 @@ def get_candidates(date: str, shift_code: str) -> CandidatesResponse:
             for c in candidates
         ],
     )
+
+
+# ---------------------------------------------------------------------------
+# On-call endpoints
+# ---------------------------------------------------------------------------
+
+def _oncall_violations(pid: str, d: datetime.date, call_type: str, result) -> list[str]:
+    """
+    Return human-readable constraint violations for assigning pid to a
+    DOC or NOC slot on date d.
+
+    DOC rule: no regular shift the day before.
+    NOC rule: no regular shift starting after 1200h on that same day.
+    """
+    violations: list[str] = []
+    prev_day = d - datetime.timedelta(days=1)
+
+    if call_type == "DOC":
+        if any(a.physician_id == pid and a.date == prev_day for a in result.assignments):
+            violations.append("Has a shift the day before")
+    elif call_type == "NOC":
+        if any(a.physician_id == pid and a.date == d and a.shift.start_hour > 12
+               for a in result.assignments):
+            violations.append("Has a shift starting after 1200h")
+
+    return violations
+
+
+@app.get("/api/oncall-candidates", response_model=OnCallCandidatesResponse)
+def get_oncall_candidates(date: str, call_type: str) -> OnCallCandidatesResponse:
+    """
+    Return all physicians who could fill a DOC or NOC slot, with any
+    constraint violations noted as warnings.  All physicians are returned
+    (violations don't hard-block — the user can force-assign).
+    """
+    result: ScheduleResult | None = _state.get("result")
+    if result is None:
+        raise HTTPException(status_code=400, detail="No schedule in memory.")
+
+    try:
+        d = datetime.date.fromisoformat(date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid date: {date!r}")
+
+    call_type = call_type.upper()
+    if call_type not in ("DOC", "NOC"):
+        raise HTTPException(status_code=400, detail=f"call_type must be DOC or NOC, got {call_type!r}")
+
+    # Current occupant (if any)
+    current = next((oc for oc in result.on_calls if oc.date == d and oc.call_type == call_type), None)
+
+    # Build candidate list from roster + anyone already in the schedule
+    roster: dict = _state.get("roster") or {}
+    all_pids: set[str] = set(roster.keys()) | {a.physician_id for a in result.assignments}
+
+    candidates: list[OnCallCandidateSchema] = []
+    for pid in sorted(all_pids):
+        info = roster.get(pid)
+        if info and getattr(info, "no_call", False):
+            continue   # physician is exempt from on-call
+        name = getattr(info, "name", pid) if info else pid
+        violations = _oncall_violations(pid, d, call_type, result)
+        candidates.append(OnCallCandidateSchema(
+            physician_id=pid,
+            physician_name=name,
+            violations=violations,
+        ))
+
+    # Sort: no violations first, then alphabetically by name
+    candidates.sort(key=lambda c: (len(c.violations) > 0, c.physician_name))
+
+    return OnCallCandidatesResponse(
+        date=date,
+        call_type=call_type,
+        current_physician_id=current.physician_id if current else None,
+        candidates=candidates,
+    )
+
+
+@app.post("/api/assign-oncall", response_model=ScheduleResponse)
+def assign_oncall(body: AssignOnCallRequest) -> ScheduleResponse:
+    """
+    Assign, change, or remove a physician from a DOC or NOC slot.
+    Set physician_id to empty string to remove the on-call assignment.
+    Violations are warnings only — assignments are force-applied.
+    """
+    result: ScheduleResult | None = _state.get("result")
+    if result is None:
+        raise HTTPException(status_code=400, detail="No schedule in memory.")
+
+    try:
+        d = datetime.date.fromisoformat(body.date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid date: {body.date!r}")
+
+    call_type = body.call_type.upper()
+    if call_type not in ("DOC", "NOC"):
+        raise HTTPException(status_code=400, detail=f"call_type must be DOC or NOC")
+
+    # Remove existing on-call for this date/type
+    result.on_calls = [
+        oc for oc in result.on_calls
+        if not (oc.date == d and oc.call_type == call_type)
+    ]
+
+    if body.physician_id.strip():
+        pid = body.physician_id.strip()
+        roster: dict = _state.get("roster") or {}
+        info = roster.get(pid)
+        name = getattr(info, "name", pid) if info else pid
+        result.on_calls.append(OnCallAssignment(
+            date=d,
+            call_type=call_type,
+            physician_id=pid,
+            physician_name=name,
+        ))
+
+    return _result_to_response(result)
 
 
 # Entry point

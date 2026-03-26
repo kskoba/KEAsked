@@ -194,3 +194,22 @@ class DetectFlatResponse(BaseModel):
 
 class LoadScheduleRequest(BaseModel):
     file: str               # absolute path to a previously exported schedule .xlsx
+
+
+class OnCallCandidateSchema(BaseModel):
+    physician_id: str
+    physician_name: str
+    violations: list[str] = []     # human-readable constraint violations (shown as warnings)
+
+
+class OnCallCandidatesResponse(BaseModel):
+    date: str
+    call_type: str                 # "DOC" or "NOC"
+    current_physician_id: str | None = None
+    candidates: list[OnCallCandidateSchema]
+
+
+class AssignOnCallRequest(BaseModel):
+    date: str       # YYYY-MM-DD
+    call_type: str  # "DOC" or "NOC"
+    physician_id: str   # empty string = remove the on-call assignment

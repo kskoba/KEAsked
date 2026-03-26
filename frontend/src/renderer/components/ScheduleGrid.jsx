@@ -93,7 +93,7 @@ function truncateName(name, max = 13) {
   return name.slice(0, max - 1) + '…'
 }
 
-export default function ScheduleGrid({ scheduleData, onOpenConflict, onReplaceAssignment, swapMode, swapFirst, onSwapClick }) {
+export default function ScheduleGrid({ scheduleData, onOpenConflict, onReplaceAssignment, swapMode, swapFirst, onSwapClick, onEditOnCall }) {
   const { assignments = [], unfilled = [], on_calls = [], year, month } = scheduleData
 
   const dates = useMemo(() => {
@@ -166,6 +166,7 @@ export default function ScheduleGrid({ scheduleData, onOpenConflict, onReplaceAs
             swapMode={swapMode}
             swapFirst={swapFirst}
             onSwapClick={onSwapClick}
+            onEditOnCall={onEditOnCall}
           />
         ))}
       </div>
@@ -173,7 +174,7 @@ export default function ScheduleGrid({ scheduleData, onOpenConflict, onReplaceAs
   )
 }
 
-function WeekBlock({ weekDates, dateSet, assignmentMap, unfilledMap, onCallsMap, onOpenConflict, onReplaceAssignment, swapMode, swapFirst, onSwapClick }) {
+function WeekBlock({ weekDates, dateSet, assignmentMap, unfilledMap, onCallsMap, onOpenConflict, onReplaceAssignment, swapMode, swapFirst, onSwapClick, onEditOnCall }) {
   return (
     <div className="overflow-auto rounded-lg border border-slate-200 shadow-sm">
       <table className="border-collapse text-xs whitespace-nowrap w-full">
@@ -244,11 +245,17 @@ function WeekBlock({ weekDates, dateSet, assignmentMap, unfilledMap, onCallsMap,
                     return (
                       <td
                         key={dateStr}
+                        onClick={() => inSchedule && onEditOnCall && onEditOnCall(dateStr, callType)}
                         style={{ minWidth: 110, height: 34, borderLeft: '1px solid #bae6fd', borderBottom: '1px solid #bae6fd', background: name ? '#e0f2fe' : '#f0f9ff' }}
+                        className={inSchedule && onEditOnCall ? 'cursor-pointer hover:brightness-95' : ''}
+                        title={inSchedule ? (name ? `Edit ${callType}: ${name}` : `Assign ${callType}`) : ''}
                       >
-                        {name && (
+                        {inSchedule && (
                           <div className="flex items-center h-full px-1.5">
-                            <span className="truncate text-xs font-medium text-sky-800">{truncateName(name)}</span>
+                            {name
+                              ? <span className="truncate text-xs font-medium text-sky-800">{truncateName(name)}</span>
+                              : <span className="text-xs text-sky-300 italic">+ assign</span>
+                            }
                           </div>
                         )}
                       </td>

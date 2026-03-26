@@ -138,3 +138,31 @@ export async function getCandidates(date, shiftCode) {
   const params = new URLSearchParams({ date, shift_code: shiftCode })
   return request('GET', `/api/candidates?${params}`)
 }
+
+/**
+ * Fetch candidates for a DOC or NOC on-call slot.
+ * All physicians are returned; constraint violations appear as warnings.
+ * @param {string} date      ISO date string e.g. "2026-06-01"
+ * @param {string} callType  "DOC" or "NOC"
+ */
+export async function getOnCallCandidates(date, callType) {
+  const params = new URLSearchParams({ date, call_type: callType })
+  return request('GET', `/api/oncall-candidates?${params}`)
+}
+
+/**
+ * Assign, change, or remove a physician from a DOC or NOC slot.
+ * Pass an empty string for physicianId to remove the on-call assignment.
+ * @param {string} date         ISO date string
+ * @param {string} callType     "DOC" or "NOC"
+ * @param {string} physicianId  physician_id, or "" to remove
+ * @returns {ScheduleResponse}
+ */
+export async function assignOnCall(date, callType, physicianId) {
+  return request('POST', '/api/assign-oncall', {
+    date,
+    call_type: callType,
+    physician_id: physicianId,
+  })
+}
+

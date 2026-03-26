@@ -6,6 +6,7 @@ import ScheduleGrid from './components/ScheduleGrid'
 import Sidebar from './components/Sidebar'
 import ConflictModal from './components/ConflictModal'
 import ReplaceModal from './components/ReplaceModal'
+import OnCallModal from './components/OnCallModal'
 import { assignPhysician, getSchedule, checkViolations } from './api'
 
 export default function App() {
@@ -34,6 +35,9 @@ export default function App() {
 
   // Swap violation confirmation: null | { items: [{physician, description}], onConfirm: fn }
   const [swapViolationConfirm, setSwapViolationConfirm] = useState(null)
+
+  // On-call edit modal: null | { date: string, callType: string }
+  const [onCallSlot, setOnCallSlot] = useState(null)
 
   // When schedule refreshes, prune violations for assignments that no longer exist
   useEffect(() => {
@@ -193,6 +197,15 @@ export default function App() {
     return () => window.removeEventListener('keydown', handler)
   }, [swapMode, handleCancelSwap])
 
+  const handleEditOnCall = useCallback((date, callType) => {
+    setOnCallSlot({ date, callType })
+  }, [])
+
+  const handleOnCallAssigned = useCallback((updatedSchedule) => {
+    setScheduleData(updatedSchedule)
+    setOnCallSlot(null)
+  }, [])
+
   return (
     <div className="flex flex-col h-screen bg-slate-50 overflow-hidden">
       <Header view={view} onBack={handleBackToSetup} hasSchedule={!!scheduleData} onViewSchedule={handleViewSchedule} />
@@ -250,6 +263,7 @@ export default function App() {
               swapMode={swapMode}
               swapFirst={swapFirst}
               onSwapClick={handleSwapClick}
+              onEditOnCall={handleEditOnCall}
             />
           </div>
           <Sidebar
@@ -288,6 +302,14 @@ export default function App() {
           importResult={importResult}
           onAssigned={handleReplaceAssigned}
           onClose={handleReplaceClose}
+        />
+      )}
+
+      {onCallSlot && (
+        <OnCallModal
+          slot={onCallSlot}
+          onAssigned={handleOnCallAssigned}
+          onClose={() => setOnCallSlot(null)}
         />
       )}
     </div>

@@ -1,0 +1,377 @@
+==============================================================================
+  SCHEDULE COMPARISON
+  Schedule A: CP-SAT  (cpsat-v99.xlsx)
+  Schedule B: Human  (june-human.xlsx)
+==============================================================================
+
+------------------------------------------------------------------------------
+  FILL RATE
+------------------------------------------------------------------------------
+  Filled / Total               682/690 (98.8%) 673/690 (97.5%)
+
+------------------------------------------------------------------------------
+  UNFILLED SLOTS
+------------------------------------------------------------------------------
+  Count                        8             17
+
+    Day 13  PM CALL       Night On Call     Day 12  PM CALL       1600-0459
+    Day 14  PM CALL       Night On Call     Day 14  PM CALL       1600-0459
+    Day 26  PM CALL       Night On Call     Day 19  AM CALL       0500-1559
+    Day 27  AM CALL       Day On Call       Day 19  PM CALL       1600-0459
+    Day 28  AM CALL       Day On Call       Day 20  PM CALL       1600-0459
+    Day 28  PM CALL       Night On Call     Day 21  AM CALL       0500-1559
+    Day 29  AM CALL       Day On Call       Day 21  PM CALL       1600-0459
+    Day 29  PM CALL       Night On Call     Day 25  PM CALL       1600-0459
+                                            Day 26  AM CALL       0500-1559
+                                            Day 26  PM CALL       1600-0459
+                                            Day 27  AM CALL       0500-1559
+                                            Day 27  PM CALL       1600-0459
+                                            Day 28  AM CALL       0500-1559
+                                            Day 28  PM CALL       1600-0459
+                                            Day 29  AM CALL       0500-1559
+                                            Day 29  PM CALL       1600-0459
+                                            Day 30  PM CALL       1600-0459
+
+------------------------------------------------------------------------------
+  OVERALL GROUP A:B SPLIT  (target A=38% / B=62%)
+------------------------------------------------------------------------------
+  Group A shifts               240 (38.1%)   240 (38.1%)
+  Group B shifts               390 (61.9%)   390 (61.9%)
+  A:B ratio                    240:390                240:390
+
+------------------------------------------------------------------------------
+  GROUP A:B RATIO PER PHYSICIAN  (target A=38% / B=62%)
+------------------------------------------------------------------------------
+  Physician                CP-SAT A:B (A%)    Human A:B (A%)
+  ------------------------------------------------------------
+  Francescutti            0:6 (0%)             0:6 (0%)
+  Krisik                  0:9 (0%)             0:9 (0%)
+  Chang E                 1:3 (25%)            2:2 (50%)
+  Khangura                2:6 (25%)            3:3 (50%)
+  Braun                   2:2 (50%)            2:2 (50%)
+  Brown F                 1:1 (50%)            1:1 (50%)
+  Hayward                 2:2 (50%)            2:2 (50%)
+  Dong                    3:2 (60%)            -
+  Thirsk                  2:6 (25%)            3:4 (43%)
+  Bly                     3:6 (33%)            2:6 (25%)
+  Brown T                 3:3 (50%)            3:4 (43%)
+  Rawe                    3:3 (50%)            3:4 (43%)
+  Rosenblum               1:1 (50%)            1:2 (33%)
+  Lam-Rico                8:8 (50%)            7:10 (41%)
+  Taylor                  1:3 (25%)            2:3 (40%)
+  Schindler               4:5 (44%)            3:7 (30%)
+  Chang J                 3:4 (43%)            2:5 (29%)
+  Lam N                   2:5 (29%)            2:4 (33%)
+  Williamson              2:5 (29%)            2:4 (33%)
+  Breton                  5:5 (50%)            4:7 (36%)
+  Haager                  4:5 (44%)            4:5 (44%)
+  Samoraj                 4:5 (44%)            4:5 (44%)
+  Yeung, Aref             4:5 (44%)            4:5 (44%)
+  Zhang                   4:5 (44%)            4:5 (44%)
+  Woods                   2:5 (29%)            2:3 (40%)
+  Fisher                  6:7 (46%)            4:7 (36%)
+  MacKenzie               2:4 (33%)            3:4 (43%)
+  Mrochuk                 2:4 (33%)            3:4 (43%)
+  Deol                    2:4 (33%)            2:4 (33%)
+  Edgecumbe               1:2 (33%)            1:2 (33%)
+  Gill                    1:2 (33%)            1:2 (33%)
+  Houston                 1:2 (33%)            1:2 (33%)
+  Meleshko                2:4 (33%)            2:4 (33%)
+  Morrison                2:4 (33%)            2:4 (33%)
+  Farfus                  5:6 (45%)            4:7 (36%)
+  Sharma                  3:7 (30%)            3:5 (38%)
+  Lucyk                   4:5 (44%)            4:6 (40%)
+  Norum                   4:5 (44%)            4:6 (40%)
+  Esterhuizen             4:8 (33%)            5:7 (42%)
+  Garcea                  3:5 (38%)            4:5 (44%)
+  Dance                   3:4 (43%)            3:5 (38%)
+  Keyes                   3:4 (43%)            3:5 (38%)
+  Rogers                  3:5 (38%)            3:4 (43%)
+  Skoblenick              3:4 (43%)            3:5 (38%)
+  Smith                   3:5 (38%)            3:4 (43%)
+  Walker                  3:4 (43%)            3:5 (38%)
+  Lung                    4:7 (36%)            5:7 (42%)
+  Kjelland                2:4 (33%)            3:5 (38%)
+  Grishin                 5:8 (38%)            4:8 (33%)
+  Singh                   5:9 (36%)            5:9 (36%)
+  Bacon                   5:8 (38%)            5:7 (42%)
+  Lali                    5:8 (38%)            5:7 (42%)
+  Lefebvre                5:8 (38%)            5:7 (42%)
+  Pritchard               5:8 (38%)            5:7 (42%)
+  Brenneis                4:6 (40%)            4:6 (40%)
+  Fanaeian                4:6 (40%)            4:6 (40%)
+  MacGougan               4:6 (40%)            4:6 (40%)
+  Mason                   4:6 (40%)            4:6 (40%)
+  Matemisz                2:3 (40%)            2:3 (40%)
+  McKinnon                2:3 (40%)            2:3 (40%)
+  Mithani                 2:3 (40%)            2:3 (40%)
+  Sachs                   4:6 (40%)            4:6 (40%)
+  Scheirer O              2:3 (40%)            2:3 (40%)
+  Wittmeier               4:6 (40%)            4:6 (40%)
+  Chee                    4:7 (36%)            4:6 (40%)
+  Velji                   4:6 (40%)            4:7 (36%)
+  Whiteside               4:6 (40%)            4:7 (36%)
+  Desrochers              4:7 (36%)            4:7 (36%)
+  Yeung, Alex             4:7 (36%)            4:7 (36%)
+  Tiessen                 5:9 (36%)            5:8 (38%)
+  Dong S                  -                     2:3 (40%)
+  Peterson                2:3 (40%)            -
+  Peterson C              -                     2:3 (40%)
+  Amanda Hanson           4:7 (36%)            -
+  Hanson A                -                     4:7 (36%)
+  Davis                   3:5 (38%)            3:5 (38%)
+  Johnston                3:5 (38%)            3:5 (38%)
+  MacLean                 3:5 (38%)            3:5 (38%)
+  Scheirer R              3:5 (38%)            3:5 (38%)
+  Schonnop                3:5 (38%)            3:5 (38%)
+
+------------------------------------------------------------------------------
+  SINGLETON 2400h NIGHTS  (isolated: no adjacent 2400h for same physician)
+------------------------------------------------------------------------------
+  Total singletons             23            31
+
+  Physician                CP-SAT days          Human days
+  ------------------------------------------------------
+  Bly                     -                       5, 19
+  Brenneis                28                     11, 25, 30
+  Breton                  6                      17, 28
+  Brown T                 -                       24
+  Desrochers              28                     -
+  Esterhuizen             4, 25, 30              2, 6, 11, 25
+  Farfus                  8                      -
+  Fisher                  18, 27                 1
+  Keyes                   1, 3, 7                14, 16
+  Lam-Rico                -                       1
+  Lung                    5                      5
+  MacLean                 22                     -
+  Mason                   -                       7, 16
+  Meleshko                -                       10
+  Pritchard               -                       19
+  Rawe                    -                       5, 9
+  Sachs                   21                     4, 11
+  Scheirer R              10, 13, 18             6, 13
+  Singh                   -                       1
+  Tiessen                 1, 11                  22
+  Velji                   4                      26
+  Whiteside               23                     -
+  Woods                   15                     18
+
+------------------------------------------------------------------------------
+  SINGLETON WORKING DAYS  (any shift: no adjacent working day for same physician)
+------------------------------------------------------------------------------
+  Total isolated days          112           139
+  Physicians affected          53                     56
+
+  Physician                CP-SAT days          Human days
+  ------------------------------------------------------
+  Bacon                   8                      -
+  Brenneis                2                      15
+  Breton                  22                     9
+  Brown T                 19                     -
+  Chang E                 1, 11                  -
+  Chang J                 -                       3, 9, 11, 15, 19
+  Chee                    1                      1, 24
+  Dance                   22, 26                 2, 13, 22, 26
+  Davis                   1, 5, 7                7
+  Deol                    3, 5                   5, 7, 11
+  Desrochers              16, 18, 28, 30         2, 23, 28, 30
+  Dong                    8                      -
+  Dong S                  -                       10, 14, 17
+  Esterhuizen             -                       2, 16, 19
+  Fanaeian                4                      25
+  Farfus                  10                     -
+  Fisher                  27                     1, 11
+  Francescutti            -                       23, 26
+  Garcea                  1, 6                   -
+  Gill                    2, 11, 26, 30          9, 16, 22
+  Grishin                 15                     14, 21
+  Haager                  -                       11
+  Hanson A                -                       27
+  Hayward                 19, 24, 26, 29         17, 24, 26, 29
+  Johnston                13                     -
+  Keyes                   1, 3, 5, 10, 12, 15    1, 3, 8, 10, 12, 14, 16
+  Khangura                16, 21, 25, 30         1, 25, 30
+  Kjelland                23, 25, 30             1, 23, 25, 30
+  Krisik                  26                     18, 30
+  Lali                    1, 26                  1, 7, 23, 26
+  Lam-Rico                4                      1
+  Lefebvre                13, 30                 15
+  Lucyk                   1, 20                  4, 17
+  Lung                    12                     -
+  MacGougan               30                     30
+  MacKenzie               15, 19, 26             1, 15, 19, 26
+  MacLean                 -                       2, 8
+  Mason                   30                     3, 30
+  McKinnon                11, 15                 1, 8, 11, 15
+  Meleshko                2                      -
+  Mithani                 14, 20, 22, 24         22, 24
+  Mrochuk                 -                       1
+  Norum                   7, 9                   8, 11, 13
+  Peterson C              -                       1
+  Pritchard               16, 24, 30             30
+  Rawe                    9                      2
+  Rogers                  5                      -
+  Rosenblum               -                       11
+  Sachs                   -                       7
+  Samoraj                 -                       2, 15
+  Scheirer O              19, 28                 -
+  Scheirer R              2, 10                  10
+  Schindler               22, 25                 17
+  Schonnop                11, 18, 23, 30         4, 11, 16, 18, 30
+  Sharma                  -                       8, 10, 12, 14, 22
+  Singh                   -                       1, 10
+  Skoblenick              -                       3, 28
+  Smith                   -                       16, 18, 21
+  Taylor                  23                     -
+  Thirsk                  3, 13, 24              3, 10, 12, 14, 24
+  Tiessen                 1, 11, 23, 25          11
+  Velji                   18                     16
+  Walker                  24, 30                 1
+  Whiteside               25                     -
+  Williamson              -                       4, 17
+  Wittmeier               1, 6, 10, 12, 17, 19, 22, 24, 29  15, 17, 22, 24, 29
+  Woods                   10                     -
+  Yeung, Alex             5, 19                  18, 25
+  Yeung, Aref             1                      1, 4, 16, 19, 23, 25
+  Zhang                   14, 28                 2, 11, 21, 25
+
+------------------------------------------------------------------------------
+  CONSECUTIVE RUN VIOLATIONS  (exceeds personal max_consecutive_shifts from physicians.yaml)
+------------------------------------------------------------------------------
+  Total violations             8             5
+
+  Fanaeian                [max=3]
+    CP-SAT: days 6-9 (4d)
+    Human: (ok)
+  Keyes                   [max=1]
+    CP-SAT: days 7-8 (2d)
+    Human: days 5-6 (2d)
+  Krisik                  [max=3]
+    CP-SAT: days 15-18 (4d)
+    Human: (ok)
+  MacLean                 [max=3]
+    CP-SAT: days 20-23 (4d)
+    Human: (ok)
+  Mithani                 [max=2]
+    CP-SAT: (ok)
+    Human: days 7-9 (3d)
+  Morrison                [max=3]
+    CP-SAT: days 27-30 (4d)
+    Human: (ok)
+  Pritchard               [max=3]
+    CP-SAT: (ok)
+    Human: days 16-19 (4d)
+  Scheirer O              [max=3]
+    CP-SAT: days 22-25 (4d)
+    Human: (ok)
+  Sharma                  [max=3]
+    CP-SAT: days 4-7 (4d)
+    Human: (ok)
+  Smith                   [max=3]
+    CP-SAT: (ok)
+    Human: days 4-7 (4d)
+  Wittmeier               [max=3]
+    CP-SAT: (ok)
+    Human: days 5-8 (4d)
+  Woods                   [max=3]
+    CP-SAT: days 17-20 (4d)
+    Human: (ok)
+
+------------------------------------------------------------------------------
+  PER-PHYSICIAN SHIFT COUNTS
+------------------------------------------------------------------------------
+  Physician                CP-SAT     Human
+  ----------------------------------------------
+  Amanda Hanson           12  0  +12
+  Bacon                   14      13      +1
+  Bly                     10      9       +1
+  Braun                   4       4       =
+  Brenneis                11      11      =
+  Breton                  11      12      -1
+  Brown F                 2       2       =
+  Brown T                 6       7       -1
+  Chang E                 5       4       +1
+  Chang J                 7       7       =
+  Chee                    12      11      +1
+  Dance                   8       8       =
+  Davis                   9       9       =
+  Deol                    7       7       =
+  Desrochers              12      12      =
+  Dong                    6  0  +6
+  Dong S                  0  5  -5
+  Edgecumbe               3       3       =
+  Esterhuizen             13      13      =
+  Fanaeian                11      11      =
+  Farfus                  12      11      +1
+  Fisher                  14  12  +2
+  Francescutti            6       6       =
+  Garcea                  9       9       =
+  Gill                    4       3       +1
+  Grishin                 14      13      +1
+  Haager                  9       10      -1
+  Hanson A                0  11  -11
+  Hayward                 4       4       =
+  Houston                 3       3       =
+  Johnston                9       8       +1
+  Keyes                   8       9       -1
+  Khangura                8       7       +1
+  Kjelland                7       8       -1
+  Krisik                  10      10      =
+  Lali                    14      13      +1
+  Lam N                   7       6       +1
+  Lam-Rico                17  19  -2
+  Lefebvre                14      13      +1
+  Lucyk                   10      10      =
+  Lung                    12      12      =
+  MacGougan               10      11      -1
+  MacKenzie               6       7       -1
+  MacLean                 9       9       =
+  Mason                   11      11      =
+  Matemisz                6       5       +1
+  McKinnon                6       6       =
+  Meleshko                6       6       =
+  Mithani                 6       5       +1
+  Morrison                7       7       =
+  Mrochuk                 6       7       -1
+  Norum                   10      11      -1
+  Peterson                5  0  +5
+  Peterson C              0  6  -6
+  Pritchard               14      13      +1
+  Rawe                    7       7       =
+  Rogers                  8       7       +1
+  Rosenblum               2       3       -1
+  Sachs                   11      11      =
+  Samoraj                 9       10      -1
+  Scheirer O              6       5       +1
+  Scheirer R              9       9       =
+  Schindler               10      11      -1
+  Schonnop                8       9       -1
+  Sharma                  11  9  +2
+  Singh                   15      15      =
+  Skoblenick              7       8       -1
+  Smith                   8       7       +1
+  Taylor                  4       5       -1
+  Thirsk                  9       8       +1
+  Tiessen                 15  13  +2
+  Velji                   11      12      -1
+  Walker                  8       9       -1
+  Whiteside               10      11      -1
+  Williamson              7       7       =
+  Wittmeier               11      11      =
+  Woods                   8  5  +3
+  Yeung, Alex             12      12      =
+  Yeung, Aref             10      10      =
+  Zhang                   10      10      =
+
+------------------------------------------------------------------------------
+  SUMMARY COMPARISON
+------------------------------------------------------------------------------
+  Metric                         CP-SAT             Human
+  ----------------------------------------------------------
+  Fill rate                    98.84%        97.54%
+  Unfilled slots               8             17
+  Singleton 2400h nights       23            31
+  A:B RMSE (per physician)     0.091         0.078
+  Shift-count RMSE             1.185                  1.185
+
+==============================================================================

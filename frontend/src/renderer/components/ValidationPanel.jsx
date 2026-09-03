@@ -1,14 +1,50 @@
 import React, { useState } from 'react'
+import { overrideIssue, overrideClear, overrideAll, getValidationSummary } from '../api'
 
-export default function ValidationPanel({ importResult }) {
+export default function ValidationPanel({ importResult, onImportResultUpdate }) {
   const { physicians = [], total_physicians, valid_physicians } = importResult
   const [expanded, setExpanded] = useState({})
+  const [busy, setBusy] = useState(null)     // key of the in-flight override action, or null
+  const [report, setReport] = useState(null) // null | { loading, error, items }
 
   const validCount = physicians.filter(p => p.is_valid).length
   const totalCount = total_physicians ?? physicians.length
 
   function toggleRow(id) {
     setExpanded(prev => ({ ...prev, [id]: !prev[id] }))
+  }
+
+  async function runOverrideAction(key, fn) {
+    setBusy(key)
+    try {
+      const fresh = await fn()
+      onImportResultUpdate?.(fresh)
+    } catch (err) {
+      alert(`Override failed: ${err.message}`)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  function handleToggleIssue(physicianId, rule, isOverridden) {
+    const key = `${physicianId}:${rule}`
+    runOverrideAction(key, () =>
+      isOverridden ? overrideClear(physicianId, rule) : overrideIssue(physicianId, rule)
+    )
+  }
+
+  function handleOverrideAll(physicianId) {
+    runOverrideAction(`all:${physicianId}`, () => overrideAll(physicianId))
+  }
+
+  async function handleGenerateReport() {
+    setReport({ loading: true, error: null, items: [] })
+    try {
+      const res = await getValidationSummary()
+      setReport({ loading: false, error: null, items: res.items })
+    } catch (err) {
+      setReport({ loading: false, error: err.message, items: [] })
+    }
   }
 
   return (
@@ -22,6 +58,13 @@ export default function ValidationPanel({ importResult }) {
           Physician Validation
         </h2>
         <div className="flex items-center gap-3">
+          <button
+            onClick={handleGenerateReport}
+            className="px-3 py-1.5 text-xs font-semibold rounded-md border border-slate-300 bg-white text-slate-600 hover:bg-slate-100 transition-colors"
+            title="List every remaining (non-overridden) error, grouped by physician"
+          >
+            Generate Error Report
+          </button>
           <div className={`px-3 py-1 rounded-full text-sm font-semibold ${
             validCount === totalCount
               ? 'bg-emerald-100 text-emerald-700'
@@ -46,13 +89,12 @@ export default function ValidationPanel({ importResult }) {
       </div>
 
       {/* Table */}
-      <div className="overflow-auto max-h-96">
+      <div className="overflow-auto max-h-[65vh]">
         <table className="w-full text-sm">
           <thead className="sticky top-0 bg-slate-50 border-b border-slate-200">
             <tr>
               <th className="text-left px-6 py-2.5 font-medium text-slate-600 w-8"></th>
               <th className="text-left px-3 py-2.5 font-medium text-slate-600">Physician</th>
-              <th className="text-left px-3 py-2.5 font-medium text-slate-600">ID</th>
               <th className="text-right px-3 py-2.5 font-medium text-slate-600">Shifts Requested</th>
               <th className="text-center px-3 py-2.5 font-medium text-slate-600">Status</th>
               <th className="text-right px-6 py-2.5 font-medium text-slate-600">Issues</th>
@@ -61,7 +103,7 @@ export default function ValidationPanel({ importResult }) {
           <tbody className="divide-y divide-slate-100">
             {physicians.length === 0 && (
               <tr>
-                <td colSpan={6} className="text-center py-8 text-slate-400">
+                <td colSpan={5} className="text-center py-8 text-slate-400">
                   No physician records found.
                 </td>
               </tr>
@@ -69,6 +111,7 @@ export default function ValidationPanel({ importResult }) {
             {physicians.map((physician) => {
               const isOpen = expanded[physician.physician_id]
               const issueCount = physician.issues ? physician.issues.length : 0
+              const hasOverridableError = (physician.issues || []).some(i => i.severity === 'error' && !i.overridden)
 
               return (
                 <React.Fragment key={physician.physician_id}>
@@ -91,11 +134,6 @@ export default function ValidationPanel({ importResult }) {
                     {/* Name */}
                     <td className="px-3 py-3 font-medium text-slate-800">
                       {physician.physician_name}
-                    </td>
-
-                    {/* ID */}
-                    <td className="px-3 py-3 text-slate-500 font-mono text-xs">
-                      {physician.physician_id}
                     </td>
 
                     {/* Shifts requested */}
@@ -125,8 +163,13 @@ export default function ValidationPanel({ importResult }) {
                     {/* Issue count */}
                     <td className="px-6 py-3 text-right">
                       {issueCount > 0 ? (
-                        <span className="inline-flex items-center justify-center min-w-[1.5rem] px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 text-xs font-bold">
-                          {issueCount}
+                        <span className="inline-flex items-center gap-1.5">
+                          <span className="inline-flex items-center justify-center min-w-[1.5rem] px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 text-xs font-bold">
+                            {issueCount}
+                          </span>
+                          <span className="text-xs font-medium text-sky-600">
+                            {isOpen ? 'hide' : 'view / override'}
+                          </span>
                         </span>
                       ) : (
                         <span className="text-slate-300">—</span>
@@ -137,24 +180,56 @@ export default function ValidationPanel({ importResult }) {
                   {/* Expanded issues */}
                   {isOpen && issueCount > 0 && (
                     <tr className="bg-red-50">
-                      <td colSpan={6} className="px-12 py-3">
+                      <td colSpan={5} className="px-12 py-3">
+                        {hasOverridableError && (
+                          <div className="mb-2">
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleOverrideAll(physician.physician_id) }}
+                              disabled={busy === `all:${physician.physician_id}`}
+                              className="px-2.5 py-1 text-xs font-semibold rounded border border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100 disabled:opacity-50 transition-colors"
+                            >
+                              {busy === `all:${physician.physician_id}` ? 'Overriding…' : 'Override All Errors'}
+                            </button>
+                          </div>
+                        )}
                         <ul className="space-y-1.5">
-                          {physician.issues.map((issue, i) => (
-                            <li key={i} className="flex items-start gap-2 text-sm">
-                              <IssueIcon severity={issue.severity} />
-                              <div>
-                                <span className={`font-medium mr-1 ${
-                                  issue.severity === 'error' ? 'text-red-700' : 'text-amber-700'
-                                }`}>
-                                  [{issue.severity?.toUpperCase() ?? 'INFO'}]
-                                </span>
-                                <span className="text-slate-700">{issue.message}</span>
-                                {issue.rule && (
-                                  <span className="ml-2 text-xs text-slate-400 font-mono">({issue.rule})</span>
-                                )}
-                              </div>
-                            </li>
-                          ))}
+                          {physician.issues.map((issue, i) => {
+                            const key = `${physician.physician_id}:${issue.rule}`
+                            return (
+                              <li key={i} className={`flex items-start gap-2 text-sm ${issue.overridden ? 'opacity-50' : ''}`}>
+                                <div className="w-20 flex-shrink-0">
+                                  {issue.severity === 'error' && (
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); handleToggleIssue(physician.physician_id, issue.rule, issue.overridden) }}
+                                      disabled={busy === key}
+                                      className={`w-full px-2 py-0.5 text-xs font-semibold rounded border transition-colors disabled:opacity-50 ${
+                                        issue.overridden
+                                          ? 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'
+                                          : 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
+                                      }`}
+                                    >
+                                      {busy === key ? '…' : issue.overridden ? 'Un-override' : 'Override'}
+                                    </button>
+                                  )}
+                                </div>
+                                <IssueIcon severity={issue.severity} />
+                                <div className="flex-1">
+                                  <span className={`font-medium mr-1 ${
+                                    issue.severity === 'error' ? 'text-red-700' : 'text-amber-700'
+                                  }`}>
+                                    [{issue.severity?.toUpperCase() ?? 'INFO'}]
+                                  </span>
+                                  <span className={`text-slate-700 ${issue.overridden ? 'line-through' : ''}`}>{issue.message}</span>
+                                  {issue.rule && (
+                                    <span className="ml-2 text-xs text-slate-400 font-mono">({issue.rule})</span>
+                                  )}
+                                  {issue.overridden && (
+                                    <span className="ml-2 text-xs font-semibold text-amber-600">OVERRIDDEN</span>
+                                  )}
+                                </div>
+                              </li>
+                            )
+                          })}
                         </ul>
                       </td>
                     </tr>
@@ -164,6 +239,57 @@ export default function ValidationPanel({ importResult }) {
             })}
           </tbody>
         </table>
+      </div>
+
+      {report && (
+        <ErrorReportModal report={report} onClose={() => setReport(null)} />
+      )}
+    </div>
+  )
+}
+
+function ErrorReportModal({ report, onClose }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+      <div
+        className="bg-white rounded-xl shadow-xl border border-slate-200 w-full max-w-2xl mx-4 max-h-[80vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+          <h2 className="font-semibold text-slate-800 text-sm">Remaining Validation Errors</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-lg leading-none">✕</button>
+        </div>
+
+        <div className="px-5 py-4 overflow-auto flex-1">
+          {report.loading && <p className="text-sm text-slate-500">Loading…</p>}
+          {report.error && <p className="text-sm text-red-600">{report.error}</p>}
+          {!report.loading && !report.error && report.items.length === 0 && (
+            <p className="text-sm text-emerald-600 font-medium">No remaining errors — everything is either valid or overridden.</p>
+          )}
+          {!report.loading && !report.error && report.items.length > 0 && (
+            <ul className="space-y-4">
+              {report.items.map((item, i) => (
+                <li key={i}>
+                  <div className="font-semibold text-slate-800 text-sm mb-1">{item.physician_name}</div>
+                  <ul className="list-disc list-inside space-y-0.5">
+                    {item.errors.map((err, j) => (
+                      <li key={j} className="text-sm text-slate-600">{err}</li>
+                    ))}
+                  </ul>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-3 px-5 py-3 border-t border-slate-200">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50 transition-colors"
+          >
+            Close
+          </button>
+        </div>
       </div>
     </div>
   )

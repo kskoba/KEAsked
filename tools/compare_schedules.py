@@ -505,9 +505,14 @@ def consecutive_run_violations(
 
     Returns {physician: [(start_date, end_date, run_length), ...]}
     """
-    # Build {physician: sorted list of worked dates}
+    # Build {physician: sorted list of worked dates}. On-call (DOC/NOC)
+    # assignments are excluded — max_consecutive_shifts in physicians.yaml,
+    # and the generator's own hard consecutive-day constraint, only ever
+    # apply to regular clinical shifts, never to on-call duty.
     worked: dict[str, set[int]] = defaultdict(set)
     for a in schedule.assignments:
+        if a.group == 'call':
+            continue
         worked[a.physician].add(a.date)
 
     violations: dict[str, list[tuple[int, int, int]]] = {}

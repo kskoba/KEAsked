@@ -106,6 +106,19 @@ def _parse_worksheet(
     physician_name = str(_cell(ws, _NAME_ROW, _NAME_COL) or "").strip()
     physician_id = physician_id_override or physician_name
 
+    # Some physicians type their name in the wrong cell (e.g. leaving
+    # "insert name here" in A1 and writing their real name a few columns
+    # over instead). Capture every other non-empty text cell in row 1 as a
+    # fallback identity candidate — resolution still only ever exact-matches
+    # against the roster (see physician_resolver.py), this just gives it
+    # more strings to try.
+    raw_name_candidates: list[str] = []
+    max_col = min(ws.max_column or 1, 20)
+    for col in range(_NAME_COL + 1, max_col + 1):
+        val = str(_cell(ws, _NAME_ROW, col) or "").strip()
+        if val:
+            raw_name_candidates.append(val)
+
     def _int_cell(row, col, default=0):
         try:
             return int(_cell(ws, row, col) or default)
@@ -154,6 +167,7 @@ def _parse_worksheet(
         shifts_0600h_requested=shifts_0600h_requested,
         days=days,
         source_file=source_file,
+        raw_name_candidates=raw_name_candidates,
     )
 
 

@@ -69,29 +69,31 @@ class DayAvailability:
     def valid_block_count(self) -> int:
         return len(self.available_blocks)
 
-    @property
-    def is_valid_day(self) -> bool:
+    def is_valid_day(self, min_blocks: int = 2) -> bool:
         """
         A day is valid only if the physician marked the Z row AND has at
-        least 2 complete blocks available.
-        """
-        return self.wants_to_work and self.valid_block_count >= 2
+        least `min_blocks` complete blocks available.
 
-    @property
-    def is_anchored(self) -> bool:
+        Default is 2. Physicians restricted to a single shift type per day
+        (e.g. only_2400h) will never mark more than 1 block on any day by
+        design — for those, the caller should pass 1, sourced from that
+        physician's `min_blocks_per_day` rule_override in physicians.yaml.
+        """
+        return self.wants_to_work and self.valid_block_count >= min_blocks
+
+    def is_anchored(self, min_blocks: int = 2) -> bool:
         """
         An anchored day is a valid day that contains at least one anchor
         block (0600h block index 0, or 2400h block index 4).
         """
         from scheduler.backend.shifts import ANCHOR_BLOCK_INDICES
 
-        return self.is_valid_day and bool(
+        return self.is_valid_day(min_blocks) and bool(
             self.available_blocks & ANCHOR_BLOCK_INDICES
         )
 
-    @property
-    def is_valid_weekend(self) -> bool:
-        return self.is_valid_day and self.is_weekend
+    def is_valid_weekend(self, min_blocks: int = 2) -> bool:
+        return self.is_valid_day(min_blocks) and self.is_weekend
 
 
 @dataclass
@@ -139,6 +141,13 @@ class PhysicianSubmission:
 
     days: list[DayAvailability] = field(default_factory=list)
     source_file: str = ""
+
+    # Other non-empty text found in row 1 besides physician_name itself
+    # (per-xlsx submissions only) — some physicians type their name in the
+    # wrong cell (e.g. next to a leftover "insert name here" in A1) rather
+    # than leaving it blank. Tried as identity-resolution fallbacks; see
+    # server.py's _resolve_submission_id.
+    raw_name_candidates: list[str] = field(default_factory=list)
 
     # Per-physician rule overrides.  Keys are rule identifiers from the
     # validator (e.g. "min_valid_days"); values are replacement thresholds

@@ -34,7 +34,7 @@ function SectionHeader({ title, open, onToggle, icon }) {
   )
 }
 
-export default function Sidebar({ scheduleData, importResult = null, physicianViolations = {} }) {
+export default function Sidebar({ scheduleData, importResult = null, physicianViolations = {}, swapMode = false, onToggleSwap = null }) {
   const [statsOpen, setStatsOpen] = useState(true)
   const [issuesOpen, setIssuesOpen] = useState(true)
   const [rulesOpen, setRulesOpen] = useState(false)
@@ -114,8 +114,9 @@ export default function Sidebar({ scheduleData, importResult = null, physicianVi
           />
           {statsOpen && (
             <div className="px-4 pb-4 space-y-4">
-              {/* CP-SAT optimality badge */}
-              {solver_status && (() => {
+              {/* Solution quality badge + shift swap toggle */}
+              <div className="flex items-center gap-2 flex-wrap">
+                {solver_status && (() => {
                 const isOptimal = solver_status === 'optimal'
                 const gap = optimality_gap_pct ?? 0
                 const label = isOptimal
@@ -142,7 +143,22 @@ export default function Sidebar({ scheduleData, importResult = null, physicianVi
                     <span>{label}</span>
                   </div>
                 )
-              })()}
+                })()}
+
+                {onToggleSwap && (
+                  <button
+                    onClick={onToggleSwap}
+                    className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-md text-xs font-semibold border transition-colors
+                      ${swapMode
+                        ? 'bg-amber-400 border-amber-500 text-amber-900 hover:bg-amber-300'
+                        : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100'
+                      }`}
+                    title="Toggle shift swap mode"
+                  >
+                    ⇄ Shift Swap
+                  </button>
+                )}
+              </div>
 
               {/* Fill rate */}
               <div>

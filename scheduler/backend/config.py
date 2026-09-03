@@ -64,6 +64,20 @@ class PhysicianConfig:
     email: str = ""
     active: bool = True
 
+    # Structured name parts for display formatting (e.g. "Lastname, F").
+    # Not always fully known — first_name may be empty (surname-only on
+    # file), an initial ("F"), or a full first name ("Amanda"), depending
+    # on what's actually recorded for this physician.
+    last_name: str = ""
+    first_name: str = ""
+
+    # Other id/name strings this physician might appear under in imported
+    # submission files (e.g. a flat-file sheet using "Hanson A" for the
+    # physician whose canonical roster name is "Amanda Hanson"). Matched
+    # case-insensitively by physician_resolver.py — see that module for
+    # why this is exact-match only, never fuzzy.
+    aliases: list[str] = field(default_factory=list)
+
     # Scheduling behaviour preferences (stable across months)
     max_consecutive_shifts: int = 3    # SIAR — max shifts in a row (any type)
     max_consecutive_nights: int = 3    # NIAR — max 2400h shifts in a row
@@ -119,6 +133,9 @@ class PhysicianConfig:
 
     # Validation rule overrides.
     # Keys: "min_valid_days" | "min_valid_blocks" | "min_weekend_days" | "min_anchored_days"
+    #     | "min_blocks_per_day" (per-day block threshold for what counts as a
+    #       valid day at all — lower to 1 for physicians restricted to a single
+    #       shift type per day, e.g. only_2400h; see validator.day_block_threshold)
     # Values: int (replacement threshold) | None (disable rule)
     rule_overrides: dict[str, int | None] = field(default_factory=dict)
 
@@ -142,6 +159,7 @@ def _parse_physician(raw: dict) -> PhysicianConfig:
     valid_rules = {
         "min_valid_days", "min_valid_blocks",
         "min_weekend_days", "min_anchored_days",
+        "min_blocks_per_day",
     }
     overrides: dict[str, int | None] = {}
     for key, val in overrides_raw.items():
@@ -183,11 +201,17 @@ def _parse_physician(raw: dict) -> PhysicianConfig:
     raw_forbidden_times: list = sched.get("forbidden_shift_times") or []
     forbidden_shift_times = [str(t).strip() for t in raw_forbidden_times]
 
+    raw_aliases: list = raw.get("aliases") or []
+    aliases = [str(a).strip() for a in raw_aliases if str(a).strip()]
+
     return PhysicianConfig(
         id=str(raw["id"]),
         name=str(raw["name"]),
         email=str(raw.get("email") or ""),
         active=bool(raw.get("active", True)),
+        aliases=aliases,
+        last_name=str(raw.get("last_name") or ""),
+        first_name=str(raw.get("first_name") or ""),
         max_consecutive_shifts=int(sched.get("max_consecutive_shifts", 3)),
         max_consecutive_nights=int(
             sched.get("max_consecutive_nights", sched.get("max_consecutive_shifts", 3))

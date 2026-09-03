@@ -7,6 +7,7 @@ import Sidebar from './components/Sidebar'
 import ConflictModal from './components/ConflictModal'
 import ReplaceModal from './components/ReplaceModal'
 import OnCallModal from './components/OnCallModal'
+import AssignOrSwapModal from './components/AssignOrSwapModal'
 import { assignPhysician, getSchedule, checkViolations } from './api'
 
 export default function App() {
@@ -23,6 +24,10 @@ export default function App() {
   // Replace modal state (filled slots)
   const [replaceSlot, setReplaceSlot] = useState(null)     // AssignmentSchema | null
 
+  // Assign-or-swap choice, shown when a filled slot is clicked, before
+  // deciding which flow to open
+  const [pendingCellChoice, setPendingCellChoice] = useState(null)  // AssignmentSchema | null
+
   // True when schedule was loaded from a file (not freshly generated)
   const [scheduleLoadedFromFile, setScheduleLoadedFromFile] = useState(false)
 
@@ -38,6 +43,24 @@ export default function App() {
 
   // On-call edit modal: null | { date: string, callType: string }
   const [onCallSlot, setOnCallSlot] = useState(null)
+
+  // Recover an already-completed schedule on load — e.g. after a renderer
+  // reload/HMR interrupted the in-flight /api/generate request client-side
+  // while the backend kept solving in the background and finished anyway.
+  useEffect(() => {
+    if (scheduleData) return
+    let cancelled = false
+    getSchedule()
+      .then(result => {
+        if (!cancelled) {
+          setScheduleData(result)
+          setView('schedule')
+        }
+      })
+      .catch(() => { /* no schedule yet — normal on a fresh start */ })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // When schedule refreshes, prune violations for assignments that no longer exist
   useEffect(() => {
@@ -116,9 +139,26 @@ export default function App() {
     setConflictSlot(null)
   }, [])
 
+  // Clicking a filled cell opens the assign-or-swap choice first, rather
+  // than jumping straight into the Replace flow.
   const handleOpenReplace = useCallback((assignment) => {
-    setReplaceSlot(assignment)
+    setPendingCellChoice(assignment)
   }, [])
+
+  const handleChoosePendingClose = useCallback(() => {
+    setPendingCellChoice(null)
+  }, [])
+
+  const handleChooseAssign = useCallback(() => {
+    setReplaceSlot(pendingCellChoice)
+    setPendingCellChoice(null)
+  }, [pendingCellChoice])
+
+  const handleChooseSwap = useCallback(() => {
+    setSwapMode(true)
+    setSwapFirst(pendingCellChoice)
+    setPendingCellChoice(null)
+  }, [pendingCellChoice])
 
   const handleReplaceAssigned = useCallback((updatedSchedule, violationInfo) => {
     recordViolations(updatedSchedule, violationInfo)
@@ -219,7 +259,7 @@ export default function App() {
             importResult={importResult}
           />
           {importResult && (
-            <ValidationPanel importResult={importResult} />
+            <ValidationPanel importResult={importResult} onImportResultUpdate={handleImportDone} />
           )}
         </div>
       )}
@@ -233,20 +273,6 @@ export default function App() {
                 Schedule loaded from file — manual assignment and swaps require re-importing preferences first.
               </div>
             )}
-            {/* Toolbar */}
-            <div className="flex items-center gap-2 px-4 pt-3 pb-1 flex-shrink-0">
-              <button
-                onClick={handleToggleSwap}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-semibold border transition-colors
-                  ${swapMode
-                    ? 'bg-amber-400 border-amber-500 text-amber-900 hover:bg-amber-300'
-                    : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100'
-                  }`}
-                title="Toggle shift swap mode"
-              >
-                ⇄ Shift Swap
-              </button>
-            </div>
             {/* Swap mode banner */}
             {swapMode && (
               <div className="mx-4 mb-1 px-3 py-2 rounded bg-amber-100 border border-amber-400 text-amber-900 text-xs font-medium flex-shrink-0">
@@ -270,6 +296,8 @@ export default function App() {
             scheduleData={scheduleData}
             importResult={importResult}
             physicianViolations={physicianViolations}
+            swapMode={swapMode}
+            onToggleSwap={handleToggleSwap}
           />
         </div>
       )}
@@ -292,6 +320,15 @@ export default function App() {
           scheduleData={scheduleData}
           onAssigned={handleConflictAssigned}
           onClose={handleConflictClose}
+        />
+      )}
+
+      {pendingCellChoice && (
+        <AssignOrSwapModal
+          assignment={pendingCellChoice}
+          onAssign={handleChooseAssign}
+          onSwap={handleChooseSwap}
+          onClose={handleChoosePendingClose}
         />
       )}
 

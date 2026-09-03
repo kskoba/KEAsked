@@ -14,6 +14,7 @@ import asyncio
 import calendar
 import datetime
 import io
+import re
 import traceback
 from pathlib import Path
 from typing import Any
@@ -46,11 +47,17 @@ from scheduler.api.schemas import (
     PhysiciansResponse,
     ImportDirectoryResponse,
     LoadScheduleRequest,
+    OverrideAllRequest,
+    OverrideLogItem,
+    OverrideLogResponse,
+    OverrideRequest,
     ScheduleResponse,
     ScheduleStatsSchema,
     ShiftSchema,
     UnfilledSlotSchema,
     ValidationIssueSchema,
+    ValidationSummaryItem,
+    ValidationSummaryResponse,
     ViolationSchema,
 )
 import os
@@ -73,7 +80,7 @@ except Exception:  # pragma: no cover
     _CPSAT_AVAILABLE = False
 from scheduler.backend.importer import import_directory, import_single_file
 from scheduler.backend.importer_flat import import_flat_file
-from scheduler.backend.models import DayAvailability, PhysicianSubmission
+from scheduler.backend.models import DayAvailability, PhysicianSubmission, ValidationIssue
 from scheduler.backend.shifts import ALL_SHIFT_CODES, BLOCKS, SHIFT_TO_BLOCK, Shift
 
 
@@ -180,7 +187,13 @@ def _resolve_pid(gen, physician_id: str) -> str:
     )
 
 
-from scheduler.backend.validator import validate
+from scheduler.backend.physician_resolver import (
+    build_alias_index,
+    build_display_names,
+    resolve_physician_id,
+    sort_key as _physician_sort_key,
+)
+from scheduler.backend.validator import day_block_threshold, validate
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -223,35 +236,179 @@ _state: dict[str, Any] = {
     "directory": None,
     "source_file": None,
     "progress": {"current": 0, "total": 0, "running": False, "best_unfilled": None},
+    "cancel_requested": False,
+    # physician_id -> set of rule ids the user has manually overridden this
+    # session (see /api/override*). Reset on every fresh import.
+    "overrides": {},
 }
 
 
-def _apply_roster(submissions: list[PhysicianSubmission], roster: dict) -> None:
+# Common boilerplate in this practice's submission filenames (template
+# name, month, "with 0600 and night Q", revision markers) — stripped
+# before trying the filename as an identity candidate, so what's left is
+# just whatever a person actually typed as their own name in it.
+_FILENAME_BOILERPLATE = re.compile(
+    r"\b(january|february|march|april|may|june|july|august|september|october|november|december"
+    r"|20\d\d|master|preferences?|preference|with|and|night|copy|the|of|for)\b"
+    r"|0600|1200|\bq\b|\(\d+\)|[-_()]",
+    re.IGNORECASE,
+)
+
+
+def _clean_filename_candidate(sub: PhysicianSubmission) -> str:
+    stem = Path(sub.source_file).stem if sub.source_file else sub.physician_id
+    cleaned = _FILENAME_BOILERPLATE.sub(" ", stem)
+    return " ".join(cleaned.split())
+
+
+def _resolve_submission_id(sub: PhysicianSubmission, index: dict) -> str | None:
     """
-    Merge per-physician config (rule overrides etc.) into each submission.
-    Matching is case-insensitive so flat-file names like "BRAUN" match
-    roster IDs like "Braun".
+    Resolve one submission's identity against the alias index, trying
+    progressively less-reliable signals in order and stopping at the first
+    exact match (resolve_physician_id never fuzzy-matches, so trying more
+    candidate strings never risks a wrong guess — it just gives a real,
+    human-entered name more chances to be found):
+
+      1. physician_name (the cell the physician was meant to type their
+         name into).
+      2. raw_name_candidates (per-xlsx only) — other non-empty cells in
+         row 1, for when someone typed their name in the wrong spot
+         instead of leaving A1 blank/placeholder.
+      3. physician_id as-is — for directory imports this is the raw
+         filename stem.
+      4. physician_id with common filename boilerplate stripped (month
+         names, "Master Preferences", "with 0600 and night Q", revision
+         markers like "(1)") — so e.g. "October 2026 Brian Whiteside.xlsx"
+         resolves via the remaining "Brian Whiteside".
+
+    Row-1 content (1-2) is tried before any filename-derived candidate
+    (3-4) deliberately: a filename can be ambiguous in ways a physician's
+    own typed name isn't (e.g. a bare "LAM" in a filename could mean
+    either Lam physician, but row 1 saying "Kenneth Lam" is unambiguous).
     """
-    lower_roster = {k.lower(): v for k, v in roster.items()}
+    for candidate in (sub.physician_name, *sub.raw_name_candidates):
+        resolved = resolve_physician_id(candidate, index)
+        if resolved:
+            return resolved
+    return (
+        resolve_physician_id(sub.physician_id, index)
+        or resolve_physician_id(_clean_filename_candidate(sub), index)
+    )
+
+
+def _revision_score(sub: PhysicianSubmission) -> int:
+    """
+    Heuristic for picking the authoritative file when the same physician
+    has multiple submissions this month (a resubmitted/revised request).
+    Higher wins. "updated" anywhere in the filename is a strong deliberate
+    signal; a trailing "(N)" (e.g. from a browser appending a number to a
+    duplicate download) is a weaker but still meaningful "later" signal —
+    N itself is used so (2) beats (1) beats no marker.
+    """
+    name = Path(sub.source_file).name.lower()
+    score = 1000 if "updated" in name else 0
+    m = re.search(r"\((\d+)\)", name)
+    if m:
+        score += int(m.group(1))
+    return score
+
+
+def _apply_roster(submissions: list[PhysicianSubmission], roster: dict) -> set[str]:
+    """
+    Resolve each submission's physician_id to the roster's canonical id
+    (matching against id/name/aliases — see physician_resolver.py) and merge
+    in per-physician config (rule overrides etc.). Rewrites physician_id and
+    physician_name in place to the canonical values so every submission that
+    resolves to the same physician — regardless of which name variant the
+    source file used — ends up identified consistently.
+
+    Also deduplicates: when a directory import contains multiple files that
+    resolve to the same physician (a resubmission), only the highest-scoring
+    one per _revision_score is kept — mutates `submissions` in place to drop
+    the others, so neither the Validate page nor the generator ever sees a
+    physician listed/counted twice.
+
+    physician_name is set to the same "Lastname, F" display form used on
+    the Validate page (see physician_resolver.build_display_names), not
+    the roster's raw `name` field — this is the single place that name
+    reaches every submission, so the generated schedule (grid, sidebar,
+    export) ends up using the same names the Validate page showed, instead
+    of drifting to whatever the roster's full-name field happens to say.
+
+    Returns the set of physician_id values (as originally seen, unmodified)
+    that could not be resolved against the roster at all — these need a
+    human to either fix the source data or add an alias to physicians.yaml.
+    """
+    index = build_alias_index(roster)
+    display_names = build_display_names(roster)
+    unresolved: set[str] = set()
+    # canonical_id -> that physician's index in `ordered`, so a later
+    # higher-scoring duplicate can replace it in place (by index, not by
+    # equality — PhysicianSubmission's dataclass __eq__ is field-wise, so
+    # two genuinely-identical duplicate files would break a `list.index()`
+    # based approach).
+    best_index: dict[str, int] = {}
+    ordered: list[PhysicianSubmission] = []
     for sub in submissions:
-        cfg = roster.get(sub.physician_id) or lower_roster.get(sub.physician_id.lower())
-        if cfg:
-            sub.rule_overrides = dict(cfg.rule_overrides)
+        canonical_id = _resolve_submission_id(sub, index)
+        if canonical_id is None:
+            unresolved.add(sub.physician_id)
+            ordered.append(sub)
+            continue
+        cfg = roster[canonical_id]
+        sub.physician_id = cfg.id
+        sub.physician_name = display_names.get(cfg.id, cfg.name)
+        sub.rule_overrides = dict(cfg.rule_overrides)
+        if canonical_id not in best_index:
+            best_index[canonical_id] = len(ordered)
+            ordered.append(sub)
+        else:
+            idx = best_index[canonical_id]
+            if _revision_score(sub) >= _revision_score(ordered[idx]):
+                ordered[idx] = sub
+            # else: sub is a lower-scoring duplicate — silently dropped
+    submissions[:] = ordered
+    return unresolved
 
 
 def _build_import_results(
     submissions: list[PhysicianSubmission],
+    unresolved: set[str] | None = None,
+    roster: dict | None = None,
 ) -> list[PhysicianImportResult]:
-    results = []
+    """
+    Build one PhysicianImportResult per submission for the Validate page.
+
+    Display name is "Lastname, F" (full first name only where needed to
+    disambiguate — see physician_resolver.build_display_names), and the
+    list is sorted by last name, with unresolved-identity submissions
+    surfaced first since those need attention before anything else.
+    """
+    unresolved = unresolved or set()
+    roster = roster or {}
+    display_names = build_display_names(roster)
+    paired: list[tuple[PhysicianSubmission, PhysicianImportResult]] = []
     for sub in submissions:
         vr = validate(sub)
-        valid_days = sum(1 for d in sub.days if d.is_valid_day)
-        valid_blocks = sum(len(d.available_blocks) for d in sub.days if d.is_valid_day)
-        valid_weekends = sum(1 for d in sub.days if d.is_valid_weekend)
-        anchored = sum(1 for d in sub.days if d.is_anchored)
-        results.append(PhysicianImportResult(
+        if sub.physician_id in unresolved:
+            vr.issues.insert(0, ValidationIssue(
+                severity="error",
+                rule="unresolved_physician",
+                message=(
+                    f"{sub.physician_id!r} does not match any physician in the "
+                    f"roster. Add it as an alias in physicians.yaml if this is a "
+                    f"known physician under a different name."
+                ),
+                physician_id=sub.physician_id,
+            ))
+        min_blocks = day_block_threshold(sub)
+        valid_days = sum(1 for d in sub.days if d.is_valid_day(min_blocks))
+        valid_blocks = sum(len(d.available_blocks) for d in sub.days if d.is_valid_day(min_blocks))
+        valid_weekends = sum(1 for d in sub.days if d.is_valid_weekend(min_blocks))
+        anchored = sum(1 for d in sub.days if d.is_anchored(min_blocks))
+        paired.append((sub, PhysicianImportResult(
             physician_id=sub.physician_id,
-            physician_name=sub.physician_name,
+            physician_name=display_names.get(sub.physician_id, sub.physician_name),
             shifts_requested=sub.shifts_requested,
             shifts_min=sub.shifts_min,
             shifts_max=sub.shifts_max,
@@ -261,18 +418,29 @@ def _build_import_results(
             valid_blocks=valid_blocks,
             valid_weekend_days=valid_weekends,
             anchored_days=anchored,
-            issues=[
+            issues=(issues_schema := [
                 ValidationIssueSchema(
                     severity=i.severity,
                     rule=i.rule,
                     message=i.message,
                     physician_id=i.physician_id or sub.physician_id,
+                    overridden=i.rule in _state["overrides"].get(sub.physician_id, set()),
                 )
                 for i in vr.issues
-            ],
-            is_valid=vr.is_valid,
-        ))
-    return results
+            ]),
+            is_valid=not any(isch.severity == "error" and not isch.overridden for isch in issues_schema),
+        )))
+
+    def _order(pair: tuple[PhysicianSubmission, PhysicianImportResult]) -> tuple:
+        sub, _ = pair
+        if sub.physician_id in unresolved:
+            return (0, sub.physician_name.casefold())
+        cfg = roster.get(sub.physician_id)
+        key = _physician_sort_key(cfg) if cfg else (sub.physician_name.casefold(), "")
+        return (1, key)
+
+    paired.sort(key=_order)
+    return [result for _, result in paired]
 
 
 def _load_scheduler_config() -> dict:
@@ -448,8 +616,9 @@ def import_submissions(body: ImportRequest) -> ImportDirectoryResponse:
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
-    _apply_roster(submissions, roster)
-    results = _build_import_results(submissions)
+    _state["overrides"] = {}
+    unresolved = _apply_roster(submissions, roster)
+    results = _build_import_results(submissions, unresolved, roster)
     _state.update(submissions=submissions, roster=roster, scheduler_config=scheduler_cfg,
                   year=body.year, month=body.month, directory=body.directory, source_file=None)
 
@@ -472,8 +641,9 @@ def import_flat(body: ImportFlatRequest) -> ImportDirectoryResponse:
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
-    _apply_roster(submissions, roster)
-    results = _build_import_results(submissions)
+    _state["overrides"] = {}
+    unresolved = _apply_roster(submissions, roster)
+    results = _build_import_results(submissions, unresolved, roster)
     _state.update(submissions=submissions, roster=roster, scheduler_config=scheduler_cfg,
                   year=body.year, month=body.month, directory=None, source_file=str(file_path))
 
@@ -482,6 +652,116 @@ def import_flat(body: ImportFlatRequest) -> ImportDirectoryResponse:
                                    directory=str(file_path),
                                    physicians=results, total_physicians=len(results),
                                    valid_physicians=valid_count)
+
+
+def _current_import_response() -> ImportDirectoryResponse:
+    """
+    Rebuild the Validate-page response from current session state (after an
+    override change) without re-reading anything from disk.
+    """
+    submissions: list[PhysicianSubmission] = _state.get("submissions") or []
+    roster = _state.get("roster") or {}
+    index = build_alias_index(roster)
+    unresolved = {
+        sub.physician_id for sub in submissions
+        if _resolve_submission_id(sub, index) is None
+    }
+    results = _build_import_results(submissions, unresolved, roster)
+    valid_count = sum(1 for r in results if r.is_valid)
+    return ImportDirectoryResponse(
+        year=_state.get("year"), month=_state.get("month"),
+        directory=_state.get("directory") or _state.get("source_file") or "",
+        physicians=results, total_physicians=len(results),
+        valid_physicians=valid_count,
+    )
+
+
+@app.post("/api/override", response_model=ImportDirectoryResponse)
+def override_issue(body: OverrideRequest) -> ImportDirectoryResponse:
+    """Mark one validation issue (physician_id + rule) as overridden for this session."""
+    _state["overrides"].setdefault(body.physician_id, set()).add(body.rule)
+    return _current_import_response()
+
+
+@app.post("/api/override-clear", response_model=ImportDirectoryResponse)
+def override_clear(body: OverrideRequest) -> ImportDirectoryResponse:
+    """Undo a single override."""
+    _state["overrides"].get(body.physician_id, set()).discard(body.rule)
+    return _current_import_response()
+
+
+@app.post("/api/override-all", response_model=ImportDirectoryResponse)
+def override_all(body: OverrideAllRequest) -> ImportDirectoryResponse:
+    """Override every current error-severity issue for one physician."""
+    submissions: list[PhysicianSubmission] = _state.get("submissions") or []
+    sub = next((s for s in submissions if s.physician_id == body.physician_id), None)
+    if sub is None:
+        raise HTTPException(status_code=404, detail=f"No submission for physician_id {body.physician_id!r}")
+    vr = validate(sub)
+    error_rules = {i.rule for i in vr.issues if i.severity == "error"}
+    if not error_rules:
+        index = build_alias_index(_state.get("roster") or {})
+        if _resolve_submission_id(sub, index) is None:
+            error_rules = {"unresolved_physician"}
+    _state["overrides"].setdefault(body.physician_id, set()).update(error_rules)
+    return _current_import_response()
+
+
+@app.get("/api/validation-summary", response_model=ValidationSummaryResponse)
+def validation_summary() -> ValidationSummaryResponse:
+    """
+    Plain-English error list per physician, excluding any issue that's been
+    overridden this session. Meant to be reviewed as a whole before
+    generating, or handed to someone else who isn't looking at the app.
+    """
+    submissions: list[PhysicianSubmission] = _state.get("submissions") or []
+    roster = _state.get("roster") or {}
+    index = build_alias_index(roster)
+    unresolved = {
+        sub.physician_id for sub in submissions
+        if _resolve_submission_id(sub, index) is None
+    }
+    results = _build_import_results(submissions, unresolved, roster)
+    items = []
+    for r in results:
+        errors = [i.message for i in r.issues if i.severity == "error" and not i.overridden]
+        if errors:
+            items.append(ValidationSummaryItem(physician_name=r.physician_name, errors=errors))
+    return ValidationSummaryResponse(items=items)
+
+
+@app.get("/api/override-log", response_model=OverrideLogResponse)
+def override_log() -> OverrideLogResponse:
+    """
+    What's been overridden this session and why — for deciding afterward
+    whether any of these should become a permanent rule_override in
+    physicians.yaml instead of a one-off click.
+    """
+    submissions: list[PhysicianSubmission] = _state.get("submissions") or []
+    roster = _state.get("roster") or {}
+    display_names = build_display_names(roster)
+    by_id = {sub.physician_id: sub for sub in submissions}
+    items = []
+    for physician_id, rules in _state.get("overrides", {}).items():
+        if not rules:
+            continue
+        sub = by_id.get(physician_id)
+        name = display_names.get(physician_id, sub.physician_name if sub else physician_id)
+        messages_by_rule = {}
+        if sub is not None:
+            vr = validate(sub)
+            messages_by_rule = {i.rule: i.message for i in vr.issues}
+        for rule in rules:
+            message = messages_by_rule.get(rule, "(no longer applicable — submission has changed)")
+            items.append(OverrideLogItem(physician_name=name, rule=rule, message=message))
+    return OverrideLogResponse(items=items)
+
+
+@app.post("/api/generate-cancel")
+def cancel_generate() -> dict:
+    """Request that an in-progress /api/generate stop early and return its best-found result."""
+    _state["cancel_requested"] = True
+    return {"cancelled": True}
 
 
 @app.get("/api/generate-progress")
@@ -509,6 +789,10 @@ async def generate(body: GenerateCachedRequest) -> ScheduleResponse:
     use_cpsat = _CPSAT_AVAILABLE
     n_iterations = 400
     cpsat_time_limit = float(body.time_limit_seconds) if body.time_limit_seconds else 600.0
+    _state["cancel_requested"] = False
+
+    def cancel_check() -> bool:
+        return _state["cancel_requested"]
 
     if use_cpsat:
         # CP-SAT: indeterminate progress — show 50% "Solving…" until done.
@@ -526,7 +810,8 @@ async def generate(body: GenerateCachedRequest) -> ScheduleResponse:
         if use_cpsat:
             gen = CpsatScheduleGenerator(submissions, roster, cfg)
             result = await asyncio.to_thread(
-                gen.generate, body.year, body.month, cpsat_time_limit, 8, progress_cb
+                gen.generate, body.year, body.month, cpsat_time_limit,
+                progress_callback=progress_cb, cancel_check=cancel_check,
             )
         else:
             gen = ScheduleGenerator(submissions, roster, cfg)

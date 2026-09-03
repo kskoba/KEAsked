@@ -45,6 +45,10 @@ _SITE_TO_GROUP: dict[str, SiteGroup] = {
 
 # Map time label → start hour (24-hour, integer).
 # 2400h is treated as 24 (not 0) so spacing arithmetic stays simple.
+# DOC/NOC (on-call) are included here — not real BLOCKS shifts, but giving
+# them a start hour lets assign_on_calls() reuse the same rest-gap check
+# (hours_between/is_spacing_ok) that regular shifts use, via a throwaway
+# Shift(time="DOC"/"NOC", site="") — see generator.py's assign_on_calls().
 _START_HOURS: dict[str, int] = {
     "0600h": 6,
     "0900h": 9,
@@ -57,9 +61,12 @@ _START_HOURS: dict[str, int] = {
     "1800h": 18,
     "2000h": 20,
     "2400h": 24,   # midnight; kept as 24 so spacing is always positive
+    "DOC": 5,      # Day On Call
+    "NOC": 13,     # Night On Call
 }
 
 _MIN_HOURS_BETWEEN_SHIFTS = 23
+_MAX_HOURS_BETWEEN_SHIFTS = 36
 
 
 # --------------------------------------------------------------------------- #
@@ -96,21 +103,50 @@ def hours_between(earlier: Shift, later: Shift) -> float:
     return (later.start_hour + 24) - earlier.start_hour
 
 
+def violates_min_spacing(prev_shift: Shift, next_shift: Shift) -> bool:
+    """
+    True if *next_shift* the day after *prev_shift* would give less than
+    the 23-hour minimum rest between start times. This is the HARD rule —
+    never allowed, no exceptions.
+    """
+    return hours_between(prev_shift, next_shift) < _MIN_HOURS_BETWEEN_SHIFTS
+
+
+def violates_max_spacing(prev_shift: Shift, next_shift: Shift) -> bool:
+    """
+    True if *next_shift* the day after *prev_shift* would be more than the
+    36-hour maximum gap between start times (e.g. a 0600h shift followed by
+    a 2400h shift the very next day). This is a SOFT rule — strongly
+    preferred against, but the CP-SAT model may still accept it under
+    heavy penalty rather than leave a slot unfilled (see generator_cpsat.py
+    HC-9's `long_gap` handling). Expected to hold in the large majority of
+    a solved schedule, not treated as an absolute constraint.
+    """
+    return hours_between(prev_shift, next_shift) > _MAX_HOURS_BETWEEN_SHIFTS
+
+
 def is_spacing_ok(prev_shift: Shift, next_shift: Shift) -> bool:
     """
     Return True if assigning *next_shift* on the day after *prev_shift*
-    respects the 23-hour minimum gap between start times.
+    respects both the 23-hour minimum and 36-hour maximum gap between
+    start times. Used where there's no objective to make the max-gap side
+    soft against (e.g. on-call eligibility in assign_on_calls, which
+    already degrades gracefully — an unfilled call slot doesn't block
+    schedule release, so there's no need for a separate soft path there).
     """
-    return hours_between(prev_shift, next_shift) >= _MIN_HOURS_BETWEEN_SHIFTS
+    return not violates_min_spacing(prev_shift, next_shift) and not violates_max_spacing(prev_shift, next_shift)
 
 
 def is_next_shift_ok(prev_shift: Shift, days_gap: int, next_shift: Shift) -> bool:
     """
     Return True if scheduling *next_shift* is allowed given that *prev_shift*
-    was worked *days_gap* calendar days earlier.
+    was worked *days_gap* calendar days earlier. This checks the HARD rules
+    only (see violates_min_spacing) — the soft 36-hour maximum for
+    days_gap==1 is handled separately in generator_cpsat.py's CP-SAT
+    objective, not here, since a plain bool can't express "soft."
 
     Rules:
-      days_gap == 1: standard 22-hour minimum between start times.
+      days_gap == 1: 23-hour minimum between start times.
       days_gap == 2 and prev is 2400h: next shift must start at noon or later
           (36-hour rest rule — earliest allowed is 1200h on the third calendar day).
       days_gap >= 2 otherwise: no spacing restriction.
@@ -125,7 +161,7 @@ def is_next_shift_ok(prev_shift: Shift, days_gap: int, next_shift: Shift) -> boo
         The shift being considered for assignment.
     """
     if days_gap == 1:
-        return is_spacing_ok(prev_shift, next_shift)
+        return not violates_min_spacing(prev_shift, next_shift)
     if days_gap == 2 and prev_shift.time == "2400h":
         return next_shift.start_hour >= 12
     return True

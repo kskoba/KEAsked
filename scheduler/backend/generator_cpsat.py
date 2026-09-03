@@ -8,7 +8,7 @@ as generator.py so both approaches are interchangeable from server.py's perspect
 Usage:
     from scheduler.backend.generator_cpsat import CpsatScheduleGenerator
     gen = CpsatScheduleGenerator(submissions, roster, config)
-    result = gen.generate(year, month, time_limit=90, num_workers=8)
+    result = gen.generate(year, month, time_limit=90)  # num_workers defaults to 75% of cores
 
 Requirements:
     pip install ortools
@@ -19,6 +19,7 @@ from __future__ import annotations
 import calendar
 import datetime
 import logging
+import os
 import sys
 from collections import defaultdict
 from typing import Callable, Optional
@@ -48,6 +49,7 @@ from scheduler.backend.shifts import (
     Shift,
     SiteGroup,
     is_next_shift_ok,
+    violates_max_spacing,
 )
 
 logger = logging.getLogger(__name__)
@@ -70,10 +72,11 @@ except Exception as _ortools_err:
 class _SolutionCallback(_cp_model.CpSolverSolutionCallback if _ORTOOLS_AVAILABLE else object):
     """Saves the best solution's shift-variable values on each improving solution."""
 
-    def __init__(self, shift_vars: dict):
+    def __init__(self, shift_vars: dict, should_stop: Optional[Callable[[], bool]] = None):
         if _ORTOOLS_AVAILABLE:
             super().__init__()
         self._shift_vars = shift_vars          # (pid, d_idx, shift_code) -> IntVar
+        self._should_stop = should_stop        # polled on each improving solution
         self.best_values: dict = {}            # (pid, d_idx, shift_code) -> 0 or 1
         self.best_objective: float = float('-inf')
         self.best_bound: float = 0.0
@@ -84,6 +87,8 @@ class _SolutionCallback(_cp_model.CpSolverSolutionCallback if _ORTOOLS_AVAILABLE
             self.best_objective = obj
             self.best_values = {k: self.value(v) for k, v in self._shift_vars.items()}
             self.best_bound = self.best_objective_bound
+        if self._should_stop is not None and self._should_stop():
+            self.StopSearch()
 
 
 # ---------------------------------------------------------------------------
@@ -182,8 +187,9 @@ class CpsatScheduleGenerator:
         year: int,
         month: int,
         time_limit: float = 60.0,
-        num_workers: int = 8,
+        num_workers: Optional[int] = None,
         progress_callback: Optional[Callable] = None,
+        cancel_check: Optional[Callable[[], bool]] = None,
     ) -> ScheduleResult:
         """
         Solve the scheduling problem with CP-SAT and return a ScheduleResult.
@@ -201,11 +207,21 @@ class CpsatScheduleGenerator:
         num_workers:
             Number of parallel search workers for CP-SAT.  CP-SAT releases
             the GIL internally so this genuinely uses multiple cores.
+            Defaults to 75% of the machine's CPU cores (min 1) so the UI
+            and backend stay responsive during a solve.
         progress_callback:
             Optional callable(current, total, best_score).  CP-SAT does not
             provide per-iteration callbacks so this is called once at the
             midpoint (50%) as a "Solving…" indicator and once on completion.
+        cancel_check:
+            Optional callable() -> bool, polled on every improving solution.
+            When it returns True, the solver is stopped early via
+            StopSearch() and the best solution found so far is returned —
+            same code path as hitting the time limit, just sooner.
         """
+        if num_workers is None:
+            num_workers = max(1, round((os.cpu_count() or 4) * 0.75))
+
         if not _ORTOOLS_AVAILABLE:
             logger.warning(
                 "ortools not available (%s: %s) — falling back to greedy ScheduleGenerator.",
@@ -393,8 +409,19 @@ class CpsatScheduleGenerator:
         # ----------------------------------------------------------------
         # HC-9: 23h spacing between adjacent-day shifts
         # For each pair of shifts on consecutive days (or 2-days-apart with
-        # 2400h), add: var1 + var2 <= 1 if the gap would be < 22h.
+        # 2400h), add: var1 + var2 <= 1 if the gap would be < 23h (hard —
+        # never allowed). A gap > 36h (e.g. 0600h then 2400h the next day)
+        # is handled separately below as a SOFT rule: penalized heavily in
+        # the objective rather than forbidden outright, so the solver can
+        # still accept it under pressure rather than leave a slot unfilled.
         # ----------------------------------------------------------------
+        long_gap_penalty_terms: list = []
+        # Heavier than every other soft-preference weight in this file
+        # (which top out around 30-40) so the 36h rule holds in the large
+        # majority of a solved schedule, but still well under the 1000
+        # per-filled-shift weight so it yields rather than leave gaps unfilled.
+        _LONG_GAP_PENALTY = 300
+
         for pid in pids:
             for d_idx in range(len(all_dates) - 1):
                 d1 = all_dates[d_idx]
@@ -409,6 +436,15 @@ class CpsatScheduleGenerator:
                                         shifts[(pid, d_idx, shift1.code)]
                                         + shifts[(pid, d_idx + 1, shift2.code)] <= 1
                                     )
+                                elif violates_max_spacing(shift1, shift2):
+                                    long_gap = model.new_bool_var(
+                                        f"longgap_{pid}_{d_idx}_{shift1.code}_{shift2.code}"
+                                    )
+                                    model.add(
+                                        shifts[(pid, d_idx, shift1.code)]
+                                        + shifts[(pid, d_idx + 1, shift2.code)] <= 1 + long_gap
+                                    )
+                                    long_gap_penalty_terms.append(-_LONG_GAP_PENALTY * long_gap)
 
             # 2-day gap: only 2400h → next morning matters (36h rest rule)
             for d_idx in range(len(all_dates) - 2):
@@ -423,6 +459,67 @@ class CpsatScheduleGenerator:
                                         shifts[(pid, d_idx, shift1.code)]
                                         + shifts[(pid, d_idx + 2, shift2.code)] <= 1
                                     )
+
+        # ----------------------------------------------------------------
+        # HC-9b: Conditional co-working (scheduler_config.yaml's
+        # conditional_cowork, e.g. Edgecumbe/Houston). Ported from the
+        # greedy generator's soft check (generator.py _check_constraints,
+        # rule "cowork_condition") into hard CP-SAT constraints — previously
+        # this config existed but was never enforced by the CP-SAT solver.
+        #
+        #   no_shared_weekends: the two physicians can never both have a
+        #       shift on the same weekend date.
+        #   weekday_requires_one_at: on a weekday where both work, EXACTLY
+        #       one of them must be on the given shift time. Modelled with
+        #       pure linear constraints (no reification needed):
+        #         at_A + at_B <= 1                  — not both at that time
+        #         works_A + works_B <= 1 + at_A + at_B  — not neither, if both work
+        # ----------------------------------------------------------------
+        for rule in self.config.get("conditional_cowork", []):
+            phys = [p for p in rule.get("physicians", []) if p in pids]
+            if len(phys) != 2:
+                continue
+            pid_a, pid_b = phys
+            required_time = rule.get("weekday_requires_one_at")
+            for d_idx, d in enumerate(all_dates):
+                works_a = sum(shifts[(pid_a, d_idx, s.code)] for block in BLOCKS for s in block)
+                works_b = sum(shifts[(pid_b, d_idx, s.code)] for block in BLOCKS for s in block)
+                if d.weekday() in _WEEKEND_WEEKDAYS:
+                    if rule.get("no_shared_weekends"):
+                        model.add(works_a + works_b <= 1)
+                elif required_time:
+                    at_a = sum(shifts[(pid_a, d_idx, s.code)] for block in BLOCKS for s in block if s.time == required_time)
+                    at_b = sum(shifts[(pid_b, d_idx, s.code)] for block in BLOCKS for s in block if s.time == required_time)
+                    model.add(at_a + at_b <= 1)
+                    model.add(works_a + works_b <= 1 + at_a + at_b)
+
+        # ----------------------------------------------------------------
+        # HC-9c: Timed separation (scheduler_config.yaml's timed_separation,
+        # e.g. Brenneis/Fanaeian). If both physicians work the same day,
+        # their shift start times must be at least min_hours_gap apart, and
+        # any (time1, time2) combination listed in forbidden_time_pairs is
+        # banned outright regardless of gap. Hard rule, ported from the
+        # greedy generator's "10. Timed separation" check — previously
+        # defined in config but never enforced by CP-SAT.
+        # ----------------------------------------------------------------
+        all_shifts_list = [s for block in BLOCKS for s in block]
+        for rule in self.config.get("timed_separation", []):
+            phys = [p for p in rule.get("physicians", []) if p in pids]
+            if len(phys) != 2:
+                continue
+            pid_a, pid_b = phys
+            min_gap = rule.get("min_hours_gap", 0)
+            forbidden_pairs = {frozenset(p) for p in rule.get("forbidden_time_pairs", [])}
+            for d_idx in range(len(all_dates)):
+                for shift_a in all_shifts_list:
+                    for shift_b in all_shifts_list:
+                        gap = abs(shift_a.start_hour - shift_b.start_hour)
+                        is_forbidden_pair = frozenset((shift_a.time, shift_b.time)) in forbidden_pairs
+                        if gap < min_gap or is_forbidden_pair:
+                            model.add(
+                                shifts[(pid_a, d_idx, shift_a.code)]
+                                + shifts[(pid_b, d_idx, shift_b.code)] <= 1
+                            )
 
         # ----------------------------------------------------------------
         # HC-10: Same-shift-code on adjacent days forbidden
@@ -573,15 +670,37 @@ class CpsatScheduleGenerator:
         #   -35  per 4-consecutive-day run (for physicians with mc >= 4)
         # ----------------------------------------------------------------
 
-        # Total filled slots
-        all_shift_vars = [
-            shifts[(pid, d_idx, shift.code)]
-            for pid in pids
-            for d_idx in range(len(all_dates))
-            for block in BLOCKS
-            for shift in block
-        ]
-        filled_expr = sum(all_shift_vars)
+        # Total filled slots — weighted per shift category so the hardest
+        # slots to staff are prioritized when the solver can't fill
+        # everything. Base 1000 (same as before) plus additive bonuses:
+        #   +300 2400h (midnight) shifts — historically the hardest to fill
+        #   +200 weekend shifts (any time) — second hardest
+        #   +100 0600h shifts — third
+        # Additive so a Saturday 2400h shift (1500) outranks a plain
+        # weekday 0600h shift (1100), which outranks an ordinary weekday
+        # daytime shift (1000). This only affects which slots the solver
+        # leaves unfilled under pressure — it does not change how the
+        # final fill-rate stat is computed (that's a separate post-solve
+        # count, unaffected by objective weighting).
+        _FILL_WEIGHT_2400H = 300
+        _FILL_WEIGHT_WEEKEND = 200
+        _FILL_WEIGHT_0600H = 100
+
+        weighted_fill_terms = []
+        for pid in pids:
+            for d_idx, d in enumerate(all_dates):
+                is_weekend = d.weekday() in _WEEKEND_WEEKDAYS
+                for block in BLOCKS:
+                    for shift in block:
+                        weight = 1000
+                        if shift.time == "2400h":
+                            weight += _FILL_WEIGHT_2400H
+                        if is_weekend:
+                            weight += _FILL_WEIGHT_WEEKEND
+                        if shift.time == "0600h":
+                            weight += _FILL_WEIGHT_0600H
+                        weighted_fill_terms.append(weight * shifts[(pid, d_idx, shift.code)])
+        filled_expr = sum(weighted_fill_terms)
 
         # Soft: requests bonus
         request_bonus_terms = []
@@ -774,6 +893,42 @@ class CpsatScheduleGenerator:
                     model.add(sum(night_vars_for_day) == nb)
                     night_bool[(pid, d_idx)] = nb
 
+        # ----------------------------------------------------------------
+        # HC-13b: No isolated 2400h nights (hard). Unless a physician has
+        # prefer_singleton_nights set, a 2400h shift must have at least one
+        # adjacent day (day before or after) that's also a 2400h shift for
+        # them — i.e. every night-shift run is 2+ days, never a lone night.
+        # This also automatically forces "more than one night this month ->
+        # they're adjacent", since a scattered set of isolated nights would
+        # each individually violate this per-day check.
+        #
+        # HC-13c: Never night / day-off / night (hard, ALL physicians,
+        # including prefer_singleton_nights ones — a single isolated night
+        # is fine for them, but two nights with exactly one empty day
+        # between them is not allowed for anyone).
+        # ----------------------------------------------------------------
+        for pid in pids:
+            pid_cfg = _get_cfg(pid)
+            if not (pid_cfg and pid_cfg.prefer_singleton_nights):
+                for d_idx in range(len(all_dates)):
+                    curr = night_bool.get((pid, d_idx))
+                    if curr is None:
+                        continue
+                    neighbors = [
+                        night_bool[(pid, d_idx + off)]
+                        for off in (-1, 1)
+                        if (pid, d_idx + off) in night_bool
+                    ]
+                    if neighbors:
+                        model.add(curr <= sum(neighbors))
+
+            for d_idx in range(len(all_dates) - 2):
+                d0 = night_bool.get((pid, d_idx))
+                d1 = night_bool.get((pid, d_idx + 1))
+                d2 = night_bool.get((pid, d_idx + 2))
+                if d0 is not None and d1 is not None and d2 is not None:
+                    model.add(d0 + d2 <= 1 + d1)
+
         clustering_bonus_terms = []
         for pid in pids:
             # Skip clustering bonus for physicians who prefer singleton nights.
@@ -911,7 +1066,9 @@ class CpsatScheduleGenerator:
                         monday_penalty_terms.append(-5 * shifts[(pid, d_idx, shift.code)])
 
         # Composite objective (all terms are non-negative rewards; maximize)
-        objective_terms = [1000 * filled_expr]
+        # filled_expr is already per-shift-weighted (see above) — do not
+        # multiply by 1000 again here.
+        objective_terms = [filled_expr]
         objective_terms.extend(request_bonus_terms)
         objective_terms.extend(deficit_penalty_terms)
         objective_terms.extend(group_balance_terms)
@@ -919,6 +1076,7 @@ class CpsatScheduleGenerator:
         objective_terms.extend(any_cluster_terms)
         objective_terms.extend(run_penalty_terms)
         objective_terms.extend(monday_penalty_terms)
+        objective_terms.extend(long_gap_penalty_terms)
 
         model.maximize(sum(objective_terms))
 
@@ -933,7 +1091,7 @@ class CpsatScheduleGenerator:
         # Solution callback: saves variable values on each improving solution so
         # we use the saved dict in _build_result instead of calling solver.value()
         # after solve() returns (avoids potential thread-state issues in frozen binaries).
-        solution_cb = _SolutionCallback(shifts)
+        solution_cb = _SolutionCallback(shifts, should_stop=cancel_check)
 
         logger.info(
             "CP-SAT: starting solve for %d-%02d with time_limit=%.0fs, workers=%d",

@@ -20,6 +20,8 @@ physicians:
 
   - id: Ademola
     name: Ademola
+    last_name: Ademola
+    first_name: ""
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -28,14 +30,29 @@ physicians:
 
   - id: AHanson
     name: Amanda Hanson
+    last_name: Hanson
+    first_name: Amanda
+    aliases:
+      - Hanson A
     active: true
     scheduling:
       max_consecutive_shifts: 2
       group_b_site_preference: nehc
     rule_overrides: {}
 
+  - id: Aissiou
+    name: Amira Aissiou
+    last_name: Aissiou
+    first_name: Amira
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+    rule_overrides: {}
+
   - id: Anderson
     name: Anderson
+    last_name: Anderson
+    first_name: Kyle
     active: true
     scheduling:
       max_consecutive_shifts: 4
@@ -44,6 +61,8 @@ physicians:
 
   - id: AYeung
     name: Aref Yeung
+    last_name: Yeung
+    first_name: Aref
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -52,6 +71,8 @@ physicians:
 
   - id: Bacon
     name: Bacon
+    last_name: Bacon
+    first_name: Kate
     active: true
     scheduling:
       max_consecutive_shifts: 4
@@ -60,6 +81,8 @@ physicians:
 
   - id: Bly
     name: Bly
+    last_name: Bly
+    first_name: Jared
     active: true
     scheduling:
       max_consecutive_shifts: 4
@@ -68,6 +91,8 @@ physicians:
 
   - id: Braun
     name: Braun
+    last_name: Braun
+    first_name: Teddy
     active: true
     scheduling:
       max_consecutive_shifts: 2
@@ -78,9 +103,12 @@ physicians:
       - NEHC
     rule_overrides:
       min_valid_blocks: 1
+      min_blocks_per_day: 1
 
   - id: Brenneis
     name: Brenneis
+    last_name: Brenneis
+    first_name: Mikayla
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -90,6 +118,8 @@ physicians:
 
   - id: Breton
     name: Breton
+    last_name: Breton
+    first_name: Jessica
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -98,6 +128,8 @@ physicians:
 
   - id: BrownF
     name: Brown F
+    last_name: Brown
+    first_name: Felicity
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -105,6 +137,8 @@ physicians:
 
   - id: BrownT
     name: Brown T
+    last_name: Brown
+    first_name: Taryn
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -113,6 +147,8 @@ physicians:
 
   - id: Burkart
     name: Burkart
+    last_name: Burkart
+    first_name: Layton
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -120,6 +156,8 @@ physicians:
 
   - id: Butcher
     name: Butcher
+    last_name: Butcher
+    first_name: Joshua
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -127,6 +165,8 @@ physicians:
 
   - id: Carroll
     name: Carroll
+    last_name: Carroll
+    first_name: ""
     active: true
     scheduling:
       max_consecutive_shifts: 4
@@ -134,6 +174,8 @@ physicians:
 
   - id: CenaikoA
     name: Cenaiko A
+    last_name: Cenaiko
+    first_name: Alina
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -141,6 +183,8 @@ physicians:
 
   - id: Chee
     name: Chee
+    last_name: Chee
+    first_name: Rei
     active: true
     scheduling:
       max_consecutive_shifts: 4
@@ -149,6 +193,8 @@ physicians:
 
   - id: Cloutier
     name: Cloutier
+    last_name: Cloutier
+    first_name: Matt
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -161,6 +207,8 @@ physicians:
 
   - id: Dance
     name: Dance
+    last_name: Dance
+    first_name: Erica
     active: true
     scheduling:
       max_consecutive_shifts: 2
@@ -169,6 +217,8 @@ physicians:
 
   - id: Davis
     name: Davis
+    last_name: Davis
+    first_name: Vanessa
     active: true
     scheduling:
       max_consecutive_shifts: 2
@@ -177,6 +227,8 @@ physicians:
 
   - id: Deol
     name: Deol
+    last_name: Deol
+    first_name: Janjeevan
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -185,6 +237,8 @@ physicians:
 
   - id: Desrochers
     name: Desrochers
+    last_name: Desrochers
+    first_name: Christa
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -193,6 +247,17 @@ physicians:
 
   - id: Deutscher
     name: Deutscher
+    last_name: Deutscher
+    first_name: ""
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+    rule_overrides: {}
+
+  - id: Dickey
+    name: Matthew Dickey
+    last_name: Dickey
+    first_name: Matthew
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -200,6 +265,10 @@ physicians:
 
   - id: Dong
     name: Dong
+    last_name: Dong
+    first_name: Sandy
+    aliases:
+      - Dong S
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -208,6 +277,8 @@ physicians:
 
   - id: EChang
     name: E Chang
+    last_name: Chang
+    first_name: Eddie
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -218,6 +289,8 @@ physicians:
 
   - id: Edgecumbe
     name: Edgecumbe
+    last_name: Edgecumbe
+    first_name: Boyd
     active: true
     scheduling:
       max_consecutive_shifts: 4
@@ -226,6 +299,8 @@ physicians:
 
   - id: Esterhuizen
     name: Esterhuizen
+    last_name: Esterhuizen
+    first_name: Andries
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -235,6 +310,8 @@ physicians:
 
   - id: Fanaeian
     name: Fanaeian
+    last_name: Fanaeian
+    first_name: Josh
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -243,6 +320,8 @@ physicians:
 
   - id: Farfus
     name: Farfus
+    last_name: Farfus
+    first_name: Allison
     active: true
     scheduling:
       max_consecutive_shifts: 4
@@ -251,6 +330,8 @@ physicians:
 
   - id: Fisher
     name: Fisher
+    last_name: Fisher
+    first_name: Steve
     active: true
     scheduling:
       max_consecutive_shifts: 4
@@ -259,6 +340,8 @@ physicians:
 
   - id: Francescutti
     name: Francescutti
+    last_name: Francescutti
+    first_name: Louis
     active: true
     scheduling:
       max_consecutive_shifts: 2
@@ -276,6 +359,8 @@ physicians:
 
   - id: Garcea
     name: Garcea
+    last_name: Garcea
+    first_name: Christina
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -284,6 +369,8 @@ physicians:
 
   - id: Gerber
     name: Gerber
+    last_name: Gerber
+    first_name: Amanda
     active: true
     scheduling:
       max_consecutive_shifts: 5
@@ -292,6 +379,8 @@ physicians:
 
   - id: Gill
     name: Gill
+    last_name: Gill
+    first_name: Jasdeep
     active: true
     scheduling:
       max_consecutive_shifts: 2
@@ -299,6 +388,8 @@ physicians:
 
   - id: Grishin
     name: Grishin
+    last_name: Grishin
+    first_name: Yevgeniy
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -307,6 +398,8 @@ physicians:
 
   - id: Gunawan
     name: Gunawan
+    last_name: Gunawan
+    first_name: John
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -314,6 +407,8 @@ physicians:
 
   - id: Haager
     name: Haager
+    last_name: Haager
+    first_name: Moritz
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -322,6 +417,8 @@ physicians:
 
   - id: HansenR
     name: Hansen R
+    last_name: Hansen
+    first_name: Brenna
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -329,6 +426,8 @@ physicians:
 
   - id: Hayward
     name: Hayward
+    last_name: Hayward
+    first_name: Jake
     active: true
     scheduling:
       max_consecutive_shifts: 4
@@ -337,6 +436,8 @@ physicians:
 
   - id: Hegstrom
     name: Hegstrom
+    last_name: Hegstrom
+    first_name: Amy
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -345,6 +446,8 @@ physicians:
 
   - id: Houston
     name: Houston
+    last_name: Houston
+    first_name: Kendra
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -353,6 +456,8 @@ physicians:
 
   - id: JChang
     name: J Chang
+    last_name: Chang
+    first_name: Jason
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -361,6 +466,8 @@ physicians:
 
   - id: Johnston
     name: Johnston
+    last_name: Johnston
+    first_name: Levi
     active: true
     scheduling:
       max_consecutive_shifts: 5
@@ -369,6 +476,8 @@ physicians:
 
   - id: Keyes
     name: Keyes
+    last_name: Keyes
+    first_name: Robert
     active: true
     scheduling:
       max_consecutive_shifts: 1
@@ -377,6 +486,8 @@ physicians:
 
   - id: Khangura
     name: Khangura
+    last_name: Khangura
+    first_name: Jaspreet
     active: true
     scheduling:
       max_consecutive_shifts: 2
@@ -385,6 +496,8 @@ physicians:
 
   - id: Kilburn
     name: Kilburn
+    last_name: Kilburn
+    first_name: ""
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -392,6 +505,8 @@ physicians:
 
   - id: Kjelland
     name: Kjelland
+    last_name: Kjelland
+    first_name: Colleen
     active: true
     scheduling:
       max_consecutive_shifts: 2
@@ -400,18 +515,26 @@ physicians:
 
   - id: Krisik
     name: Krisik
+    last_name: Krisik
+    first_name: Verna
+    aliases:
+      - Verna
     active: true
     scheduling:
       max_consecutive_shifts: 3
       group_b_site_preference: nehc
+    # Only works NEHC (confirmed 2026-09).
     forbidden_sites:
       - RAH I side
       - RAH A side
       - RAH B side
+      - RAH F side
     rule_overrides: {}
 
   - id: Lali
     name: Lali
+    last_name: Lali
+    first_name: Paul
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -420,6 +543,10 @@ physicians:
 
   - id: LamN
     name: Lam N
+    last_name: Lam
+    first_name: Nina
+    aliases:
+      - NL
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -428,6 +555,15 @@ physicians:
 
   - id: LamRico
     name: Lam-Rico
+    last_name: Lam-Rico
+    first_name: Kenneth
+    aliases:
+      - Kenneth Lam
+      - Ken Lam
+      - Lam K
+      - LamK
+      - Rico
+      - Michelle Rico
     active: true
     scheduling:
       max_consecutive_shifts: 5
@@ -436,10 +572,23 @@ physicians:
       group_b_site_preference: nehc
       only_2400h: true
       prefer_weekends: true
+    rule_overrides:
+      min_valid_blocks: 1
+      min_blocks_per_day: 1
+
+  - id: Lautner
+    name: Larissa Lautner
+    last_name: Lautner
+    first_name: Larissa
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
     rule_overrides: {}
 
   - id: Lefebvre
     name: Lefebvre
+    last_name: Lefebvre
+    first_name: Dennis
     active: true
     scheduling:
       max_consecutive_shifts: 4
@@ -448,6 +597,8 @@ physicians:
 
   - id: Lucyk
     name: Lucyk
+    last_name: Lucyk
+    first_name: Chad
     active: true
     scheduling:
       max_consecutive_shifts: 2
@@ -456,6 +607,8 @@ physicians:
 
   - id: Lung
     name: Lung
+    last_name: Lung
+    first_name: Gilbert
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -464,6 +617,8 @@ physicians:
 
   - id: MacGougan
     name: MacGougan
+    last_name: MacGougan
+    first_name: Cam
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -472,6 +627,8 @@ physicians:
 
   - id: Mackenzie
     name: Mackenzie
+    last_name: MacKenzie
+    first_name: Mark
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -480,6 +637,8 @@ physicians:
 
   - id: MacLean
     name: MacLean
+    last_name: MacLean
+    first_name: Scott
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -488,6 +647,8 @@ physicians:
 
   - id: Mason
     name: Mason
+    last_name: Mason
+    first_name: Ed
     active: true
     scheduling:
       max_consecutive_shifts: 4
@@ -496,6 +657,8 @@ physicians:
 
   - id: Matemisz
     name: Matemisz
+    last_name: Matemisz
+    first_name: Laura
     active: true
     scheduling:
       max_consecutive_shifts: 5
@@ -504,6 +667,8 @@ physicians:
 
   - id: McKinnon
     name: McKinnon
+    last_name: McKinnon
+    first_name: Sara
     active: true
     scheduling:
       max_consecutive_shifts: 2
@@ -520,6 +685,8 @@ physicians:
 
   - id: Meleshko
     name: Meleshko
+    last_name: Meleshko
+    first_name: Sarah
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -528,6 +695,8 @@ physicians:
 
   - id: Mithani
     name: Mithani
+    last_name: Mithani
+    first_name: Shazma
     active: true
     scheduling:
       max_consecutive_shifts: 2
@@ -536,6 +705,8 @@ physicians:
 
   - id: Morrison
     name: Morrison
+    last_name: Morrison
+    first_name: Laura
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -544,6 +715,8 @@ physicians:
 
   - id: Mrochuk
     name: Mrochuk
+    last_name: Mrochuk
+    first_name: May
     active: true
     scheduling:
       max_consecutive_shifts: 2
@@ -554,6 +727,8 @@ physicians:
 
   - id: Norum
     name: Norum
+    last_name: Norum
+    first_name: Joanne
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -562,6 +737,10 @@ physicians:
 
   - id: Peterson
     name: Peterson
+    last_name: Peterson
+    first_name: Colin
+    aliases:
+      - Peterson C
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -570,6 +749,8 @@ physicians:
 
   - id: Pritchard
     name: Pritchard
+    last_name: Pritchard
+    first_name: Jennifer
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -578,6 +759,8 @@ physicians:
 
   - id: RScheirer
     name: R Scheirer
+    last_name: Scheirer
+    first_name: Richard
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -589,6 +772,8 @@ physicians:
 
   - id: Randhawa
     name: Randhawa
+    last_name: Randhawa
+    first_name: ""
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -596,6 +781,8 @@ physicians:
 
   - id: Rawe
     name: Rawe
+    last_name: Rawe
+    first_name: Erin
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -604,6 +791,8 @@ physicians:
 
   - id: Reid
     name: Reid
+    last_name: Reid
+    first_name: James
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -611,6 +800,8 @@ physicians:
 
   - id: Rogers
     name: Rogers
+    last_name: Rogers
+    first_name: James
     active: true
     scheduling:
       max_consecutive_shifts: 4
@@ -619,6 +810,8 @@ physicians:
 
   - id: Rosenblum
     name: Rosenblum
+    last_name: Rosenblum
+    first_name: Rebeccah
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -627,6 +820,8 @@ physicians:
 
   - id: Sachs
     name: Sachs
+    last_name: Sachs
+    first_name: Erin
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -635,6 +830,8 @@ physicians:
 
   - id: Sajko
     name: Sajko
+    last_name: Sajko
+    first_name: ""
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -642,6 +839,8 @@ physicians:
 
   - id: Samoraj
     name: Samoraj
+    last_name: Samoraj
+    first_name: Krystyna
     active: true
     scheduling:
       max_consecutive_shifts: 4
@@ -650,6 +849,8 @@ physicians:
 
   - id: ScheirerO
     name: Scheirer O
+    last_name: Scheirer
+    first_name: Owen
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -658,6 +859,8 @@ physicians:
 
   - id: Schindler
     name: Schindler
+    last_name: Schindler
+    first_name: Stephanie
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -666,6 +869,8 @@ physicians:
 
   - id: Schonnop
     name: Schonnop
+    last_name: Schonnop
+    first_name: Rebecca
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -674,6 +879,10 @@ physicians:
 
   - id: Sharma
     name: Sharma
+    last_name: Sharma
+    first_name: Leneela
+    aliases:
+      - Leneela
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -682,6 +891,8 @@ physicians:
 
   - id: Shih
     name: Shih
+    last_name: Shih
+    first_name: ""
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -689,6 +900,8 @@ physicians:
 
   - id: Singh
     name: Singh
+    last_name: Singh
+    first_name: Ron
     active: true
     scheduling:
       max_consecutive_shifts: 4
@@ -697,6 +910,8 @@ physicians:
 
   - id: KS
     name: Kevin Skoblenick
+    last_name: Skoblenick
+    first_name: Kevin
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -705,6 +920,8 @@ physicians:
 
   - id: Smith
     name: Smith
+    last_name: Smith
+    first_name: Katherine
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -713,6 +930,8 @@ physicians:
 
   - id: Taylor
     name: Taylor
+    last_name: Taylor
+    first_name: Michael
     active: true
     scheduling:
       max_consecutive_shifts: 4
@@ -721,6 +940,8 @@ physicians:
 
   - id: Thirsk
     name: Thirsk
+    last_name: Thirsk
+    first_name: Warren
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -729,14 +950,32 @@ physicians:
 
   - id: Tiessen
     name: Tiessen
+    last_name: Tiessen
+    first_name: Joshua
+    aliases:
+      - Josh Tiessen
     active: true
     scheduling:
       max_consecutive_shifts: 4
       group_b_site_preference: nehc
     rule_overrides: {}
 
+  - id: Underschultz
+    name: Jack Underschultz
+    last_name: Underschultz
+    first_name: Jack
+    aliases:
+      - Jack
+    # Started July 2026.
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+    rule_overrides: {}
+
   - id: Velji
     name: Velji
+    last_name: Velji
+    first_name: Alkarim
     active: true
     scheduling:
       max_consecutive_shifts: 4
@@ -745,6 +984,8 @@ physicians:
 
   - id: Walker
     name: Walker
+    last_name: Walker
+    first_name: Celia
     active: true
     scheduling:
       max_consecutive_shifts: 6
@@ -753,6 +994,8 @@ physicians:
 
   - id: Whiteside
     name: Whiteside
+    last_name: Whiteside
+    first_name: Brian
     active: true
     scheduling:
       max_consecutive_shifts: 4
@@ -761,6 +1004,8 @@ physicians:
 
   - id: Williamson
     name: Williamson
+    last_name: Williamson
+    first_name: Ian
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -769,6 +1014,8 @@ physicians:
 
   - id: Wittmeier
     name: Wittmeier
+    last_name: Wittmeier
+    first_name: Robert
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -777,14 +1024,27 @@ physicians:
 
   - id: Woods
     name: Woods
+    last_name: Woods
+    first_name: Madeleine
     active: true
     scheduling:
       max_consecutive_shifts: 3
       group_b_site_preference: rah
     rule_overrides: {}
 
+  - id: Wrubleski
+    name: Allyson Wrubleski
+    last_name: Wrubleski
+    first_name: Allyson
+    active: true
+    scheduling:
+      max_consecutive_shifts: 3
+    rule_overrides: {}
+
   - id: YeungAlex
     name: Yeung Alex
+    last_name: Yeung
+    first_name: Alex
     active: true
     scheduling:
       max_consecutive_shifts: 3
@@ -793,6 +1053,8 @@ physicians:
 
   - id: Zhang
     name: Zhang
+    last_name: Zhang
+    first_name: Ricky
     active: true
     scheduling:
       max_consecutive_shifts: 2

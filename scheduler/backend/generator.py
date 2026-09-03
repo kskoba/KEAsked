@@ -24,6 +24,7 @@ from scheduler.backend.shifts import (
     Shift,
     SiteGroup,
     is_next_shift_ok,
+    is_spacing_ok,
 )
 
 
@@ -1229,11 +1230,16 @@ class ScheduleGenerator:
         Return up to max_n candidate physicians for a human to consider when
         manually filling an unfilled slot.
 
-        Only three things hard-block a physician (exclude them entirely):
+        Hard-blocked (excluded entirely), everything else is a soft warning:
           1. Already assigned a shift on this day.
           2. Another shift within the minimum spacing window (default 22 h).
-          3. Marked unavailable for this day.
-        All other constraint violations are returned as soft warnings.
+          3. Marked unavailable for this day (the whole day never desired).
+          4. Marked unavailable for this specific block/shift — rules
+             "availability" and "shift_not_available" from
+             _check_constraints. A physician can want to work a day (3
+             passes) but not have marked this particular time slot, which
+             is just as much a hard "can't do this shift" fact as 1-3; it
+             must never be downgraded to a warning someone can override.
         """
         min_spacing = self.config.get('spacing', {}).get('min_hours_between_shifts', 22)
         block_idx = SHIFT_TO_BLOCK[shift.code]
@@ -1261,7 +1267,14 @@ class ScheduleGenerator:
                 continue
 
             violations = self._check_constraints(pid, d, shift, block_idx) or []
-            # All violations are soft warnings — shown to the user but do not block
+            # Hard block 4: not available for this specific block/shift,
+            # even though the day overall was marked desired (checked
+            # above). These two rules are absolute facts about what the
+            # physician can work, not preferences — never soft.
+            if any(v.rule in ("availability", "shift_not_available") for v in violations):
+                continue
+            # Everything else remaining is a genuine soft warning — shown
+            # to the user but does not block assignment.
             fit = self._near_miss_score(pid, d, shift)
             deficit = max(0, sub.shifts_requested - self._shift_count[pid])
             results.append((len(violations), -fit, -deficit, pid, violations))
@@ -1511,6 +1524,11 @@ class ScheduleGenerator:
           - Each physician gets at most 1 on-call per month.
           - On-call cannot be on the same day as a regular shift.
           - Next-day rest: the day after an on-call must be free of regular shifts.
+          - Previous-day rest: the regular shift worked the day before (if
+            any) must respect the same 23-to-36-hour spacing window as
+            regular shifts, using DOC=0500h/NOC=1300h as the on-call start
+            time (see shifts.py's is_spacing_ok — this is what blocks e.g.
+            a 2400h shift followed by DOC the next morning).
           - DOC preferred during the day; NOC preferred at night — both are
             acceptable; DOC is tried first per available day.
           - Prefer weekdays; avoid weekends where possible.
@@ -1520,8 +1538,10 @@ class ScheduleGenerator:
         """
         # Build shift index directly from result — no state restoration needed.
         shift_dates: dict[datetime.date, set[str]] = defaultdict(set)
+        shift_by_pid_date: dict[tuple[str, datetime.date], Shift] = {}
         for a in result.assignments:
             shift_dates[a.date].add(a.physician_id)
+            shift_by_pid_date[(a.physician_id, a.date)] = a.shift
 
         # Track which (date, call_type) slots are already filled so we never
         # double-book the same call slot (one DOC and one NOC per day max).
@@ -1562,6 +1582,16 @@ class ScheduleGenerator:
                 next_day = call_date + datetime.timedelta(days=1)
                 if pid in shift_dates.get(next_day, set()):
                     continue
+                # Previous-day rest: the shift worked the day before (if
+                # any) must be properly spaced from this on-call's start
+                # time — this is what catches e.g. a 2400h shift followed
+                # by DOC (0500h) the next morning, a 5-hour gap.
+                prev_day = call_date - datetime.timedelta(days=1)
+                prev_shift = shift_by_pid_date.get((pid, prev_day))
+                if prev_shift is not None:
+                    on_call_shift = Shift(time=call_type, site="")
+                    if not is_spacing_ok(prev_shift, on_call_shift):
+                        continue
                 # Assign
                 on_calls.append(OnCallAssignment(
                     date=call_date,

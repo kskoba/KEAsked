@@ -37,6 +37,7 @@ class ValidationIssueSchema(BaseModel):
     rule: str
     message: str
     physician_id: str
+    overridden: bool = False
 
 
 class PhysicianImportResult(BaseModel):
@@ -62,6 +63,34 @@ class ImportDirectoryResponse(BaseModel):
     physicians: list[PhysicianImportResult]
     total_physicians: int
     valid_physicians: int
+
+
+class OverrideRequest(BaseModel):
+    physician_id: str
+    rule: str
+
+
+class OverrideAllRequest(BaseModel):
+    physician_id: str
+
+
+class ValidationSummaryItem(BaseModel):
+    physician_name: str
+    errors: list[str]
+
+
+class ValidationSummaryResponse(BaseModel):
+    items: list[ValidationSummaryItem]
+
+
+class OverrideLogItem(BaseModel):
+    physician_name: str
+    rule: str
+    message: str
+
+
+class OverrideLogResponse(BaseModel):
+    items: list[OverrideLogItem]
 
 
 # ---------------------------------------------------------------------------

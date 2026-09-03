@@ -43,6 +43,19 @@ def _warning(rule: str, message: str, physician_id: str) -> ValidationIssue:
     )
 
 
+def day_block_threshold(sub: PhysicianSubmission) -> int:
+    """
+    Minimum complete blocks required for one of this physician's days to
+    count as valid (see DayAvailability.is_valid_day). Defaults to 2;
+    physicians restricted to a single shift type per day (e.g. only_2400h)
+    need this lowered to 1 via a `min_blocks_per_day` rule_override in
+    physicians.yaml, since they'll never legitimately mark more than one
+    block on any given day.
+    """
+    value = sub.rule_overrides.get("min_blocks_per_day")
+    return 2 if value is None else int(value)
+
+
 # --------------------------------------------------------------------------- #
 # Individual rules
 # --------------------------------------------------------------------------- #
@@ -53,8 +66,9 @@ def check_min_valid_days(
 ) -> list[ValidationIssue]:
     """Rule 1: at least ceil(n * 1.5) valid days."""
     n = sub.shifts_requested
+    min_blocks = day_block_threshold(sub)
     required = override if override is not None else math.ceil(n * 1.5)
-    actual = sum(1 for d in sub.days if d.is_valid_day)
+    actual = sum(1 for d in sub.days if d.is_valid_day(min_blocks))
     if actual < required:
         return [
             _error(
@@ -73,8 +87,9 @@ def check_min_valid_blocks(
 ) -> list[ValidationIssue]:
     """Rule 2: at least n * 4 valid blocks in total."""
     n = sub.shifts_requested
+    min_blocks = day_block_threshold(sub)
     required = override if override is not None else n * 4
-    actual = sum(d.valid_block_count for d in sub.days if d.is_valid_day)
+    actual = sum(d.valid_block_count for d in sub.days if d.is_valid_day(min_blocks))
     if actual < required:
         return [
             _error(
@@ -93,8 +108,9 @@ def check_min_weekend_days(
 ) -> list[ValidationIssue]:
     """Rule 3: at least ceil(n * 0.6) valid weekend days."""
     n = sub.shifts_requested
+    min_blocks = day_block_threshold(sub)
     required = override if override is not None else math.ceil(n * 0.6)
-    actual = sum(1 for d in sub.days if d.is_valid_weekend)
+    actual = sum(1 for d in sub.days if d.is_valid_weekend(min_blocks))
     if actual < required:
         return [
             _error(
@@ -113,8 +129,9 @@ def check_min_anchored_days(
 ) -> list[ValidationIssue]:
     """Rule 4: at least ceil(n / 2) anchored days."""
     n = sub.shifts_requested
+    min_blocks = day_block_threshold(sub)
     required = override if override is not None else math.ceil(n / 2)
-    actual = sum(1 for d in sub.days if d.is_anchored)
+    actual = sum(1 for d in sub.days if d.is_anchored(min_blocks))
     if actual < required:
         return [
             _error(
@@ -132,9 +149,10 @@ def check_z_row_partial_blocks(sub: PhysicianSubmission) -> list[ValidationIssue
     Warning: a day marked Z but with fewer than 2 full blocks is flagged.
     These days do not count as valid days, so they may surprise the physician.
     """
+    min_blocks = day_block_threshold(sub)
     issues = []
     for d in sub.days:
-        if d.wants_to_work and not d.is_valid_day:
+        if d.wants_to_work and not d.is_valid_day(min_blocks):
             issues.append(
                 _warning(
                     "z_row_partial_blocks",

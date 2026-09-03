@@ -1,16 +1,18 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
-import { checkViolations, assignPhysician, getSchedule } from '../api'
+import { assignPhysician, getSchedule, getCandidates } from '../api'
 
+// Colour palette for soft-violation warning badges (mirrors ConflictModal)
 const VIOLATION_COLORS = {
-  spacing_23h: 'bg-orange-100 text-orange-700 border-orange-200',
   weekend_limit: 'bg-pink-100 text-pink-700 border-pink-200',
   anchor_limit: 'bg-purple-100 text-purple-700 border-purple-200',
-  consecutive_limit: 'bg-red-100 text-red-700 border-red-200',
-  forbidden_sites: 'bg-gray-100 text-gray-700 border-gray-200',
-  paired_exclusions: 'bg-yellow-100 text-yellow-700 border-yellow-200',
+  forbidden_time_pair: 'bg-orange-100 text-orange-700 border-orange-200',
+  timed_separation: 'bg-orange-100 text-orange-700 border-orange-200',
+  no_shared_weekend: 'bg-yellow-100 text-yellow-700 border-yellow-200',
+  cowork_condition: 'bg-yellow-100 text-yellow-700 border-yellow-200',
+  same_shift_consecutive: 'bg-blue-100 text-blue-700 border-blue-200',
   group_mix: 'bg-blue-100 text-blue-700 border-blue-200',
   singleton: 'bg-indigo-100 text-indigo-700 border-indigo-200',
-  night_q: 'bg-slate-100 text-slate-700 border-slate-200'
+  night_q: 'bg-slate-100 text-slate-700 border-slate-200',
 }
 
 function badgeClass(rule) {
@@ -26,106 +28,83 @@ function formatDate(dateStr) {
 
 export default function ReplaceModal({ slot, scheduleData, importResult, onAssigned, onClose }) {
   const [search, setSearch] = useState('')
-  const [selectedId, setSelectedId] = useState(null)
-  const [pendingViolations, setPendingViolations] = useState(null)
-  const [checking, setChecking] = useState(false)
-  const [confirming, setConfirming] = useState(false)
-  const [assigning, setAssigning] = useState(false)
+  const [assigning, setAssigning] = useState(null)  // physicianId being assigned
   const [error, setError] = useState(null)
 
-  // Build physician list from importResult, falling back to scheduleData
-  const physicians = useMemo(() => {
-    if (importResult?.physicians?.length > 0) {
-      return importResult.physicians
-        .map(p => ({ id: p.physician_id, name: p.physician_name }))
-        .sort((a, b) => a.name.localeCompare(b.name))
-    }
-    const seen = new Set()
-    const list = []
-    scheduleData.assignments.forEach(a => {
-      if (!seen.has(a.physician_id)) {
-        seen.add(a.physician_id)
-        list.push({ id: a.physician_id, name: a.physician_name })
-      }
-    })
-    return list.sort((a, b) => a.name.localeCompare(b.name))
-  }, [importResult, scheduleData])
+  // Live candidate list fetched fresh from the server on mount. The server
+  // temporarily unassigns the current occupant so the check reflects the
+  // slot being genuinely open, then restores it. Hard-rule violations
+  // (unavailable, already working that day, consecutive limit, spacing,
+  // etc.) exclude a physician entirely; only soft-rule violations come
+  // back as warnings on an otherwise-assignable candidate.
+  const [liveCandidates, setLiveCandidates] = useState(null)   // null = loading
+  const [fetchError, setFetchError] = useState(null)
 
-  const filtered = useMemo(() => {
-    const q = search.toLowerCase().trim()
-    if (!q) return physicians
-    return physicians.filter(p => p.name.toLowerCase().includes(q))
-  }, [physicians, search])
-
-  const selectedPhysician = useMemo(
-    () => physicians.find(p => p.id === selectedId) || null,
-    [physicians, selectedId]
-  )
-
-  // Close on Escape (unless showing violation confirmation)
   useEffect(() => {
-    function onKey(e) {
-      if (e.key === 'Escape' && !confirming && !assigning) onClose()
-    }
+    function onKey(e) { if (e.key === 'Escape' && assigning === null) onClose() }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose, confirming, assigning])
+  }, [onClose, assigning])
 
-  const doAssign = useCallback(async (physicianId, physicianName, knownViolations) => {
-    setAssigning(true)
+  useEffect(() => {
+    let cancelled = false
+    setFetchError(null)
+    setLiveCandidates(null)
+
+    getCandidates(slot.date, slot.shift.code)
+      .then(data => {
+        if (!cancelled) setLiveCandidates(data.candidates || [])
+      })
+      .catch(err => {
+        if (!cancelled) {
+          setFetchError(err.message)
+          setLiveCandidates([])
+        }
+      })
+
+    return () => { cancelled = true }
+  }, [slot.date, slot.shift.code])
+
+  const currentName = slot.physician_name || slot.physician_id
+
+  const filtered = useMemo(() => {
+    const list = liveCandidates || []
+    const q = search.toLowerCase().trim()
+    if (!q) return list
+    return list.filter(c => (c.physician_name || '').toLowerCase().includes(q))
+  }, [liveCandidates, search])
+
+  const handleAssign = useCallback(async (candidate) => {
+    setAssigning(candidate.physician_id)
     setError(null)
     try {
-      const result = await assignPhysician(slot.date, slot.shift.code, physicianId)
+      const result = await assignPhysician(slot.date, slot.shift.code, candidate.physician_id)
       if (result.success === false) {
         setError(result.message || 'Assignment failed.')
-        setAssigning(false)
+        setAssigning(null)
         return
       }
       const updated = await getSchedule()
       onAssigned(updated, {
-        physicianName,
-        violations: knownViolations,
+        physicianName: candidate.physician_name,
+        violations: candidate.violations || [],
         date: slot.date,
         shiftCode: slot.shift.code,
       })
     } catch (err) {
       setError(err.message)
-      setAssigning(false)
+      setAssigning(null)
     }
   }, [slot, onAssigned])
 
-  const handleSelect = useCallback(async (physician) => {
-    if (assigning || checking) return
-    setSelectedId(physician.id)
-    setPendingViolations(null)
-    setConfirming(false)
-    setError(null)
-    setChecking(true)
-    try {
-      const result = await checkViolations(slot.date, slot.shift.code, physician.id)
-      const viols = result.violations || []
-      setPendingViolations(viols)
-      if (viols.length > 0) {
-        setConfirming(true)
-      } else {
-        // No violations — assign immediately
-        await doAssign(physician.id, physician.name, [])
-      }
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setChecking(false)
-    }
-  }, [slot, assigning, checking, doAssign])
-
-  const currentName = slot.physician_name || slot.physician_id
+  const isLoading = liveCandidates === null
 
   return (
     <>
       {/* Backdrop */}
       <div
         className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm"
-        onClick={() => !assigning && onClose()}
+        onClick={() => assigning === null && onClose()}
       />
 
       {/* Modal */}
@@ -133,7 +112,7 @@ export default function ReplaceModal({ slot, scheduleData, importResult, onAssig
         role="dialog"
         aria-modal="true"
         aria-labelledby="replace-modal-title"
-        className="fixed z-50 top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-md bg-white rounded-xl shadow-2xl overflow-hidden flex flex-col"
+        className="fixed z-50 top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-lg bg-white rounded-xl shadow-2xl overflow-hidden flex flex-col"
         style={{ maxHeight: '82vh' }}
         onClick={e => e.stopPropagation()}
       >
@@ -155,7 +134,7 @@ export default function ReplaceModal({ slot, scheduleData, importResult, onAssig
             )}
           </div>
           <button
-            onClick={() => !assigning && onClose()}
+            onClick={() => assigning === null && onClose()}
             className="text-slate-400 hover:text-slate-600 transition-colors p-1 rounded"
             aria-label="Close"
           >
@@ -170,131 +149,143 @@ export default function ReplaceModal({ slot, scheduleData, importResult, onAssig
           <input
             type="text"
             value={search}
-            onChange={e => {
-              setSearch(e.target.value)
-              setConfirming(false)
-              setSelectedId(null)
-              setPendingViolations(null)
-            }}
+            onChange={e => setSearch(e.target.value)}
             placeholder="Search physician name…"
             className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400 placeholder-slate-300"
             autoFocus
-            disabled={assigning}
+            disabled={assigning !== null}
           />
         </div>
 
-        {/* Physician list */}
-        <div className="flex-1 overflow-auto px-3 py-2">
+        {/* Candidate list */}
+        <div className="flex-1 overflow-auto px-4 py-3">
           {error && (
-            <div className="mb-2 p-2 bg-red-50 border border-red-200 rounded text-red-700 text-xs">
+            <div className="mb-3 p-3 bg-red-50 border border-red-200 rounded-md text-red-700 text-sm">
               {error}
             </div>
           )}
-          {filtered.length === 0 ? (
-            <p className="text-center text-slate-400 text-sm py-8">No physicians found.</p>
+
+          {fetchError && (
+            <div className="mb-3 p-3 bg-amber-50 border border-amber-200 rounded-md text-amber-700 text-xs">
+              Could not refresh candidates from server ({fetchError}).
+            </div>
+          )}
+
+          {isLoading ? (
+            <div className="py-8 text-center text-slate-400 text-sm flex flex-col items-center gap-2">
+              <svg className="w-6 h-6 animate-spin text-slate-300" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
+              </svg>
+              Checking availability…
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className="py-8 text-center text-slate-400 text-sm">
+              {search ? 'No matching physicians.' : 'No eligible physicians for this slot.'}
+              {!search && (
+                <p className="text-xs mt-1 text-slate-300">
+                  Everyone else is either unavailable, already working that day, or would violate a hard rule (consecutive limit, spacing, forbidden site, etc.).
+                </p>
+              )}
+            </div>
           ) : (
-            <div className="space-y-0.5">
-              {filtered.map(physician => {
-                const isSelected = physician.id === selectedId
-                const isCurrent = physician.name === currentName
+            <div className="space-y-2">
+              <p className="text-xs text-slate-500 mb-1">
+                {filtered.length} eligible.
+                {filtered.some(c => c.violations && c.violations.length > 0) && (
+                  <span> Warnings indicate soft-rule conflicts — you may still assign.</span>
+                )}
+              </p>
+              {filtered.map(candidate => {
+                const isAssigning = assigning === candidate.physician_id
+                const hasWarnings = candidate.violations && candidate.violations.length > 0
+                const isCurrent = candidate.physician_name === currentName || candidate.physician_id === slot.physician_id
+
                 return (
-                  <button
-                    key={physician.id}
-                    onClick={() => !isCurrent && handleSelect(physician)}
-                    disabled={isCurrent || assigning}
-                    className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center justify-between gap-2
-                      ${isSelected
-                        ? 'bg-sky-50 border border-sky-300 text-sky-900'
-                        : isCurrent
-                          ? 'bg-slate-50 border border-transparent text-slate-400 cursor-not-allowed'
-                          : 'hover:bg-slate-50 border border-transparent text-slate-800 cursor-pointer'
-                      }`}
+                  <div
+                    key={candidate.physician_id}
+                    className={`flex items-start gap-3 p-3 rounded-lg border ${
+                      isCurrent
+                        ? 'border-slate-200 bg-slate-50'
+                        : hasWarnings
+                          ? 'border-amber-200 bg-amber-50'
+                          : 'border-emerald-200 bg-emerald-50'
+                    }`}
                   >
-                    <span className="font-medium truncate">{physician.name}</span>
-                    <div className="flex items-center gap-1.5 flex-shrink-0">
-                      {isCurrent && (
-                        <span className="text-xs text-slate-400 italic">current</span>
-                      )}
-                      {isSelected && checking && (
-                        <svg className="w-3.5 h-3.5 animate-spin text-sky-500" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
-                        </svg>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1.5">
+                        <span className="font-semibold text-slate-800 text-sm truncate">
+                          {candidate.physician_name}
+                        </span>
+                        {isCurrent && (
+                          <span className="flex-shrink-0 text-xs text-slate-400 italic">current</span>
+                        )}
+                        {!isCurrent && !hasWarnings && (
+                          <span className="flex-shrink-0 text-xs bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full font-medium">
+                            No violations
+                          </span>
+                        )}
+                      </div>
+
+                      {hasWarnings && (
+                        <div className="flex flex-wrap gap-1.5">
+                          {candidate.violations.map((v, vi) => {
+                            const rule = typeof v === 'string' ? v : (v.rule || '')
+                            const desc = typeof v === 'string' ? v : (v.description || v.rule || '')
+                            return (
+                              <span
+                                key={vi}
+                                className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium border cursor-help ${badgeClass(rule)}`}
+                                title={desc}
+                              >
+                                {rule || desc}
+                              </span>
+                            )
+                          })}
+                        </div>
                       )}
                     </div>
-                  </button>
+
+                    {!isCurrent && (
+                      <button
+                        onClick={() => handleAssign(candidate)}
+                        disabled={assigning !== null}
+                        className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                          hasWarnings
+                            ? 'bg-amber-500 hover:bg-amber-400 text-white disabled:bg-slate-300'
+                            : 'bg-emerald-500 hover:bg-emerald-400 text-white disabled:bg-slate-300'
+                        } disabled:cursor-not-allowed`}
+                      >
+                        {isAssigning ? (
+                          <>
+                            <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
+                            </svg>
+                            Assigning…
+                          </>
+                        ) : (
+                          hasWarnings ? 'Assign (override)' : 'Assign'
+                        )}
+                      </button>
+                    )}
+                  </div>
                 )
               })}
             </div>
           )}
         </div>
 
-        {/* Violation confirmation panel */}
-        {confirming && selectedPhysician && pendingViolations?.length > 0 && (
-          <div className="border-t border-amber-200 bg-amber-50 px-4 py-4 flex-shrink-0">
-            <p className="text-sm font-semibold text-amber-800 mb-2 flex items-center gap-1.5">
-              <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-              </svg>
-              Rule violations for {selectedPhysician.name}
-            </p>
-            <div className="flex flex-wrap gap-1.5 mb-3">
-              {pendingViolations.map((v, i) => {
-                const rule = typeof v === 'string' ? v : (v.rule || '')
-                const desc = typeof v === 'string' ? v : (v.description || v.rule || '')
-                return (
-                  <span
-                    key={i}
-                    className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium border cursor-help ${badgeClass(rule)}`}
-                    title={desc}
-                  >
-                    {rule || desc}
-                  </span>
-                )
-              })}
-            </div>
-            <p className="text-xs text-amber-700 mb-3">
-              Place this physician anyway, overriding the rule{pendingViolations.length !== 1 ? 's' : ''}?
-            </p>
-            <div className="flex gap-2">
-              <button
-                onClick={() => doAssign(selectedPhysician.id, selectedPhysician.name, pendingViolations)}
-                disabled={assigning}
-                className="flex-1 py-2 text-sm font-semibold rounded-lg bg-amber-500 text-white hover:bg-amber-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-1.5"
-              >
-                {assigning ? (
-                  <>
-                    <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
-                    </svg>
-                    Placing…
-                  </>
-                ) : 'Place Anyway'}
-              </button>
-              <button
-                onClick={() => { setConfirming(false); setSelectedId(null); setPendingViolations(null) }}
-                disabled={assigning}
-                className="flex-1 py-2 text-sm font-semibold rounded-lg bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 disabled:opacity-50 transition-colors"
-              >
-                Pick Different
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Footer (only shown when not in violation confirmation) */}
-        {!confirming && (
-          <div className="px-6 py-3 bg-slate-50 border-t border-slate-200 flex justify-end flex-shrink-0">
-            <button
-              onClick={onClose}
-              disabled={assigning}
-              className="px-4 py-2 text-sm font-medium text-slate-600 hover:text-slate-800 bg-white border border-slate-300 hover:border-slate-400 rounded-md transition-colors disabled:opacity-50"
-            >
-              Cancel
-            </button>
-          </div>
-        )}
+        {/* Footer */}
+        <div className="px-6 py-3 bg-slate-50 border-t border-slate-200 flex justify-end flex-shrink-0">
+          <button
+            onClick={onClose}
+            disabled={assigning !== null}
+            className="px-4 py-2 text-sm font-medium text-slate-600 hover:text-slate-800 bg-white border border-slate-300 hover:border-slate-400 rounded-md transition-colors disabled:opacity-50"
+          >
+            Cancel
+          </button>
+        </div>
       </div>
     </>
   )

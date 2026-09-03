@@ -88,6 +88,54 @@ export async function getSchedule() {
 }
 
 /**
+ * Request that an in-progress generate run stop early and return its
+ * best-found-so-far result.
+ */
+export async function cancelGenerate() {
+  return request('POST', '/api/generate-cancel')
+}
+
+/**
+ * Mark one validation issue (physician_id + rule) as overridden for this
+ * session. Returns the refreshed ImportDirectoryResponse.
+ */
+export async function overrideIssue(physicianId, rule) {
+  return request('POST', '/api/override', { physician_id: physicianId, rule })
+}
+
+/**
+ * Undo a single override. Returns the refreshed ImportDirectoryResponse.
+ */
+export async function overrideClear(physicianId, rule) {
+  return request('POST', '/api/override-clear', { physician_id: physicianId, rule })
+}
+
+/**
+ * Override every current error-severity issue for one physician. Returns
+ * the refreshed ImportDirectoryResponse.
+ */
+export async function overrideAll(physicianId) {
+  return request('POST', '/api/override-all', { physician_id: physicianId })
+}
+
+/**
+ * Plain-English error list per physician, excluding overridden issues.
+ * @returns {{ items: { physician_name: string, errors: string[] }[] }}
+ */
+export async function getValidationSummary() {
+  return request('GET', '/api/validation-summary')
+}
+
+/**
+ * What's been overridden this session and why — for deciding whether any
+ * should become a permanent rule_override in physicians.yaml.
+ * @returns {{ items: { physician_name: string, rule: string, message: string }[] }}
+ */
+export async function getOverrideLog() {
+  return request('GET', '/api/override-log')
+}
+
+/**
  * Manually assign a physician to a shift slot (replaces any existing occupant).
  * @param {string} date          ISO date string e.g. "2026-06-01"
  * @param {string} shiftCode     e.g. "0600h RAH A side"

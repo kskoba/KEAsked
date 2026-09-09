@@ -190,33 +190,101 @@ def canon_name(name: str) -> str:
     return ''.join(sorted(tokens))
 
 
-def unify_physician_names(s1: 'Schedule', s2: 'Schedule') -> None:
+def build_roster_key_map(yaml_path: str = _PHYSICIANS_YAML) -> dict[str, str]:
+    """
+    canon_name(variant) -> stable roster physician id, for every name
+    variant physicians.yaml records for a physician: its `name`, `id`,
+    `last_name`, every listed `alias`, and (since exports are inconsistent
+    about full first name vs. initial) both "Last F" and "First Last"
+    built from `first_name`/`last_name`.
+
+    This is what actually resolves cases the generic canon_name() token
+    match cannot, because the two sides use fundamentally different name
+    fields for the same person — e.g. one export using "Hanson A" (last
+    name + first initial) and the other "Amanda Hanson" (full first name)
+    produce different sorted-token keys ("ahanson" vs "amandahanson") that
+    no amount of case/order normalisation will unify on their own. The
+    roster is the one place that already records both spellings belong to
+    the same physician (physicians.yaml's own `aliases` field exists for
+    exactly this reason — see physician_resolver.py, which the main app
+    uses at import time; this tool is standalone and previously did not
+    consult the roster for identity at all).
+
+    Maps to the roster's physician *id*, not its `name` field: `name`
+    formatting is itself inconsistent across entries ("Aref Yeung" vs.
+    "Yeung Alex" vs. "E Chang", First-Last / Last-First / Last-Initial all
+    mixed) so it makes a poor display string. unify_physician_names uses
+    this map only to decide which raw names are the same physician; the
+    string actually shown still comes from one of the two schedule files.
+    """
+    mapping: dict[str, str] = {}
+    try:
+        with open(yaml_path, "r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+    except Exception:
+        return mapping
+
+    for phys in (data.get("physicians") or []):
+        roster_id = phys.get("id") or phys.get("name")
+        if not roster_id:
+            continue
+        variants: set[str] = {phys.get("name", ""), roster_id, phys.get("last_name", "")}
+        variants.update(str(a) for a in (phys.get("aliases") or []))
+        first = (phys.get("first_name") or "").strip()
+        last = (phys.get("last_name") or "").strip()
+        if last and first:
+            variants.add(f"{last} {first[0]}")   # "Hanson A" style
+            variants.add(f"{first} {last}")       # "Amanda Hanson" style
+        for v in variants:
+            v = str(v).strip()
+            if not v:
+                continue
+            key = canon_name(v)
+            if key:
+                mapping[key] = roster_id
+    return mapping
+
+
+def unify_physician_names(
+    s1: 'Schedule', s2: 'Schedule',
+    roster_key_map: Optional[dict[str, str]] = None,
+) -> None:
     """
     Remap physician names in both schedules so that equivalent names
-    (same canonical key) resolve to the same display string.
+    resolve to the same display string. Both schedules' assignments are
+    mutated in place.
 
-    The display name chosen is the one from *s2* if it appears there
-    (typically the human reference), otherwise the one from *s1*.
-    Both schedules' assignments are mutated in place.
+    Grouping key is the roster's physician id where known (roster_key_map,
+    from physicians.yaml — see build_roster_key_map), which can unify
+    spellings the generic canon_name() key cannot (full first name vs.
+    initial, surname alone vs. full name); anything the roster doesn't
+    cover falls back to plain canon_name(). Either way, the *displayed*
+    string is always one of the two schedules' own spellings (s2/human
+    preferred) — never the roster's own `name` field, which is not
+    consistently formatted for display.
     """
-    # Build canon_key → best display name (prefer s2)
+    roster_key_map = roster_key_map or {}
+
+    def group_key(name: str) -> str:
+        ck = canon_name(name)
+        return roster_key_map.get(ck, ck)
+
     canon_to_display: dict[str, str] = {}
     for a in s1.assignments:
-        key = canon_name(a.physician)
+        key = group_key(a.physician)
         if key and key not in canon_to_display:
             canon_to_display[key] = a.physician
     for a in s2.assignments:
-        key = canon_name(a.physician)
+        key = group_key(a.physician)
         if key:
             canon_to_display[key] = a.physician  # s2 overwrites, so s2 name wins
 
-    # Remap all assignments in both schedules
     for a in s1.assignments:
-        key = canon_name(a.physician)
+        key = group_key(a.physician)
         if key in canon_to_display:
             a.physician = canon_to_display[key]
     for a in s2.assignments:
-        key = canon_name(a.physician)
+        key = group_key(a.physician)
         if key in canon_to_display:
             a.physician = canon_to_display[key]
 
@@ -1173,7 +1241,8 @@ def main() -> None:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
 
-    unify_physician_names(s1, s2)
+    roster_key_map = build_roster_key_map(yaml_path) if yaml_path else {}
+    unify_physician_names(s1, s2, roster_key_map)
     print_report(
         s1, s2,
         target_a=args.target_a,

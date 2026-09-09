@@ -1,0 +1,86 @@
+# ============================================================
+# ByteBloc Integration Configuration — TEMPLATE
+# ============================================================
+# Copy this file to "bytebloc.yaml" in this same directory and fill in
+# your organization's real values. bytebloc.yaml is gitignored (it holds
+# a security token) — only this template is committed.
+#
+# Everything needed to fill this in comes from ByteBloc's own READ-ONLY
+# endpoints (getLocationDetails, getShiftDetails, getUserDetails) or from
+# ByteBloc support directly. Populating this file does not send anything
+# to ByteBloc by itself — it only enables the app to BUILD a request
+# payload locally for review. Nothing is ever sent without a human
+# explicitly clicking "Send Requests to ByteBloc" and typing CONFIRM.
+#
+# Reference: ByteBloc Application Programming Interface (PDF), sections
+# 2 (access), 7 (getLocationDetails), 8 (getUserDetails),
+# 9 (getShiftDetails), 10 (createShiftRequests).
+# ============================================================
+
+connection:
+  # Almost never needs to change.
+  base_url: https://www.bytebloc.com/sk/Svc
+  api_version: V1
+
+  # The group/location abbreviation for this clinic, from ByteBloc support
+  # or a getLocationDetails call.
+  group_code: ""
+  location_code: ""
+
+  # Security token for this location, issued by ByteBloc support.
+  # Treat this like a password.
+  security_token: ""
+
+  # The ByteBloc UserId of the account submitting requests on physicians'
+  # behalf. This user must have "Edit All" or "location administrator"
+  # privilege for the location (API doc, section 10). Obtain from a
+  # getUserDetails call — look for the row with UserId for the account
+  # you'll submit as.
+  requester_id: ""
+
+# ------------------------------------------------------------------
+# Shift mapping: KEAsked shift code -> ByteBloc {SiteId, ShiftId}
+# ------------------------------------------------------------------
+# Every code below is one of KEAsked's internal shift codes (see
+# scheduler/backend/shifts.py). Fill in site_id/shift_id for each from a
+# getShiftDetails call for this location. Only ShiftId is actually used
+# when sending assignment ("OnRequest") requests — SiteId is recorded
+# here for reference/future use but is intentionally left blank in
+# outgoing requests, per the API doc ("The site should always be set to
+# blank or null for an assignment request.").
+# ------------------------------------------------------------------
+shift_map:
+  "0600h NEHC":        { site_id: "", shift_id: "" }
+  "0600h RAH A side":  { site_id: "", shift_id: "" }
+  "0600h RAH B side":  { site_id: "", shift_id: "" }
+  "0600h RAH I side":  { site_id: "", shift_id: "" }
+  "0900h NEHC":        { site_id: "", shift_id: "" }
+  "1000h RAH I side":  { site_id: "", shift_id: "" }
+  "1200h NEHC":        { site_id: "", shift_id: "" }
+  "1200h RAH A side":  { site_id: "", shift_id: "" }
+  "1200h RAH B side":  { site_id: "", shift_id: "" }
+  "1400h RAH I side":  { site_id: "", shift_id: "" }
+  "1500h NEHC":        { site_id: "", shift_id: "" }
+  "1600h RAH F side":  { site_id: "", shift_id: "" }
+  "1700h NEHC":        { site_id: "", shift_id: "" }
+  "1800h RAH A side":  { site_id: "", shift_id: "" }
+  "1800h RAH B side":  { site_id: "", shift_id: "" }
+  "1800h RAH I side":  { site_id: "", shift_id: "" }
+  "2000h NEHC":        { site_id: "", shift_id: "" }
+  "2400h NEHC":        { site_id: "", shift_id: "" }
+  "2400h RAH A side":  { site_id: "", shift_id: "" }
+  "2400h RAH B side":  { site_id: "", shift_id: "" }
+  "2400h RAH I side":  { site_id: "", shift_id: "" }
+
+# ------------------------------------------------------------------
+# Provider mapping: KEAsked physician_id -> ByteBloc ProviderId
+# ------------------------------------------------------------------
+# physician_id values match the "id" field in physicians.yaml. Obtain
+# ByteBloc ProviderId values from a getUserDetails call (match by email
+# or ID1/ID2). A physician with no entry here is skipped when sending
+# requests, and reported as a warning rather than failing silently.
+# ------------------------------------------------------------------
+provider_map: {}
+# Example:
+#   provider_map:
+#     AHanson: "b96c33c69f334871c94fa6b70120241a"

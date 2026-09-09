@@ -1,11 +1,12 @@
 import React, { useState } from 'react'
-import { overrideIssue, overrideClear, overrideAll, getValidationSummary } from '../api'
+import { overrideIssue, overrideClear, overrideAll, getValidationSummary, getByteBlocPreview, sendByteBlocRequests } from '../api'
 
 export default function ValidationPanel({ importResult, onImportResultUpdate }) {
   const { physicians = [], total_physicians, valid_physicians } = importResult
   const [expanded, setExpanded] = useState({})
   const [busy, setBusy] = useState(null)     // key of the in-flight override action, or null
   const [report, setReport] = useState(null) // null | { loading, error, items }
+  const [byteBloc, setByteBloc] = useState(null) // null | { loading, error, preview, sendResult }
 
   const validCount = physicians.filter(p => p.is_valid).length
   const totalCount = total_physicians ?? physicians.length
@@ -47,6 +48,26 @@ export default function ValidationPanel({ importResult, onImportResultUpdate }) 
     }
   }
 
+  async function handleOpenByteBloc() {
+    setByteBloc({ loading: true, error: null, preview: null, sendResult: null })
+    try {
+      const preview = await getByteBlocPreview()
+      setByteBloc({ loading: false, error: null, preview, sendResult: null })
+    } catch (err) {
+      setByteBloc({ loading: false, error: err.message, preview: null, sendResult: null })
+    }
+  }
+
+  async function handleConfirmSendToByteBloc(confirmationText) {
+    setByteBloc(prev => ({ ...prev, sending: true }))
+    try {
+      const sendResult = await sendByteBlocRequests(confirmationText)
+      setByteBloc(prev => ({ ...prev, sending: false, sendResult }))
+    } catch (err) {
+      setByteBloc(prev => ({ ...prev, sending: false, sendResult: { ok: false, status: err.message } }))
+    }
+  }
+
   return (
     <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
       {/* Summary bar */}
@@ -65,6 +86,13 @@ export default function ValidationPanel({ importResult, onImportResultUpdate }) 
           >
             Generate Error Report
           </button>
+          <button
+            onClick={handleOpenByteBloc}
+            className="px-3 py-1.5 text-xs font-semibold rounded-md border border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700 transition-colors"
+            title="Review and, only after typing CONFIRM, submit valid physicians' shift requests to ByteBloc"
+          >
+            Send Requests to ByteBloc
+          </button>
           <div className={`px-3 py-1 rounded-full text-sm font-semibold ${
             validCount === totalCount
               ? 'bg-emerald-100 text-emerald-700'
@@ -72,11 +100,6 @@ export default function ValidationPanel({ importResult, onImportResultUpdate }) 
           }`}>
             {validCount} / {totalCount} valid
           </div>
-          {importResult.directory && (
-            <span className="text-xs text-slate-400 font-mono truncate max-w-xs" title={importResult.directory}>
-              {importResult.directory}
-            </span>
-          )}
         </div>
       </div>
 
@@ -244,11 +267,155 @@ export default function ValidationPanel({ importResult, onImportResultUpdate }) 
       {report && (
         <ErrorReportModal report={report} onClose={() => setReport(null)} />
       )}
+
+      {byteBloc && (
+        <ByteBlocModal
+          state={byteBloc}
+          onConfirmSend={handleConfirmSendToByteBloc}
+          onClose={() => setByteBloc(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+function ByteBlocModal({ state, onConfirmSend, onClose }) {
+  const { loading, error, preview, sendResult, sending } = state
+  const [confirmText, setConfirmText] = useState('')
+  const canSend = !sending && !sendResult && preview?.configured && preview.request_count > 0 && confirmText === 'CONFIRM'
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+      <div
+        className="bg-white rounded-xl shadow-xl border border-slate-200 w-full max-w-2xl mx-4 max-h-[80vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+          <h2 className="font-semibold text-slate-800 text-sm">Send Requests to ByteBloc</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-lg leading-none">✕</button>
+        </div>
+
+        <div className="px-5 py-4 overflow-auto flex-1 space-y-4">
+          {loading && <p className="text-sm text-slate-500">Loading preview…</p>}
+          {error && <p className="text-sm text-red-600">{error}</p>}
+
+          {!loading && !error && preview && !preview.configured && (
+            <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+              ByteBloc is not configured yet. Copy{' '}
+              <code className="font-mono text-xs">scheduler/config/bytebloc_template.yaml</code> to{' '}
+              <code className="font-mono text-xs">bytebloc.yaml</code> and fill it in.
+            </p>
+          )}
+
+          {!loading && !error && preview && preview.configured && !sendResult && (
+            <>
+              <div className="text-sm text-slate-700 bg-slate-50 border border-slate-200 rounded-md px-3 py-2">
+                <div><span className="font-medium">Destination:</span> group {preview.group_code || '—'} / location {preview.location_code || '—'}</div>
+                <div><span className="font-medium">Schedule period starting:</span> {preview.sked_start_date || '—'}</div>
+                <div><span className="font-medium">Requests:</span> {preview.request_count} shift request(s) across {preview.physician_count} physician(s)</div>
+              </div>
+
+              {preview.warnings.length > 0 && (
+                <div className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                  <div className="font-medium mb-1">Excluded / warnings:</div>
+                  <ul className="list-disc list-inside space-y-0.5">
+                    {preview.warnings.map((w, i) => <li key={i}>{w}</li>)}
+                  </ul>
+                </div>
+              )}
+
+              {preview.request_count > 0 && (
+                <div className="border border-slate-200 rounded-md overflow-hidden">
+                  <table className="w-full text-xs">
+                    <thead className="bg-slate-50 border-b border-slate-200">
+                      <tr>
+                        <th className="text-left px-3 py-1.5 font-medium text-slate-600">Physician</th>
+                        <th className="text-left px-3 py-1.5 font-medium text-slate-600">Day</th>
+                        <th className="text-left px-3 py-1.5 font-medium text-slate-600">Shift</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {preview.items.slice(0, 100).map((item, i) => (
+                        <tr key={i}>
+                          <td className="px-3 py-1 text-slate-700">{item.physician_name}</td>
+                          <td className="px-3 py-1 text-slate-700">{item.day}</td>
+                          <td className="px-3 py-1 text-slate-700">{item.shift_code}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {preview.items.length > 100 && (
+                    <div className="px-3 py-1.5 text-xs text-slate-400 bg-slate-50">
+                      …and {preview.items.length - 100} more
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {preview.request_count === 0 && (
+                <p className="text-sm text-slate-500">There is nothing to send.</p>
+              )}
+
+              {preview.request_count > 0 && (
+                <div className="border-t border-slate-200 pt-4">
+                  <p className="text-sm text-slate-700 mb-2">
+                    This will submit the requests above to ByteBloc's live system. This cannot be
+                    undone from here. Type <span className="font-mono font-semibold">CONFIRM</span> below to proceed.
+                  </p>
+                  <input
+                    type="text"
+                    value={confirmText}
+                    onChange={(e) => setConfirmText(e.target.value)}
+                    placeholder="Type CONFIRM"
+                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  />
+                </div>
+              )}
+            </>
+          )}
+
+          {sendResult && (
+            <div className={`text-sm rounded-md px-3 py-2 border ${
+              sendResult.ok
+                ? 'text-emerald-800 bg-emerald-50 border-emerald-200'
+                : 'text-red-800 bg-red-50 border-red-200'
+            }`}>
+              <div className="font-medium mb-1">{sendResult.ok ? 'Sent successfully.' : 'Send failed.'}</div>
+              <div className="font-mono text-xs">{sendResult.status}</div>
+            </div>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-3 px-5 py-3 border-t border-slate-200">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50 transition-colors"
+          >
+            {sendResult ? 'Close' : 'Cancel'}
+          </button>
+          {!sendResult && (
+            <button
+              onClick={() => onConfirmSend(confirmText)}
+              disabled={!canSend}
+              className="px-4 py-2 text-sm font-medium text-white bg-emerald-600 rounded-md hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {sending ? 'Sending…' : 'Send to ByteBloc'}
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   )
 }
 
 function ErrorReportModal({ report, onClose }) {
+  const [sent, setSent] = useState({})   // physician_name -> true, once "sent" (mockup only)
+
+  function handleSendReminder(physicianName) {
+    // TODO: mockup only — no email is actually sent yet.
+    setSent(prev => ({ ...prev, [physicianName]: true }))
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
       <div
@@ -270,7 +437,20 @@ function ErrorReportModal({ report, onClose }) {
             <ul className="space-y-4">
               {report.items.map((item, i) => (
                 <li key={i}>
-                  <div className="font-semibold text-slate-800 text-sm mb-1">{item.physician_name}</div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <div className="font-semibold text-slate-800 text-sm">{item.physician_name}</div>
+                    <button
+                      onClick={() => handleSendReminder(item.physician_name)}
+                      disabled={!!sent[item.physician_name]}
+                      className={`px-2 py-0.5 text-xs font-semibold rounded border transition-colors ${
+                        sent[item.physician_name]
+                          ? 'border-emerald-300 bg-emerald-50 text-emerald-700 cursor-default'
+                          : 'border-sky-300 bg-sky-50 text-sky-700 hover:bg-sky-100'
+                      }`}
+                    >
+                      {sent[item.physician_name] ? 'Reminder sent' : 'Send Reminder Email'}
+                    </button>
+                  </div>
                   <ul className="list-disc list-inside space-y-0.5">
                     {item.errors.map((err, j) => (
                       <li key={j} className="text-sm text-slate-600">{err}</li>

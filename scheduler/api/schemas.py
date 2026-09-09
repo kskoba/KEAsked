@@ -94,6 +94,41 @@ class OverrideLogResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# ByteBloc integration
+# ---------------------------------------------------------------------------
+# See scheduler/backend/bytebloc.py for the hard safety rule: nothing is
+# ever sent to ByteBloc without a human typing the confirmation phrase.
+
+class ByteBlocRequestPreviewItem(BaseModel):
+    physician_id: str
+    physician_name: str
+    day: str            # yyyy-MM-dd
+    shift_code: str      # KEAsked's internal code, e.g. "0600h RAH A side"
+
+
+class ByteBlocPreviewResponse(BaseModel):
+    configured: bool                          # False if bytebloc.yaml doesn't exist yet
+    group_code: str = ""
+    location_code: str = ""
+    requester_id: str = ""
+    sked_start_date: str = ""                 # yyyy-MM-dd, for display
+    items: list[ByteBlocRequestPreviewItem] = []
+    warnings: list[str] = []
+    physician_count: int = 0
+    request_count: int = 0
+
+
+class ByteBlocSendRequest(BaseModel):
+    confirmation: str    # must exactly equal bytebloc.CONFIRMATION_PHRASE
+
+
+class ByteBlocSendResponse(BaseModel):
+    ok: bool
+    status: str = ""
+    raw: dict | None = None
+
+
+# ---------------------------------------------------------------------------
 # Schedule generation
 # ---------------------------------------------------------------------------
 

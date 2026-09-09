@@ -1,16 +1,113 @@
 import { app, BrowserWindow, ipcMain, dialog } from 'electron'
 import { join } from 'path'
+import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { spawn } from 'child_process'
 import http from 'http'
 
 // Simple dev-mode check — no external @electron-toolkit/utils dependency needed
 const isDev = !app.isPackaged || process.env.NODE_ENV === 'development'
 
+// This machine's Wayland/EGL stack crash-loops the GPU process (EGL_BAD_ALLOC),
+// which eventually kills the whole app. Linux-only so packaged Win/Mac builds
+// for end users are unaffected.
+if (process.platform === 'linux') {
+  app.disableHardwareAcceleration()
+}
+
 let mainWindow = null
 let pythonProcess = null
 
 // Project root is one level up from the frontend directory
 const projectRoot = join(app.getAppPath(), '..')
+
+// ---------------------------------------------------------------------------
+// Physician config folder (physicians.yaml, scheduler_config.yaml,
+// bytebloc.yaml) location
+// ---------------------------------------------------------------------------
+// This data is org-specific (real physician names/preferences, and for
+// bytebloc.yaml a security token) and is never bundled into the app —
+// it's gitignored in the repo and, deliberately, not copied into the
+// packaged installer either (see package.json — extraResources no longer
+// includes scheduler/config). The user points the app at wherever their
+// org keeps this folder, and that choice is remembered across launches.
+
+const SETTINGS_PATH = join(app.getPath('userData'), 'kea-settings.json')
+const DEV_DEFAULT_CONFIG_DIR = join(projectRoot, 'scheduler', 'config')
+
+function readAppSettings() {
+  try {
+    return JSON.parse(readFileSync(SETTINGS_PATH, 'utf-8'))
+  } catch {
+    return {}
+  }
+}
+
+function writeAppSettings(patch) {
+  const merged = { ...readAppSettings(), ...patch }
+  writeFileSync(SETTINGS_PATH, JSON.stringify(merged, null, 2))
+  return merged
+}
+
+function configDirLooksValid(dir) {
+  return !!dir && existsSync(join(dir, 'physicians.yaml'))
+}
+
+// Resolves the config folder to use, prompting the user to pick one (and
+// remembering the choice) if none is set yet or the saved one no longer
+// has physicians.yaml in it. Returns null only if the user refuses to
+// pick a folder at all, in which case the app cannot start.
+async function resolveConfigDir() {
+  const settings = readAppSettings()
+  if (configDirLooksValid(settings.configDir)) return settings.configDir
+
+  // In dev, fall back to the repo's own scheduler/config without prompting
+  // — that's the normal working copy every dev checkout already has.
+  if (!app.isPackaged && configDirLooksValid(DEV_DEFAULT_CONFIG_DIR)) {
+    return DEV_DEFAULT_CONFIG_DIR
+  }
+
+  return promptForConfigDir()
+}
+
+async function promptForConfigDir(retry = false) {
+  await dialog.showMessageBox({
+    type: 'info',
+    title: 'Physician Config Folder',
+    message: retry
+      ? "That folder doesn't contain physicians.yaml. Please choose the folder again."
+      : 'Select the folder containing physicians.yaml, scheduler_config.yaml, and (optionally) bytebloc.yaml.',
+    detail: 'This is your organization\'s own data — it is not bundled with the app. ' +
+      'You can change this later from Settings.',
+    buttons: ['Choose Folder']
+  })
+
+  const result = await dialog.showOpenDialog({
+    properties: ['openDirectory'],
+    title: 'Select Physician Config Folder'
+  })
+
+  if (result.canceled || result.filePaths.length === 0) {
+    const { response } = await dialog.showMessageBox({
+      type: 'warning',
+      buttons: ['Quit', 'Try Again'],
+      defaultId: 1,
+      message: 'A config folder is required to run KEA Physician Scheduler.'
+    })
+    if (response === 0) {
+      app.quit()
+      return null
+    }
+    return promptForConfigDir(false)
+  }
+
+  const dir = result.filePaths[0]
+  if (!configDirLooksValid(dir)) {
+    return promptForConfigDir(true)
+  }
+
+  writeAppSettings({ configDir: dir })
+  return dir
+}
 
 function killPortWindows(port) {
   try {
@@ -28,7 +125,7 @@ function killPortWindows(port) {
   }
 }
 
-function startPythonServer() {
+function startPythonServer(configDir) {
   if (process.platform === 'win32') killPortWindows(5000)
 
   let spawnCmd, spawnArgs, spawnOpts
@@ -37,7 +134,6 @@ function startPythonServer() {
     // Packaged app — launch the bundled PyInstaller executable
     const exeName = process.platform === 'win32' ? 'scheduler_server.exe' : 'scheduler_server'
     const exePath = join(process.resourcesPath, 'backend', exeName)
-    const configDir = join(process.resourcesPath, 'config')
     console.log('[main] Starting bundled server:', exePath)
     spawnCmd = exePath
     spawnArgs = []
@@ -53,6 +149,7 @@ function startPythonServer() {
     spawnArgs = ['-m', 'scheduler.api.server']
     spawnOpts = {
       cwd: projectRoot,
+      env: { ...process.env, CONFIG_DIR: configDir },
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: process.platform === 'win32'
     }
@@ -221,11 +318,52 @@ ipcMain.handle('dialog:openFile', async (_event, filters) => {
   return result.filePaths[0]
 })
 
+// IPC: current physician config folder (Settings screen)
+ipcMain.handle('settings:getConfigDir', () => {
+  const settings = readAppSettings()
+  if (configDirLooksValid(settings.configDir)) return settings.configDir
+  if (!app.isPackaged && configDirLooksValid(DEV_DEFAULT_CONFIG_DIR)) return DEV_DEFAULT_CONFIG_DIR
+  return null
+})
+
+// IPC: let the user change the physician config folder from Settings.
+// Takes effect after a restart, which this offers to do immediately.
+ipcMain.handle('settings:chooseConfigDir', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openDirectory'],
+    title: 'Select Physician Config Folder'
+  })
+  if (result.canceled || result.filePaths.length === 0) return { changed: false }
+
+  const dir = result.filePaths[0]
+  if (!configDirLooksValid(dir)) {
+    return { changed: false, error: 'That folder does not contain physicians.yaml.' }
+  }
+
+  writeAppSettings({ configDir: dir })
+
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: 'question',
+    buttons: ['Restart Now', 'Later'],
+    defaultId: 0,
+    message: 'Config folder updated.',
+    detail: 'KEA Physician Scheduler needs to restart to load data from the new location.'
+  })
+  if (response === 0) {
+    app.relaunch()
+    app.exit(0)
+  }
+  return { changed: true, path: dir }
+})
+
 app.whenReady().then(async () => {
   const loadingWin = createLoadingWindow()
 
+  const configDir = await resolveConfigDir()
+  if (!configDir) return  // user quit rather than choosing a folder
+
   // Start Python backend
-  startPythonServer()
+  startPythonServer(configDir)
 
   try {
     await pollServerReady('http://127.0.0.1:5000/api/health', 500, 30000)
@@ -237,19 +375,20 @@ app.whenReady().then(async () => {
 
   const win = await createMainWindow()
 
-  win.once('ready-to-show', () => {
-    loadingWin.close()
+  let revealed = false
+  const reveal = () => {
+    if (revealed) return
+    revealed = true
+    clearTimeout(fallbackTimer)
+    if (!loadingWin.isDestroyed()) loadingWin.close()
     win.show()
     win.focus()
-  })
+  }
+
+  win.once('ready-to-show', reveal)
 
   // If renderer loads before ready-to-show fires, show anyway
-  setTimeout(() => {
-    if (!win.isVisible()) {
-      loadingWin.close()
-      win.show()
-    }
-  }, 5000)
+  const fallbackTimer = setTimeout(reveal, 5000)
 })
 
 app.on('window-all-closed', () => {

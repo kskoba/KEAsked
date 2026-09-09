@@ -59,9 +59,14 @@ from scheduler.api.schemas import (
     ValidationSummaryItem,
     ValidationSummaryResponse,
     ViolationSchema,
+    ByteBlocRequestPreviewItem,
+    ByteBlocPreviewResponse,
+    ByteBlocSendRequest,
+    ByteBlocSendResponse,
 )
 import os
 
+from scheduler.backend import bytebloc as bytebloc_mod
 from scheduler.backend.config import load_roster
 from scheduler.backend.generator import (
     Assignment,
@@ -757,6 +762,132 @@ def override_log() -> OverrideLogResponse:
     return OverrideLogResponse(items=items)
 
 
+# ---------------------------------------------------------------------------
+# ByteBloc integration
+# ---------------------------------------------------------------------------
+# See scheduler/backend/bytebloc.py for the hard safety rule this all sits
+# behind: nothing is sent to ByteBloc without a human typing the exact
+# confirmation phrase into the send request, checked again server-side.
+
+def _eligible_submissions_for_bytebloc() -> tuple[list[PhysicianSubmission], int]:
+    """
+    Physician submissions that currently pass validation (no remaining
+    non-overridden errors) — the only ones ever considered for a ByteBloc
+    request. Returns (eligible, excluded_count).
+    """
+    submissions: list[PhysicianSubmission] = _state.get("submissions") or []
+    roster = _state.get("roster") or {}
+    index = build_alias_index(roster)
+    unresolved = {
+        sub.physician_id for sub in submissions
+        if _resolve_submission_id(sub, index) is None
+    }
+    results = _build_import_results(submissions, unresolved, roster)
+    valid_ids = {r.physician_id for r in results if r.is_valid}
+    eligible = [s for s in submissions if s.physician_id in valid_ids]
+    return eligible, len(submissions) - len(eligible)
+
+
+def _build_bytebloc_payload() -> tuple[bytebloc_mod.ByteBlocConfig | None, dict, list[str], list]:
+    """Shared by preview and send so both always agree on exactly what would be sent."""
+    config = bytebloc_mod.load_bytebloc_config()
+    if config is None:
+        return None, {}, [
+            "ByteBloc is not configured yet. Copy "
+            "scheduler/config/bytebloc_template.yaml to bytebloc.yaml and fill it in."
+        ], []
+
+    year, month = _state.get("year"), _state.get("month")
+    if not year or not month:
+        return config, {}, ["Import and validate a month's submissions first."], []
+
+    eligible, excluded = _eligible_submissions_for_bytebloc()
+    roster = _state.get("roster") or {}
+    display_names = build_display_names(roster)
+    payload, warnings, preview_items = bytebloc_mod.build_shift_requests_payload(
+        eligible, config, year, month, display_names,
+    )
+    if excluded:
+        warnings.insert(
+            0,
+            f"{excluded} physician(s) with unresolved validation errors were excluded "
+            f"from this request.",
+        )
+    if not bytebloc_mod.is_fully_configured(config):
+        warnings.insert(0, "ByteBloc connection details in bytebloc.yaml are incomplete.")
+    return config, payload, warnings, preview_items
+
+
+@app.get("/api/bytebloc/preview", response_model=ByteBlocPreviewResponse)
+def bytebloc_preview() -> ByteBlocPreviewResponse:
+    """
+    Build (but never send) the ByteBloc createShiftRequests payload from
+    the current, currently-valid physician submissions. Read-only — this
+    never contacts ByteBloc.
+    """
+    config, payload, warnings, preview_items = _build_bytebloc_payload()
+    if config is None:
+        return ByteBlocPreviewResponse(configured=False, warnings=warnings)
+
+    provider_ids = {pr["ProviderId"] for pr in payload.get("ProviderRequests", [])}
+    return ByteBlocPreviewResponse(
+        configured=True,
+        group_code=config.group_code,
+        location_code=config.location_code,
+        requester_id=config.requester_id,
+        sked_start_date=payload.get("SkedStartDate", ""),
+        items=[
+            ByteBlocRequestPreviewItem(
+                physician_id=item.physician_id,
+                physician_name=item.physician_name,
+                day=item.day,
+                shift_code=item.shift_code,
+            )
+            for item in preview_items
+        ],
+        warnings=warnings,
+        physician_count=len(provider_ids),
+        request_count=len(preview_items),
+    )
+
+
+@app.post("/api/bytebloc/send", response_model=ByteBlocSendResponse)
+def bytebloc_send(body: ByteBlocSendRequest) -> ByteBlocSendResponse:
+    """
+    Actually POST the current ByteBloc payload to createShiftRequests.
+
+    SAFETY: this is the only code path in the app allowed to contact
+    ByteBloc's write API. It refuses unless body.confirmation is exactly
+    bytebloc.CONFIRMATION_PHRASE, typed by a human into the confirmation
+    dialog — do not add another caller, and do not weaken this check.
+    The payload is rebuilt fresh from current state rather than trusting
+    anything cached from a prior preview call.
+    """
+    if body.confirmation != bytebloc_mod.CONFIRMATION_PHRASE:
+        raise HTTPException(
+            status_code=400,
+            detail=f'Type "{bytebloc_mod.CONFIRMATION_PHRASE}" exactly to confirm.',
+        )
+
+    config, payload, warnings, preview_items = _build_bytebloc_payload()
+    if config is None:
+        raise HTTPException(status_code=400, detail="ByteBloc is not configured.")
+    if not bytebloc_mod.is_fully_configured(config):
+        raise HTTPException(status_code=400, detail="ByteBloc connection details are incomplete.")
+    if not preview_items:
+        raise HTTPException(status_code=400, detail="There is nothing to send.")
+
+    try:
+        result = bytebloc_mod.send_shift_requests(payload, config, body.confirmation)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    status = str(result.get("Status", "unknown"))
+    return ByteBlocSendResponse(ok=status == "OK", status=status, raw=result)
+
+
 @app.post("/api/generate-cancel")
 def cancel_generate() -> dict:
     """Request that an in-progress /api/generate stop early and return its best-found result."""
@@ -883,7 +1014,7 @@ def export_schedule() -> StreamingResponse:
 # Shift rows in display order: (site_label, time_label, time_code, site_code)
 # time_code/site_code == None means it is an on-call row filled from result.on_calls.
 _EXPORT_SHIFTS = [
-    ("DOC",       "Day On Call", None,    None),           # Day on call row
+    ("DOC",       "0500-1559",  None,    None),           # Day on call row — same hour range the human schedule uses
     ("RAH A",     "0600-1200",  "0600h",  "RAH A side"),
     ("RAH B",     "0600-1200",  "0600h",  "RAH B side"),
     ("NECHC",     "0600-1400",  "0600h",  "NEHC"),
@@ -895,7 +1026,7 @@ _EXPORT_SHIFTS = [
     ("NECHC",     "1200-2000",  "1200h",  "NEHC"),
     ("RAH I",     "1400-2200",  "1400h",  "RAH I side"),
     ("NECHC",     "1500-2300",  "1500h",  "NEHC"),
-    ("NOC",       "Night On Call", None,  None),           # Night on call row
+    ("NOC",       "1600-0459",  None,  None),           # Night on call row — same hour range the human schedule uses
     ("RAH Float", "1600-0459",  "1600h",  "RAH F side"),
     ("NECHC",     "1700-0100",  "1700h",  "NEHC"),
     ("RAH A",     "1800-0000",  "1800h",  "RAH A side"),
@@ -1039,6 +1170,10 @@ _EXPORT_SHIFT_LOOKUP: dict[tuple[str, str], tuple] = {
     (site_label, time_label): (time_code, site_code)
     for site_label, time_label, time_code, site_code in _EXPORT_SHIFTS
 }
+# Back-compat: files exported before on-call rows carried a real hour range
+# used the literal label as the time row. Keep these loadable.
+_EXPORT_SHIFT_LOOKUP[("DOC", "Day On Call")] = (None, None)
+_EXPORT_SHIFT_LOOKUP[("NOC", "Night On Call")] = (None, None)
 
 # Flat shift-code -> Shift object lookup (used by xlsx loader)
 _SHIFT_CODE_LOOKUP: dict[str, Shift] = {

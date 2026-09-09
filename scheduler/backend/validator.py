@@ -74,7 +74,7 @@ def check_min_valid_days(
             _error(
                 "min_valid_days",
                 f"Only {actual} valid day(s) available; need at least {required} "
-                f"(ceil({n} × 1.5)) for {n} requested shift(s).",
+                f"for {n} requested shift(s).",
                 sub.physician_id,
             )
         ]
@@ -95,7 +95,7 @@ def check_min_valid_blocks(
             _error(
                 "min_valid_blocks",
                 f"Only {actual} valid block(s) available across all days; "
-                f"need at least {required} ({n} × 4) for {n} requested shift(s).",
+                f"need at least {required} for {n} requested shift(s).",
                 sub.physician_id,
             )
         ]
@@ -116,7 +116,7 @@ def check_min_weekend_days(
             _error(
                 "min_weekend_days",
                 f"Only {actual} valid weekend day(s) available; need at least "
-                f"{required} (ceil({n} × 0.6)) for {n} requested shift(s).",
+                f"{required} for {n} requested shift(s).",
                 sub.physician_id,
             )
         ]
@@ -137,7 +137,7 @@ def check_min_anchored_days(
             _error(
                 "min_anchored_days",
                 f"Only {actual} anchored day(s) available; need at least "
-                f"{required} (ceil({n} / 2)) for {n} requested shift(s).",
+                f"{required} for {n} requested shift(s).",
                 sub.physician_id,
             )
         ]

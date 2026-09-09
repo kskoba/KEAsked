@@ -34,10 +34,6 @@
         "from": "../dist_backend",
         "to": "backend",
         "filter": ["**/*"]
-      },
-      {
-        "from": "../scheduler/config",
-        "to": "config"
       }
     ],
     "win": {

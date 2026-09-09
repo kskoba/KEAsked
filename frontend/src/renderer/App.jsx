@@ -8,6 +8,7 @@ import ConflictModal from './components/ConflictModal'
 import ReplaceModal from './components/ReplaceModal'
 import OnCallModal from './components/OnCallModal'
 import AssignOrSwapModal from './components/AssignOrSwapModal'
+import SettingsModal from './components/SettingsModal'
 import { assignPhysician, getSchedule, checkViolations } from './api'
 
 export default function App() {
@@ -43,6 +44,9 @@ export default function App() {
 
   // On-call edit modal: null | { date: string, callType: string }
   const [onCallSlot, setOnCallSlot] = useState(null)
+
+  // Settings modal (physician config folder location)
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
   // Recover an already-completed schedule on load — e.g. after a renderer
   // reload/HMR interrupted the in-flight /api/generate request client-side
@@ -248,7 +252,13 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen bg-slate-50 overflow-hidden">
-      <Header view={view} onBack={handleBackToSetup} hasSchedule={!!scheduleData} onViewSchedule={handleViewSchedule} />
+      <Header
+        view={view}
+        onBack={handleBackToSetup}
+        hasSchedule={!!scheduleData}
+        onViewSchedule={handleViewSchedule}
+        onOpenSettings={() => setSettingsOpen(true)}
+      />
 
       {view === 'setup' && (
         <div className="flex-1 overflow-auto p-6 space-y-6">
@@ -348,6 +358,10 @@ export default function App() {
           onAssigned={handleOnCallAssigned}
           onClose={() => setOnCallSlot(null)}
         />
+      )}
+
+      {settingsOpen && (
+        <SettingsModal onClose={() => setSettingsOpen(false)} />
       )}
     </div>
   )

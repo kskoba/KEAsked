@@ -214,3 +214,30 @@ export async function assignOnCall(date, callType, physicianId) {
   })
 }
 
+/**
+ * Build (but never send) the ByteBloc shift-requests payload from the
+ * current, currently-valid physician submissions. Read-only — safe to
+ * call any time, including just to check whether ByteBloc is configured.
+ * @returns {{ configured: boolean, group_code: string, location_code: string,
+ *   requester_id: string, sked_start_date: string,
+ *   items: { physician_id: string, physician_name: string, day: string, shift_code: string }[],
+ *   warnings: string[], physician_count: number, request_count: number }}
+ */
+export async function getByteBlocPreview() {
+  return request('GET', '/api/bytebloc/preview')
+}
+
+/**
+ * Actually send the current ByteBloc shift-requests payload.
+ *
+ * This hits a live external system. The backend refuses the call unless
+ * `confirmation` is exactly the string "CONFIRM" — pass through whatever
+ * the human typed into the confirmation dialog verbatim; do not
+ * hardcode "CONFIRM" here as a way to skip the prompt.
+ * @param {string} confirmation
+ * @returns {{ ok: boolean, status: string, raw: object|null }}
+ */
+export async function sendByteBlocRequests(confirmation) {
+  return request('POST', '/api/bytebloc/send', { confirmation })
+}
+

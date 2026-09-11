@@ -48,6 +48,15 @@ export default function App() {
   // Settings modal (physician config folder location)
   const [settingsOpen, setSettingsOpen] = useState(false)
 
+  // Whether a valid physicians.yaml has been found — null while checking.
+  // Re-checked whenever Settings closes, since that's the only place this
+  // can change during a running session.
+  const [configReady, setConfigReady] = useState(null)
+  const checkConfigReady = useCallback(() => {
+    window.electronAPI.getConfigDir().then(dir => setConfigReady(!!dir))
+  }, [])
+  useEffect(() => { checkConfigReady() }, [checkConfigReady])
+
   // Recover an already-completed schedule on load — e.g. after a renderer
   // reload/HMR interrupted the in-flight /api/generate request client-side
   // while the backend kept solving in the background and finished anyway.
@@ -263,15 +272,31 @@ export default function App() {
 
       {view === 'setup' && (
         <div className="flex-1 overflow-auto p-6 space-y-6">
-          <DirectoryPicker
-            onImportDone={handleImportDone}
-            onScheduleGenerated={handleScheduleGenerated}
-            onScheduleLoaded={handleScheduleLoaded}
-            importResult={importResult}
-          />
-          {importResult && (
-            <ValidationPanel importResult={importResult} onImportResultUpdate={handleImportDone} />
+          {configReady === false && (
+            <div className="px-4 py-3 rounded-md bg-red-50 border border-red-300 text-red-700 text-sm font-semibold flex items-center justify-between gap-4">
+              <span>
+                No physician config folder found — nothing can be imported or generated until
+                physicians.yaml is located.
+              </span>
+              <button
+                onClick={() => setSettingsOpen(true)}
+                className="flex-shrink-0 px-3 py-1.5 text-xs font-semibold rounded-md border border-red-400 text-red-700 bg-white hover:bg-red-100 transition-colors"
+              >
+                Open Settings
+              </button>
+            </div>
           )}
+          <div className={`space-y-6 ${configReady === false ? 'opacity-50 pointer-events-none' : ''}`}>
+            <DirectoryPicker
+              onImportDone={handleImportDone}
+              onScheduleGenerated={handleScheduleGenerated}
+              onScheduleLoaded={handleScheduleLoaded}
+              importResult={importResult}
+            />
+            {importResult && (
+              <ValidationPanel importResult={importResult} onImportResultUpdate={handleImportDone} />
+            )}
+          </div>
         </div>
       )}
 
@@ -362,7 +387,7 @@ export default function App() {
       )}
 
       {settingsOpen && (
-        <SettingsModal onClose={() => setSettingsOpen(false)} />
+        <SettingsModal onClose={() => { setSettingsOpen(false); checkConfigReady() }} />
       )}
     </div>
   )

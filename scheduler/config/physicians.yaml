@@ -351,6 +351,7 @@ physicians:
       max_consecutive_1800h: 2
       forbidden_shift_times:
         - 2000h
+        - 2400h
     forbidden_sites:
       - RAH A side
       - RAH B side

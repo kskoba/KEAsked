@@ -56,11 +56,6 @@ html, body, #root {
   background-color: #dcfce7;
 }
 
-/* ── Tooltip utility ── */
-[title] {
-  cursor: help;
-}
-
 /* ── Spin animation (Tailwind already provides animate-spin, but kept for clarity) ── */
 @keyframes spin {
   to { transform: rotate(360deg); }

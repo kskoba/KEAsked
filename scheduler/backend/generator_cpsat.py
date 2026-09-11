@@ -422,6 +422,19 @@ class CpsatScheduleGenerator:
         # per-filled-shift weight so it yields rather than leave gaps unfilled.
         _LONG_GAP_PENALTY = 300
 
+        # Soft: discourage a big swing in start time between two consecutive
+        # working days (e.g. 0600h one day, 1800h the next) even though the
+        # rest gap is technically fine — a day organized around an early
+        # shift one day and a late shift the next is disruptive in a way
+        # the pure rest-hours check doesn't capture. Cascading later across
+        # several days (0600 → 0900 → 1200 → ...) never trips this, since
+        # each individual day-to-day step stays under the threshold; only a
+        # single big jump does. Same weight class as run_penalty_terms (35)
+        # below — a real preference, not close to overriding fill/rest.
+        swing_penalty_terms: list = []
+        _SHIFT_SWING_MAX_HOURS = 10
+        _SWING_PENALTY = 35
+
         for pid in pids:
             for d_idx in range(len(all_dates) - 1):
                 d1 = all_dates[d_idx]
@@ -436,7 +449,8 @@ class CpsatScheduleGenerator:
                                         shifts[(pid, d_idx, shift1.code)]
                                         + shifts[(pid, d_idx + 1, shift2.code)] <= 1
                                     )
-                                elif violates_max_spacing(shift1, shift2):
+                                    continue
+                                if violates_max_spacing(shift1, shift2):
                                     long_gap = model.new_bool_var(
                                         f"longgap_{pid}_{d_idx}_{shift1.code}_{shift2.code}"
                                     )
@@ -445,6 +459,15 @@ class CpsatScheduleGenerator:
                                         + shifts[(pid, d_idx + 1, shift2.code)] <= 1 + long_gap
                                     )
                                     long_gap_penalty_terms.append(-_LONG_GAP_PENALTY * long_gap)
+                                if abs(shift1.start_hour - shift2.start_hour) > _SHIFT_SWING_MAX_HOURS:
+                                    swing = model.new_bool_var(
+                                        f"swing_{pid}_{d_idx}_{shift1.code}_{shift2.code}"
+                                    )
+                                    model.add(
+                                        shifts[(pid, d_idx, shift1.code)]
+                                        + shifts[(pid, d_idx + 1, shift2.code)] <= 1 + swing
+                                    )
+                                    swing_penalty_terms.append(-_SWING_PENALTY * swing)
 
             # 2-day gap: only 2400h → next morning matters (36h rest rule)
             for d_idx in range(len(all_dates) - 2):
@@ -1077,6 +1100,7 @@ class CpsatScheduleGenerator:
         objective_terms.extend(run_penalty_terms)
         objective_terms.extend(monday_penalty_terms)
         objective_terms.extend(long_gap_penalty_terms)
+        objective_terms.extend(swing_penalty_terms)
 
         model.maximize(sum(objective_terms))
 
@@ -1308,6 +1332,56 @@ class CpsatScheduleGenerator:
             for _, _, _, pid, violations in results[:max_n]
         ]
 
+    # ------------------------------------------------------------------
+    # Post-generation slot helpers (ported from ScheduleGenerator — same
+    # self._pid_to_slots[pid]: list[(date, Shift)] structure in both).
+    # ------------------------------------------------------------------
+
+    def _prev_assigned(
+        self, pid: str, before_date: datetime.date
+    ) -> tuple[Shift, datetime.date] | None:
+        past = [(d, s) for d, s in self._pid_to_slots[pid] if d < before_date]
+        if not past:
+            return None
+        latest_d, latest_s = max(past, key=lambda x: x[0])
+        return latest_s, latest_d
+
+    def _next_assigned(
+        self, pid: str, after_date: datetime.date
+    ) -> tuple[Shift, datetime.date] | None:
+        future = [(d, s) for d, s in self._pid_to_slots[pid] if d > after_date]
+        if not future:
+            return None
+        earliest_d, earliest_s = min(future, key=lambda x: x[0])
+        return earliest_s, earliest_d
+
+    def _run_length_ending_before(self, pid: str, new_date: datetime.date) -> int:
+        assigned = {d for d, _ in self._pid_to_slots[pid]}
+        count = 0
+        check = new_date - datetime.timedelta(days=1)
+        while check in assigned:
+            count += 1
+            check -= datetime.timedelta(days=1)
+        return count
+
+    def _run_length_starting_after(self, pid: str, new_date: datetime.date) -> int:
+        assigned = {d for d, _ in self._pid_to_slots[pid]}
+        count = 0
+        check = new_date + datetime.timedelta(days=1)
+        while check in assigned:
+            count += 1
+            check += datetime.timedelta(days=1)
+        return count
+
+    def _night_run_ending_before(self, pid: str, d: datetime.date) -> int:
+        night_dates = {ad for ad, s in self._pid_to_slots[pid] if s.time == "2400h"}
+        count = 0
+        check = d - datetime.timedelta(days=1)
+        while check in night_dates:
+            count += 1
+            check -= datetime.timedelta(days=1)
+        return count
+
     def _check_constraints_simple(
         self,
         pid: str,
@@ -1315,7 +1389,18 @@ class CpsatScheduleGenerator:
         shift: Shift,
         block_idx: int,
     ) -> list[ViolationReason]:
-        """Lightweight constraint check used for near-miss candidate ranking."""
+        """
+        Constraint check for both near-miss candidate ranking AND the
+        post-generation manual-assign / check-violations endpoints (via
+        _check_constraints above) — despite the name, this is NOT allowed
+        to skip anything in _HARD_VIOLATION_RULES that a real assignment
+        could hit, or a manual reassignment on a CP-SAT-generated schedule
+        silently slips past rules the UI claims to enforce (this happened:
+        a manual swap onto a 4th consecutive day for a physician capped at
+        2 produced no warning at all, because this method used to check
+        only 6 of the ~10 hard rules — availability/site/max-shifts but
+        not consecutive-day, rest-spacing, or night-run limits).
+        """
         v: list[ViolationReason] = []
         sub = self.submissions[pid]
         cfg = (
@@ -1340,6 +1425,9 @@ class CpsatScheduleGenerator:
         if cfg and cfg.only_2400h and shift.time != "2400h":
             v.append(ViolationReason(rule="shift_type_restriction", description=f"Restricted to 2400h shifts only"))
 
+        if cfg and shift.time in cfg.forbidden_shift_times:
+            v.append(ViolationReason(rule="shift_type_restriction", description=f"{cfg.name} cannot work {shift.time} shifts"))
+
         pid_slots = self._pid_to_slots.get(pid, [])
         if any(ad == d for ad, _ in pid_slots):
             v.append(ViolationReason(rule="already_assigned_today", description=f"Already has a shift on {d}"))
@@ -1347,6 +1435,74 @@ class CpsatScheduleGenerator:
         hard_max = sub.shifts_max if sub.shifts_max > 0 else sub.shifts_requested
         if self._shift_count.get(pid, 0) >= hard_max > 0:
             v.append(ViolationReason(rule="max_shifts", description=f"Already at maximum shifts ({hard_max})"))
+
+        # Consecutive day limit — bidirectional so it's correct regardless
+        # of whether earlier or later dates were assigned first.
+        max_consec = cfg.max_consecutive_shifts if cfg else self._max_consec_default
+        run_before = self._run_length_ending_before(pid, d)
+        run_after = self._run_length_starting_after(pid, d)
+        total_run = run_before + 1 + run_after
+        if total_run > max_consec:
+            v.append(ViolationReason(
+                rule="consecutive_limit",
+                description=f"Would create a {total_run}-day consecutive run (limit {max_consec})",
+            ))
+
+        # Spacing: 23h minimum / post-2400h rest — checked bidirectionally.
+        prev = self._prev_assigned(pid, d)
+        if prev:
+            prev_shift, prev_date = prev
+            gap = (d - prev_date).days
+            if not is_next_shift_ok(prev_shift, gap, shift):
+                if prev_shift.time == "2400h" and gap == 2:
+                    v.append(ViolationReason(
+                        rule="post_2400h_rest",
+                        description=(
+                            f"After 2400h on {prev_date:%b %d}, next shift must start "
+                            f"at noon or later (requested: {shift.time})"
+                        ),
+                    ))
+                else:
+                    actual_h = (shift.start_hour + gap * 24) - prev_shift.start_hour
+                    v.append(ViolationReason(
+                        rule="spacing_23h",
+                        description=(
+                            f"Only {actual_h}h gap: {prev_shift.time} on {prev_date:%b %d} "
+                            f"→ {shift.time} on {d:%b %d} (need 23h)"
+                        ),
+                    ))
+        nxt = self._next_assigned(pid, d)
+        if nxt:
+            nxt_shift, nxt_date = nxt
+            fwd_gap = (nxt_date - d).days
+            if not is_next_shift_ok(shift, fwd_gap, nxt_shift):
+                if shift.time == "2400h" and fwd_gap == 2:
+                    v.append(ViolationReason(
+                        rule="post_2400h_rest",
+                        description=(
+                            f"After 2400h on {d:%b %d}, next shift must start at noon "
+                            f"or later (have: {nxt_shift.time} on {nxt_date:%b %d})"
+                        ),
+                    ))
+                else:
+                    actual_h = (nxt_shift.start_hour + fwd_gap * 24) - shift.start_hour
+                    v.append(ViolationReason(
+                        rule="spacing_23h",
+                        description=(
+                            f"Only {actual_h}h gap: {shift.time} on {d:%b %d} "
+                            f"→ {nxt_shift.time} on {nxt_date:%b %d} (need 23h)"
+                        ),
+                    ))
+
+        # NIAR — max consecutive 2400h (overnight) shifts.
+        if shift.time == "2400h":
+            max_nights = cfg.max_consecutive_nights if cfg else self._max_consec_default
+            night_run = self._night_run_ending_before(pid, d)
+            if night_run >= max_nights:
+                v.append(ViolationReason(
+                    rule="niar_limit",
+                    description=f"Would extend consecutive night run to {night_run + 1} (NIAR limit {max_nights})",
+                ))
 
         return v
 

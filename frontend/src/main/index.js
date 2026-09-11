@@ -54,8 +54,10 @@ function configDirLooksValid(dir) {
 
 // Resolves the config folder to use, prompting the user to pick one (and
 // remembering the choice) if none is set yet or the saved one no longer
-// has physicians.yaml in it. Returns null only if the user refuses to
-// pick a folder at all, in which case the app cannot start.
+// has physicians.yaml in it. Returns null if there's no valid folder —
+// the app still starts in that case (see app.whenReady below); it just
+// can't import or generate anything until one is set, which the renderer
+// surfaces as a banner rather than this ever blocking startup.
 async function resolveConfigDir() {
   const settings = readAppSettings()
   if (configDirLooksValid(settings.configDir)) return settings.configDir
@@ -70,16 +72,20 @@ async function resolveConfigDir() {
 }
 
 async function promptForConfigDir(retry = false) {
-  await dialog.showMessageBox({
+  const { response: introResponse } = await dialog.showMessageBox({
     type: 'info',
     title: 'Physician Config Folder',
     message: retry
-      ? "That folder doesn't contain physicians.yaml. Please choose the folder again."
+      ? "That folder doesn't contain physicians.yaml. Please choose the folder again, or skip for now."
       : 'Select the folder containing physicians.yaml, scheduler_config.yaml, and (optionally) bytebloc.yaml.',
     detail: 'This is your organization\'s own data — it is not bundled with the app. ' +
-      'You can change this later from Settings.',
-    buttons: ['Choose Folder']
+      'You can set or change this later from Settings; the app will still open without it, ' +
+      'you just won\'t be able to import or generate a schedule until it\'s set.',
+    buttons: ['Choose Folder', 'Skip for Now'],
+    defaultId: 0,
+    cancelId: 1
   })
+  if (introResponse === 1) return null
 
   const result = await dialog.showOpenDialog({
     properties: ['openDirectory'],
@@ -87,17 +93,7 @@ async function promptForConfigDir(retry = false) {
   })
 
   if (result.canceled || result.filePaths.length === 0) {
-    const { response } = await dialog.showMessageBox({
-      type: 'warning',
-      buttons: ['Quit', 'Try Again'],
-      defaultId: 1,
-      message: 'A config folder is required to run KEA Physician Scheduler.'
-    })
-    if (response === 0) {
-      app.quit()
-      return null
-    }
-    return promptForConfigDir(false)
+    return null
   }
 
   const dir = result.filePaths[0]
@@ -129,6 +125,14 @@ function startPythonServer(configDir) {
   if (process.platform === 'win32') killPortWindows(5000)
 
   let spawnCmd, spawnArgs, spawnOpts
+  // Only set CONFIG_DIR when we actually have one — configDir can be null
+  // (no physician config folder chosen/found yet), and passing that
+  // through as an env value isn't meaningful; better to let the backend's
+  // own fallback resolution run and just not find physicians.yaml, which
+  // the renderer already surfaces as a banner rather than relying on this
+  // to fail loudly.
+  const env = { ...process.env }
+  if (configDir) env.CONFIG_DIR = configDir
 
   if (app.isPackaged) {
     // Packaged app — launch the bundled PyInstaller executable
@@ -138,7 +142,7 @@ function startPythonServer(configDir) {
     spawnCmd = exePath
     spawnArgs = []
     spawnOpts = {
-      env: { ...process.env, CONFIG_DIR: configDir },
+      env,
       stdio: ['ignore', 'pipe', 'pipe']
     }
   } else {
@@ -149,7 +153,7 @@ function startPythonServer(configDir) {
     spawnArgs = ['-m', 'scheduler.api.server']
     spawnOpts = {
       cwd: projectRoot,
-      env: { ...process.env, CONFIG_DIR: configDir },
+      env,
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: process.platform === 'win32'
     }
@@ -413,8 +417,10 @@ ipcMain.handle('settings:chooseConfigDir', async () => {
 app.whenReady().then(async () => {
   const loadingWin = createLoadingWindow()
 
+  // configDir may be null (no physicians.yaml found/chosen yet) — the app
+  // still starts either way; the renderer shows a banner and disables
+  // import/generate until a valid folder is set from Settings.
   const configDir = await resolveConfigDir()
-  if (!configDir) return  // user quit rather than choosing a folder
 
   // Start Python backend
   startPythonServer(configDir)

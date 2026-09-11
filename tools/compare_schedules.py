@@ -99,25 +99,53 @@ _DEFAULT_MAX_CONSEC = 3
 
 def load_physician_max_consec(yaml_path: str = _PHYSICIANS_YAML) -> dict[str, int]:
     """
-    Load physicians.yaml and return a dict mapping physician name ->
+    Load physicians.yaml and return a dict mapping roster physician id ->
     scheduling.max_consecutive_shifts (defaults to _DEFAULT_MAX_CONSEC if the
     field is absent or the file cannot be read).
+
+    Keyed by id (not by `name`) specifically so callers can resolve *any*
+    spelling a schedule uses for a physician — via build_roster_key_map's
+    canon_name(variant) -> id mapping — to the same entry. Looking this up
+    by whatever display name a report happens to be using (e.g. "Hanson A"
+    when physicians.yaml's `name` is "Amanda Hanson") used to silently miss
+    and fall back to the generic default instead of the physician's real,
+    often lower, personal cap.
     """
     result: dict[str, int] = {}
     try:
         with open(yaml_path, "r", encoding="utf-8") as fh:
             data = yaml.safe_load(fh)
         for phys in data.get("physicians", []):
-            name = phys.get("name") or phys.get("id")
-            if not name:
+            phys_id = phys.get("id") or phys.get("name")
+            if not phys_id:
                 continue
             max_c = (phys.get("scheduling") or {}).get(
                 "max_consecutive_shifts", _DEFAULT_MAX_CONSEC
             )
-            result[name] = int(max_c)
+            result[phys_id] = int(max_c)
     except Exception:
         pass  # silently fall back to defaults
     return result
+
+
+def _resolve_personal_cap(
+    phys: str,
+    physician_max_consec: Optional[dict[str, int]],
+    roster_key_map: Optional[dict[str, str]],
+    default: int,
+) -> int:
+    """
+    Resolve a physician's personal max_consecutive_shifts from whatever
+    display name a schedule uses for them, via roster_key_map's
+    canon_name(variant) -> roster id mapping (the same map
+    unify_physician_names uses) rather than requiring an exact string
+    match against physicians.yaml's `name` field.
+    """
+    if not physician_max_consec:
+        return default
+    key = canon_name(phys)
+    phys_id = (roster_key_map or {}).get(key, key)
+    return physician_max_consec.get(phys_id, default)
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +181,22 @@ def is_time_code(val: str) -> bool:
 
 def is_2400(time_code: str) -> bool:
     return bool(_IS_2400.match(str(time_code).strip()))
+
+
+def start_hour(time_code: str) -> int:
+    """
+    Start hour (0-24) parsed from a time code like "0600-1200" or
+    "2400-0600". 2400 stays 24 (not 0) so a same-day difference against an
+    early-morning shift comes out as a large, correctly-signed gap —
+    matches scheduler/backend/shifts.py's _START_HOURS convention.
+    """
+    s = str(time_code).strip()
+    if s.startswith("24"):
+        return 24
+    try:
+        return int(s[:2])
+    except ValueError:
+        return 0
 
 
 # ---------------------------------------------------------------------------
@@ -559,17 +603,57 @@ def any_singleton_count(schedule: Schedule) -> tuple[int, dict[str, list[int]]]:
     return total, singletons
 
 
+def shift_time_swings(
+    schedule: Schedule, threshold: int = 10
+) -> tuple[int, dict[str, list[tuple[int, int, int, int]]]]:
+    """
+    Count big jumps in start time between two shifts a physician works on
+    immediately consecutive calendar days — e.g. a 0600h shift one day
+    followed by an 1800h shift the next (a 12h jump), even though the rest
+    gap itself is fine. A gradual multi-day cascade (0600 -> 0900 -> 1200)
+    never counts, since each individual day-to-day step stays under the
+    threshold; only a single big jump does. On-call (AM/PM CALL)
+    assignments are excluded, matching the generator's own swing penalty
+    (scheduler/backend/generator_cpsat.py) which only applies to BLOCKS
+    shifts, never on-call duty.
+
+    Returns (total_swing_count, {physician: [(day1, day2, hour1, hour2), ...]})
+    """
+    worked: dict[str, dict[int, int]] = defaultdict(dict)
+    for a in schedule.assignments:
+        if a.group == "call":
+            continue
+        worked[a.physician][a.date] = start_hour(a.time_code)
+
+    swings: dict[str, list[tuple[int, int, int, int]]] = {}
+    total = 0
+    for phys, day_hours in worked.items():
+        found = []
+        for d, h1 in day_hours.items():
+            if d + 1 in day_hours:
+                h2 = day_hours[d + 1]
+                if abs(h1 - h2) > threshold:
+                    found.append((d, d + 1, h1, h2))
+        if found:
+            found.sort()
+            swings[phys] = found
+            total += len(found)
+    return total, swings
+
+
 def consecutive_run_violations(
     schedule: Schedule,
     max_consecutive: int = 3,
     physician_max_consec: Optional[dict[str, int]] = None,
+    roster_key_map: Optional[dict[str, str]] = None,
 ) -> dict[str, list[tuple[int, int, int]]]:
     """
     Find physicians working more consecutive days than their personal limit.
 
     If physician_max_consec is provided, each physician's limit is looked up
-    from that dict (falling back to max_consecutive if not present).  Otherwise
-    max_consecutive is used as a global threshold for all physicians.
+    from that dict via roster_key_map (falling back to max_consecutive if
+    not present).  Otherwise max_consecutive is used as a global threshold
+    for all physicians.
 
     Returns {physician: [(start_date, end_date, run_length), ...]}
     """
@@ -585,18 +669,7 @@ def consecutive_run_violations(
 
     violations: dict[str, list[tuple[int, int, int]]] = {}
     for phys, dates in worked.items():
-        # Resolve this physician's personal cap
-        if physician_max_consec is not None:
-            # Try exact match, then canonical-name lookup
-            phys_cap = physician_max_consec.get(phys)
-            if phys_cap is None:
-                key = canon_name(phys)
-                phys_cap = next(
-                    (v for k, v in physician_max_consec.items() if canon_name(k) == key),
-                    max_consecutive,
-                )
-        else:
-            phys_cap = max_consecutive
+        phys_cap = _resolve_personal_cap(phys, physician_max_consec, roster_key_map, max_consecutive)
 
         sorted_dates = sorted(dates)
         runs = []
@@ -998,7 +1071,9 @@ def _section_overall_split(s1: Schedule, s2: Schedule, target_a: float = 0.38) -
     return "\n".join(lines)
 
 
-def _section_summary(s1: Schedule, s2: Schedule, target_a: float = 0.38) -> str:
+def _section_summary(
+    s1: Schedule, s2: Schedule, target_a: float = 0.38, swing_threshold: int = 10
+) -> str:
     """Compact diff table of key metrics."""
     f1, t1 = fill_rate(s1)
     f2, t2 = fill_rate(s2)
@@ -1006,6 +1081,8 @@ def _section_summary(s1: Schedule, s2: Schedule, target_a: float = 0.38) -> str:
     u2 = len(unfilled_slots(s2))
     sing1, _ = singleton_count(s1)
     sing2, _ = singleton_count(s2)
+    swing1, _ = shift_time_swings(s1, swing_threshold)
+    swing2, _ = shift_time_swings(s2, swing_threshold)
     rmse1 = ab_rmse(s1, target_a)
     rmse2 = ab_rmse(s2, target_a)
     sc_rmse1, sc_rmse2 = shift_count_rmse(s1, s2)
@@ -1050,6 +1127,11 @@ def _section_summary(s1: Schedule, s2: Schedule, target_a: float = 0.38) -> str:
     ss2 = green(str(sing2)) if sing2 < sing1 else (red(str(sing2)) if sing2 > sing1 else str(sing2))
     lines.append(_row2("Singleton 2400h nights", ss1, ss2))
 
+    # Shift-time swings (lower = better)
+    sw1 = green(str(swing1)) if swing1 < swing2 else (red(str(swing1)) if swing1 > swing2 else str(swing1))
+    sw2 = green(str(swing2)) if swing2 < swing1 else (red(str(swing2)) if swing2 > swing1 else str(swing2))
+    lines.append(_row2(f"Shift-time swings (>{swing_threshold}h)", sw1, sw2))
+
     # A:B RMSE (lower = better)
     cv1, cv2 = _better(rmse1, rmse2, higher_is_better=False)
     lines.append(_row2("A:B RMSE (per physician)", cv1, cv2))
@@ -1057,6 +1139,43 @@ def _section_summary(s1: Schedule, s2: Schedule, target_a: float = 0.38) -> str:
     # Shift-count RMSE (lower = better)
     cv1, cv2 = _better(sc_rmse1, sc_rmse2, higher_is_better=False)
     lines.append(_row2("Shift-count RMSE", cv1, cv2))
+
+    return "\n".join(lines)
+
+
+def _section_swings(s1: Schedule, s2: Schedule, threshold: int = 10) -> str:
+    tot1, sw1 = shift_time_swings(s1, threshold)
+    tot2, sw2 = shift_time_swings(s2, threshold)
+
+    lines = [_hdr(f"SHIFT-TIME SWINGS  (>{threshold}h start-time jump between consecutive working days)")]
+
+    s_tot1 = str(tot1)
+    s_tot2 = str(tot2)
+    if tot1 < tot2:
+        s_tot1 = green(s_tot1)
+        s_tot2 = red(s_tot2)
+    elif tot1 > tot2:
+        s_tot1 = red(s_tot1)
+        s_tot2 = green(s_tot2)
+    lines.append(_row2("Total swings", s_tot1, s_tot2))
+    lines.append("")
+
+    all_phys = sorted(set(sw1.keys()) | set(sw2.keys()), key=str.lower)
+    if not all_phys:
+        lines.append(f"  {green('None found in either schedule.')}")
+        return "\n".join(lines)
+
+    lines.append(_row2("Physician", f"{s1.name}", f"{s2.name}", 24, 26))
+    lines.append("  " + "-" * 60)
+    for phys in all_phys:
+        def _fmt(runs):
+            if not runs:
+                return dim("-")
+            parts = [f"day {d1}→{d2} ({h1}h→{h2}h)" for d1, d2, h1, h2 in runs]
+            return red(", ".join(parts))
+        v1 = _fmt(sw1.get(phys, []))
+        v2 = _fmt(sw2.get(phys, []))
+        lines.append(f"  {_truncate(phys, 22):<22}  {v1:<40}  {v2}")
 
     return "\n".join(lines)
 
@@ -1070,9 +1189,10 @@ def _section_consecutive_v2(
     s2: Schedule,
     max_consec: int = 3,
     physician_max_consec: Optional[dict[str, int]] = None,
+    roster_key_map: Optional[dict[str, str]] = None,
 ) -> str:
-    v1 = consecutive_run_violations(s1, max_consec, physician_max_consec)
-    v2 = consecutive_run_violations(s2, max_consec, physician_max_consec)
+    v1 = consecutive_run_violations(s1, max_consec, physician_max_consec, roster_key_map)
+    v2 = consecutive_run_violations(s2, max_consec, physician_max_consec, roster_key_map)
 
     cnt1 = sum(len(runs) for runs in v1.values())
     cnt2 = sum(len(runs) for runs in v2.values())
@@ -1094,16 +1214,7 @@ def _section_consecutive_v2(
 
     # Build a helper to show each physician's personal cap in the detail line
     def _personal_cap(phys: str) -> str:
-        if not physician_max_consec:
-            return str(max_consec)
-        cap = physician_max_consec.get(phys)
-        if cap is None:
-            key = canon_name(phys)
-            cap = next(
-                (v for k, v in physician_max_consec.items() if canon_name(k) == key),
-                max_consec,
-            )
-        return str(cap)
+        return str(_resolve_personal_cap(phys, physician_max_consec, roster_key_map, max_consec))
 
     all_phys = sorted(set(v1.keys()) | set(v2.keys()), key=str.lower)
     for phys in all_phys:
@@ -1134,6 +1245,8 @@ def print_report(
     target_a: float = 0.38,
     max_consec: int = 3,
     physician_max_consec: Optional[dict[str, int]] = None,
+    roster_key_map: Optional[dict[str, str]] = None,
+    swing_threshold: int = 10,
 ) -> None:
     print()
     print(bold("=" * 78))
@@ -1148,9 +1261,10 @@ def print_report(
     print(_section_ab_ratio(s1, s2, target_a))
     print(_section_singletons(s1, s2))
     print(_section_any_singletons(s1, s2))
-    print(_section_consecutive_v2(s1, s2, max_consec, physician_max_consec))
+    print(_section_swings(s1, s2, swing_threshold))
+    print(_section_consecutive_v2(s1, s2, max_consec, physician_max_consec, roster_key_map))
     print(_section_physician_shifts(s1, s2))
-    print(_section_summary(s1, s2, target_a))
+    print(_section_summary(s1, s2, target_a, swing_threshold))
     print()
     print(bold("=" * 78))
     print()
@@ -1204,6 +1318,14 @@ def main() -> None:
             "Set to '' to disable per-physician limits and use --max-consecutive for all."
         ),
     )
+    parser.add_argument(
+        "--swing-threshold", type=int, default=10, metavar="HOURS",
+        help=(
+            "Flag a shift-time swing when the start-time difference between two "
+            "consecutive working days exceeds this many hours (default: 10). "
+            "Matches the soft penalty in generator_cpsat.py."
+        ),
+    )
     args = parser.parse_args()
 
     if args.no_color:
@@ -1248,6 +1370,8 @@ def main() -> None:
         target_a=args.target_a,
         max_consec=args.max_consecutive,
         physician_max_consec=phys_max_consec,
+        roster_key_map=roster_key_map,
+        swing_threshold=args.swing_threshold,
     )
 
 

@@ -53,5 +53,9 @@ scheduler/config/scheduler_config.yaml
 # only bytebloc_template.yaml is committed
 scheduler/config/bytebloc.yaml
 
+# Sensitive config — has the sending mailbox's app password;
+# only email_template.yaml is committed
+scheduler/config/email.yaml
+
 # Local certificates and credentials (never push)
 certs/

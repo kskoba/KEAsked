@@ -1,0 +1,42 @@
+# ============================================================
+# Outgoing Email Configuration — TEMPLATE
+# ============================================================
+# Copy this file to "email.yaml" in this same directory and fill in the
+# clinic's scheduling mailbox details. email.yaml is gitignored (it holds
+# an app password) — only this template is committed.
+#
+# This lets the app send "Send Reminder Email" notifications (e.g. shift
+# request deficiencies) to physicians from a real mailbox, without any
+# scheduler needing to know SMTP details or ever seeing a password.
+#
+# --------------------------------------------------------------
+# One-time setup on the sending Gmail/Google Workspace account
+# (takes about 10 minutes; do this once, not per scheduler):
+# --------------------------------------------------------------
+#   1. Sign in to the Gmail account that should send these emails
+#      (e.g. the clinic's scheduling mailbox).
+#   2. Turn on 2-Step Verification, if it isn't already:
+#      https://myaccount.google.com/security
+#   3. Generate an App Password:
+#      https://myaccount.google.com/apppasswords
+#      Choose any name (e.g. "KEA Scheduler"). Google shows a 16-character
+#      password — copy it into sender_password below. This is NOT the
+#      account's real password, and can be revoked any time without
+#      affecting normal Gmail login.
+#   4. Fill in sender_email and sender_password below, save as email.yaml.
+# --------------------------------------------------------------
+
+# The Gmail (or Google Workspace) address sending these emails.
+sender_email: ""
+
+# The 16-character App Password from step 3 above. Not the account's
+# regular login password.
+sender_password: ""
+
+# Display name shown to recipients, e.g. "KEA Scheduling". Optional —
+# falls back to sender_email if left blank.
+sender_name: ""
+
+# Almost never needs to change — Gmail's SMTP endpoint.
+smtp_host: smtp.gmail.com
+smtp_port: 587

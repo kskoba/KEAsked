@@ -297,6 +297,44 @@ async function createMainWindow() {
   return mainWindow
 }
 
+// Physician roster editor — a second, independent window so it can stay
+// open side-by-side with the main scheduler window. It's just another
+// view of the same renderer bundle (picked via the "#roster" URL hash in
+// main.jsx) talking to the same backend on :5000, so no window-to-window
+// IPC is needed.
+let rosterWindow = null
+
+async function createRosterWindow() {
+  if (rosterWindow && !rosterWindow.isDestroyed()) {
+    rosterWindow.focus()
+    return rosterWindow
+  }
+
+  rosterWindow = new BrowserWindow({
+    width: 1000,
+    height: 800,
+    backgroundColor: '#f8fafc',
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
+    }
+  })
+
+  rosterWindow.on('closed', () => {
+    rosterWindow = null
+  })
+
+  if (isDev && process.env['ELECTRON_RENDERER_URL']) {
+    rosterWindow.loadURL(`${process.env['ELECTRON_RENDERER_URL']}#roster`)
+  } else {
+    rosterWindow.loadFile(join(__dirname, '../renderer/index.html'), { hash: 'roster' })
+  }
+
+  return rosterWindow
+}
+
 // IPC: open native directory picker
 ipcMain.handle('dialog:openDirectory', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
@@ -316,6 +354,22 @@ ipcMain.handle('dialog:openFile', async (_event, filters) => {
   })
   if (result.canceled || result.filePaths.length === 0) return null
   return result.filePaths[0]
+})
+
+// IPC: open (or focus) the physician roster editor window
+ipcMain.handle('window:openRoster', () => {
+  createRosterWindow()
+})
+
+// IPC: force-close whichever window sent this, bypassing its own
+// beforeunload/close negotiation. Used once a window's own renderer code
+// has already confirmed (via window.confirm) that closing is fine —
+// calling window.close() again from deep inside that confirm's callback
+// is unreliable (it's far enough removed from the original click's user
+// activation that Chromium silently ignores it), so the renderer asks
+// the main process to just tear the window down directly instead.
+ipcMain.on('window:forceClose', (event) => {
+  BrowserWindow.fromWebContents(event.sender)?.destroy()
 })
 
 // IPC: current physician config folder (Settings screen)

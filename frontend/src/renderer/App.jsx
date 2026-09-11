@@ -258,6 +258,7 @@ export default function App() {
         hasSchedule={!!scheduleData}
         onViewSchedule={handleViewSchedule}
         onOpenSettings={() => setSettingsOpen(true)}
+        onOpenRoster={() => window.electronAPI.openRosterWindow()}
       />
 
       {view === 'setup' && (

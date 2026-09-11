@@ -1,5 +1,8 @@
-import React, { useState } from 'react'
-import { overrideIssue, overrideClear, overrideAll, getValidationSummary, getByteBlocPreview, sendByteBlocRequests } from '../api'
+import React, { useState, useEffect } from 'react'
+import {
+  overrideIssue, overrideClear, overrideAll, getValidationSummary,
+  getByteBlocPreview, sendByteBlocRequests, getEmailStatus, sendReminderEmail,
+} from '../api'
 
 export default function ValidationPanel({ importResult, onImportResultUpdate }) {
   const { physicians = [], total_physicians, valid_physicians } = importResult
@@ -409,11 +412,28 @@ function ByteBlocModal({ state, onConfirmSend, onClose }) {
 }
 
 function ErrorReportModal({ report, onClose }) {
-  const [sent, setSent] = useState({})   // physician_name -> true, once "sent" (mockup only)
+  // physician_id -> 'sending' | 'sent' | { error: string }
+  const [sendState, setSendState] = useState({})
+  const [emailConfigured, setEmailConfigured] = useState(null) // null while checking
 
-  function handleSendReminder(physicianName) {
-    // TODO: mockup only — no email is actually sent yet.
-    setSent(prev => ({ ...prev, [physicianName]: true }))
+  useEffect(() => {
+    getEmailStatus()
+      .then(s => setEmailConfigured(s.configured))
+      .catch(() => setEmailConfigured(false))
+  }, [])
+
+  async function handleSendReminder(physicianId) {
+    setSendState(prev => ({ ...prev, [physicianId]: 'sending' }))
+    try {
+      const result = await sendReminderEmail(physicianId)
+      if (result.ok) {
+        setSendState(prev => ({ ...prev, [physicianId]: 'sent' }))
+      } else {
+        setSendState(prev => ({ ...prev, [physicianId]: { error: result.status } }))
+      }
+    } catch (err) {
+      setSendState(prev => ({ ...prev, [physicianId]: { error: err.message } }))
+    }
   }
 
   return (
@@ -428,6 +448,12 @@ function ErrorReportModal({ report, onClose }) {
         </div>
 
         <div className="px-5 py-4 overflow-auto flex-1">
+          {emailConfigured === false && (
+            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-3">
+              Email sending isn&apos;t configured yet. Copy <code className="font-mono">scheduler/config/email_template.yaml</code> to{' '}
+              <code className="font-mono">email.yaml</code> in the physician config folder and fill it in.
+            </p>
+          )}
           {report.loading && <p className="text-sm text-slate-500">Loading…</p>}
           {report.error && <p className="text-sm text-red-600">{report.error}</p>}
           {!report.loading && !report.error && report.items.length === 0 && (
@@ -435,29 +461,35 @@ function ErrorReportModal({ report, onClose }) {
           )}
           {!report.loading && !report.error && report.items.length > 0 && (
             <ul className="space-y-4">
-              {report.items.map((item, i) => (
-                <li key={i}>
-                  <div className="flex items-center gap-2 mb-1">
-                    <div className="font-semibold text-slate-800 text-sm">{item.physician_name}</div>
-                    <button
-                      onClick={() => handleSendReminder(item.physician_name)}
-                      disabled={!!sent[item.physician_name]}
-                      className={`px-2 py-0.5 text-xs font-semibold rounded border transition-colors ${
-                        sent[item.physician_name]
-                          ? 'border-emerald-300 bg-emerald-50 text-emerald-700 cursor-default'
-                          : 'border-sky-300 bg-sky-50 text-sky-700 hover:bg-sky-100'
-                      }`}
-                    >
-                      {sent[item.physician_name] ? 'Reminder sent' : 'Send Reminder Email'}
-                    </button>
-                  </div>
-                  <ul className="list-disc list-inside space-y-0.5">
-                    {item.errors.map((err, j) => (
-                      <li key={j} className="text-sm text-slate-600">{err}</li>
-                    ))}
-                  </ul>
-                </li>
-              ))}
+              {report.items.map((item, i) => {
+                const state = sendState[item.physician_id]
+                return (
+                  <li key={i}>
+                    <div className="flex items-center gap-2 mb-1">
+                      <div className="font-semibold text-slate-800 text-sm">{item.physician_name}</div>
+                      <button
+                        onClick={() => handleSendReminder(item.physician_id)}
+                        disabled={state === 'sending' || state === 'sent' || emailConfigured === false}
+                        className={`px-2 py-0.5 text-xs font-semibold rounded border transition-colors ${
+                          state === 'sent'
+                            ? 'border-emerald-300 bg-emerald-50 text-emerald-700 cursor-default'
+                            : 'border-sky-300 bg-sky-50 text-sky-700 hover:bg-sky-100 disabled:opacity-50 disabled:cursor-not-allowed'
+                        }`}
+                      >
+                        {state === 'sending' ? 'Sending…' : state === 'sent' ? 'Reminder sent' : 'Send Reminder Email'}
+                      </button>
+                      {state && state.error && (
+                        <span className="text-xs text-red-600">{state.error}</span>
+                      )}
+                    </div>
+                    <ul className="list-disc list-inside space-y-0.5">
+                      {item.errors.map((err, j) => (
+                        <li key={j} className="text-sm text-slate-600">{err}</li>
+                      ))}
+                    </ul>
+                  </li>
+                )
+              })}
             </ul>
           )}
         </div>

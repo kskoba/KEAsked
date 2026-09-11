@@ -5,5 +5,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openFile: (filters) => ipcRenderer.invoke('dialog:openFile', filters),
   getConfigDir: () => ipcRenderer.invoke('settings:getConfigDir'),
   chooseConfigDir: () => ipcRenderer.invoke('settings:chooseConfigDir'),
+  openRosterWindow: () => ipcRenderer.invoke('window:openRoster'),
+  forceCloseSelf: () => ipcRenderer.send('window:forceClose'),
   platform: process.platform
 })

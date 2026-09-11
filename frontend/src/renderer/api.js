@@ -120,10 +120,28 @@ export async function overrideAll(physicianId) {
 
 /**
  * Plain-English error list per physician, excluding overridden issues.
- * @returns {{ items: { physician_name: string, errors: string[] }[] }}
+ * @returns {{ items: { physician_id: string, physician_name: string, errors: string[] }[] }}
  */
 export async function getValidationSummary() {
   return request('GET', '/api/validation-summary')
+}
+
+/**
+ * Whether outgoing email (reminder notifications) is configured.
+ * @returns {{ configured: boolean }}
+ */
+export async function getEmailStatus() {
+  return request('GET', '/api/email/status')
+}
+
+/**
+ * Email one physician their current validation errors. Backend looks up
+ * their address from physicians.yaml and composes the message itself.
+ * @param {string} physicianId
+ * @returns {{ ok: boolean, status: string }}
+ */
+export async function sendReminderEmail(physicianId) {
+  return request('POST', '/api/email/send-reminder', { physician_id: physicianId })
 }
 
 /**
@@ -239,5 +257,48 @@ export async function getByteBlocPreview() {
  */
 export async function sendByteBlocRequests(confirmation) {
   return request('POST', '/api/bytebloc/send', { confirmation })
+}
+
+/**
+ * Every field of every physician in the roster (physicians.yaml) — for
+ * the roster editor window.
+ * @returns {{ physicians: Array }}
+ */
+export async function getPhysiciansFull() {
+  return request('GET', '/api/physicians/full')
+}
+
+/**
+ * Save edits to one existing physician back into physicians.yaml.
+ * Editing only — physicianId must already exist in the roster.
+ * @param {string} physicianId
+ * @param {object} physician  Full PhysicianDetail-shaped object, including id.
+ * @returns {object} The saved PhysicianDetail.
+ */
+export async function updatePhysician(physicianId, physician) {
+  return request('PUT', `/api/physicians/${encodeURIComponent(physicianId)}`, physician)
+}
+
+/**
+ * Add a new physician to the roster. id must be a single word of
+ * letters/numbers not already in use; every other field starts at bare
+ * defaults (edit further from the roster editor afterward).
+ * @param {{ id: string, first_name: string, last_name: string }} data
+ * @returns {object} The created PhysicianDetail.
+ */
+export async function createPhysician(data) {
+  return request('POST', '/api/physicians', data)
+}
+
+/**
+ * Permanently remove a physician from the roster. Requires the literal
+ * confirmation string "REMOVE", typed by a human — pass it through
+ * unchanged, never hardcode it here as a way to skip the prompt.
+ * @param {string} physicianId
+ * @param {string} confirmation
+ * @returns {{ ok: boolean, status: string }}
+ */
+export async function removePhysician(physicianId, confirmation) {
+  return request('POST', `/api/physicians/${encodeURIComponent(physicianId)}/remove`, { confirmation })
 }
 

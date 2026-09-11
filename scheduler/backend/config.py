@@ -5,6 +5,7 @@ Reads config/physicians.yaml and provides:
   - PhysicianConfig  — per-physician preferences and rule overrides
   - load_roster()    — parse the YAML file into a dict keyed by physician ID
   - apply_config()   — merge a PhysicianConfig into a PhysicianSubmission
+  - save_physician()  — write one physician's fields back into the file
 """
 
 from __future__ import annotations
@@ -20,6 +21,10 @@ try:
     import yaml
 except ImportError:  # pragma: no cover
     raise ImportError("PyYAML is required: pip install pyyaml")
+
+from ruamel.yaml import YAML
+from ruamel.yaml.comments import CommentedMap
+from ruamel.yaml.scalarstring import LiteralScalarString
 
 from scheduler.backend.models import PhysicianSubmission
 
@@ -49,6 +54,14 @@ VALID_SITES = frozenset({
     "RAH F side",
 })
 
+# Valid keys for a physician's rule_overrides dict — see PhysicianConfig
+# below for what each one means.
+VALID_RULE_OVERRIDES = frozenset({
+    "min_valid_days", "min_valid_blocks",
+    "min_weekend_days", "min_anchored_days",
+    "min_blocks_per_day",
+})
+
 
 @dataclass
 class PhysicianConfig:
@@ -63,6 +76,11 @@ class PhysicianConfig:
     name: str
     email: str = ""
     active: bool = True
+
+    # Free-text scheduling notes about this physician (e.g. a standing
+    # restriction, a note for whoever reviews shift-request deficiencies).
+    # Purely informational — nothing in the scheduler reads this field.
+    notes: str = ""
 
     # Structured name parts for display formatting (e.g. "Lastname, F").
     # Not always fully known — first_name may be empty (surname-only on
@@ -156,17 +174,12 @@ def _parse_physician(raw: dict) -> PhysicianConfig:
 
     # Normalise override values: keys must be known rule IDs,
     # values must be int or None.
-    valid_rules = {
-        "min_valid_days", "min_valid_blocks",
-        "min_weekend_days", "min_anchored_days",
-        "min_blocks_per_day",
-    }
     overrides: dict[str, int | None] = {}
     for key, val in overrides_raw.items():
-        if key not in valid_rules:
+        if key not in VALID_RULE_OVERRIDES:
             raise ValueError(
                 f"Physician {raw.get('id')!r}: unknown rule override {key!r}. "
-                f"Valid keys: {sorted(valid_rules)}"
+                f"Valid keys: {sorted(VALID_RULE_OVERRIDES)}"
             )
         overrides[key] = None if val is None else int(val)
 
@@ -208,6 +221,7 @@ def _parse_physician(raw: dict) -> PhysicianConfig:
         id=str(raw["id"]),
         name=str(raw["name"]),
         email=str(raw.get("email") or ""),
+        notes=str(raw.get("notes") or ""),
         active=bool(raw.get("active", True)),
         aliases=aliases,
         last_name=str(raw.get("last_name") or ""),
@@ -258,6 +272,196 @@ def load_roster(
         roster[cfg.id] = cfg
 
     return roster
+
+
+def physician_config_to_raw(cfg: PhysicianConfig) -> dict:
+    """
+    Inverse of _parse_physician: the plain nested dict `cfg` would parse
+    from if it were read out of physicians.yaml, omitting fields left at
+    their default value — matching the hand-authored style of the existing
+    file. Used by save_physician() to merge an edit back into the file,
+    and to round-trip a value through _parse_physician() for validation
+    before it's written.
+    """
+    raw: dict = {
+        "id": cfg.id,
+        "name": cfg.name,
+        "last_name": cfg.last_name,
+        "first_name": cfg.first_name,
+        "active": cfg.active,
+    }
+    if cfg.email:
+        raw["email"] = cfg.email
+    if cfg.notes:
+        # Literal block style ("|") for multi-line notes so they read as
+        # hand-written YAML rather than an escaped "\n"-laden string.
+        raw["notes"] = LiteralScalarString(cfg.notes) if "\n" in cfg.notes else cfg.notes
+    if cfg.aliases:
+        raw["aliases"] = list(cfg.aliases)
+
+    sched: dict = {"max_consecutive_shifts": cfg.max_consecutive_shifts}
+    if cfg.max_consecutive_nights != cfg.max_consecutive_shifts:
+        sched["max_consecutive_nights"] = cfg.max_consecutive_nights
+    if cfg.group_b_site_preference:
+        sched["group_b_site_preference"] = cfg.group_b_site_preference
+    if cfg.only_2400h:
+        sched["only_2400h"] = True
+    if cfg.prefer_weekends:
+        sched["prefer_weekends"] = True
+    if cfg.max_weekends is not None:
+        sched["max_weekends"] = cfg.max_weekends
+    if cfg.honor_all_requests:
+        sched["honor_all_requests"] = True
+    if cfg.prefer_singleton_nights:
+        sched["prefer_singleton_nights"] = True
+    if cfg.forbidden_shift_times:
+        sched["forbidden_shift_times"] = list(cfg.forbidden_shift_times)
+    if cfg.no_call:
+        sched["no_call"] = True
+    if cfg.avoid_mondays:
+        sched["avoid_mondays"] = True
+    if cfg.rest_after_late_shift:
+        sched["rest_after_late_shift"] = True
+    if cfg.max_consecutive_1800h != 3:
+        sched["max_consecutive_1800h"] = cfg.max_consecutive_1800h
+    if cfg.cap_at_requested:
+        sched["cap_at_requested"] = True
+    raw["scheduling"] = sched
+
+    if cfg.forbidden_sites:
+        raw["forbidden_sites"] = list(cfg.forbidden_sites)
+
+    raw["rule_overrides"] = dict(cfg.rule_overrides)
+    return raw
+
+
+def _merge_mapping(entry: CommentedMap, desired: dict, nested_keys: tuple[str, ...] = ()) -> None:
+    """
+    Apply `desired` onto an existing ruamel CommentedMap `entry`, key by
+    key, in place — updating the value of a key that already exists
+    (which leaves any comment attached to that key alone) rather than
+    clearing and rebuilding the map, adding keys that are newly needed,
+    and removing keys that are no longer wanted. Keys named in
+    `nested_keys` are treated as sub-mappings and merged recursively the
+    same way instead of being replaced outright.
+
+    Single pass over `desired` in its own key order, rather than nested
+    keys first / flat keys second: a key that already exists in `entry`
+    never moves (assigning to an existing CommentedMap key doesn't change
+    its position), but a key that's genuinely new gets appended wherever
+    this pass reaches it — which only actually matters when `entry` starts
+    out empty (add_physician's brand-new record), where it's the only
+    thing that makes the result come out in physician_config_to_raw's
+    intended field order instead of nested-keys-first.
+    """
+    for key, value in desired.items():
+        if key in nested_keys:
+            sub_entry = entry.get(key)
+            if not isinstance(sub_entry, CommentedMap):
+                sub_entry = CommentedMap()
+                entry[key] = sub_entry
+            _merge_mapping(sub_entry, value)
+        elif key in entry and entry[key] == value:
+            continue  # leave untouched — preserves this key's original style/comment
+        else:
+            entry[key] = value
+
+    for key in [k for k in list(entry.keys()) if k not in desired]:
+        del entry[key]
+
+
+def _open_roster_yaml(path: str | Path | None) -> tuple[YAML, CommentedMap, Path]:
+    """
+    Shared setup for every function that writes physicians.yaml: a
+    round-trip YAML() configured to match the file's existing indent style
+    ("  - id: ..." with content at column 4 — ruamel's indent width is an
+    emitter-wide setting, not inferred per-node, so this must be set
+    explicitly or every entry gets reformatted on dump, not just the ones
+    actually touched), plus the parsed document.
+    """
+    roster_path = Path(path) if path else _DEFAULT_ROSTER_PATH
+    yaml_rt = YAML()
+    yaml_rt.preserve_quotes = True
+    yaml_rt.width = 4096  # don't let comments/long lines force rewrapping
+    yaml_rt.indent(mapping=2, sequence=4, offset=2)
+
+    with roster_path.open(encoding="utf-8") as fh:
+        data = yaml_rt.load(fh)
+
+    return yaml_rt, data, roster_path
+
+
+def save_physician(
+    physician_id: str,
+    cfg: PhysicianConfig,
+    path: str | Path | None = None,
+) -> None:
+    """
+    Write one physician's fields back into physicians.yaml, in place.
+
+    Uses ruamel.yaml's round-trip mode and mutates the existing entry's
+    keys rather than replacing it wholesale, so hand-written comments
+    elsewhere in the file — including ones attached to this physician's
+    own fields, e.g. "max_weekends: 5  # works all weekends..." — survive
+    the edit, and every other physician's entry is untouched byte-for-byte.
+
+    This only edits an existing physician; raises KeyError if `physician_id`
+    isn't already in the file (use add_physician() for a brand new one).
+    """
+    yaml_rt, data, roster_path = _open_roster_yaml(path)
+
+    physicians = data.get("physicians") or []
+    entry = next((p for p in physicians if str(p.get("id")) == physician_id), None)
+    if entry is None:
+        raise KeyError(f"No physician with id {physician_id!r} in {roster_path}")
+
+    desired = physician_config_to_raw(cfg)
+    desired["id"] = physician_id  # id is the lookup key, never editable
+
+    _merge_mapping(entry, desired, nested_keys=("scheduling",))
+
+    with roster_path.open("w", encoding="utf-8") as fh:
+        yaml_rt.dump(data, fh)
+
+
+def add_physician(cfg: PhysicianConfig, path: str | Path | None = None) -> None:
+    """
+    Insert a new physician into physicians.yaml, positioned alphabetically
+    by id (case-insensitive) to match the file's existing ordering.
+    Raises ValueError if cfg.id is already in use.
+    """
+    yaml_rt, data, roster_path = _open_roster_yaml(path)
+
+    physicians = data["physicians"]
+    if any(str(p.get("id")) == cfg.id for p in physicians):
+        raise ValueError(f"Physician id {cfg.id!r} already exists in {roster_path}")
+
+    entry = CommentedMap()
+    _merge_mapping(entry, physician_config_to_raw(cfg), nested_keys=("scheduling",))
+
+    insert_at = len(physicians)
+    for idx, p in enumerate(physicians):
+        if str(p.get("id", "")).casefold() > cfg.id.casefold():
+            insert_at = idx
+            break
+    physicians.insert(insert_at, entry)
+
+    with roster_path.open("w", encoding="utf-8") as fh:
+        yaml_rt.dump(data, fh)
+
+
+def remove_physician(physician_id: str, path: str | Path | None = None) -> None:
+    """Delete one physician's entry from physicians.yaml. Raises KeyError if not found."""
+    yaml_rt, data, roster_path = _open_roster_yaml(path)
+
+    physicians = data.get("physicians") or []
+    idx = next((i for i, p in enumerate(physicians) if str(p.get("id")) == physician_id), None)
+    if idx is None:
+        raise KeyError(f"No physician with id {physician_id!r} in {roster_path}")
+    del physicians[idx]
+
+    with roster_path.open("w", encoding="utf-8") as fh:
+        yaml_rt.dump(data, fh)
 
 
 def apply_config(

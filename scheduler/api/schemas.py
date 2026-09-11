@@ -75,12 +75,30 @@ class OverrideAllRequest(BaseModel):
 
 
 class ValidationSummaryItem(BaseModel):
+    physician_id: str
     physician_name: str
     errors: list[str]
 
 
 class ValidationSummaryResponse(BaseModel):
     items: list[ValidationSummaryItem]
+
+
+# ---------------------------------------------------------------------------
+# Outgoing email — reminder notifications
+# ---------------------------------------------------------------------------
+
+class EmailStatusResponse(BaseModel):
+    configured: bool
+
+
+class SendReminderEmailRequest(BaseModel):
+    physician_id: str
+
+
+class SendReminderEmailResponse(BaseModel):
+    ok: bool
+    status: str = ""
 
 
 class OverrideLogItem(BaseModel):
@@ -221,6 +239,62 @@ class PhysicianInfo(BaseModel):
 
 class PhysiciansResponse(BaseModel):
     physicians: list[PhysicianInfo]
+
+
+# ---------------------------------------------------------------------------
+# Physician roster editor — full PhysicianConfig fields, read + write.
+# ---------------------------------------------------------------------------
+
+class PhysicianDetail(BaseModel):
+    id: str
+    name: str
+    email: str = ""
+    notes: str = ""
+    active: bool = True
+    last_name: str = ""
+    first_name: str = ""
+    aliases: list[str] = []
+
+    max_consecutive_shifts: int = 3
+    max_consecutive_nights: int = 3
+    group_b_site_preference: Optional[str] = None
+    forbidden_sites: list[str] = []
+    only_2400h: bool = False
+    prefer_weekends: bool = False
+    max_weekends: Optional[int] = None
+    honor_all_requests: bool = False
+    prefer_singleton_nights: bool = False
+    forbidden_shift_times: list[str] = []
+    no_call: bool = False
+    avoid_mondays: bool = False
+    rest_after_late_shift: bool = False
+    max_consecutive_1800h: int = 3
+    cap_at_requested: bool = False
+    rule_overrides: dict[str, Optional[int]] = {}
+
+
+class PhysicianDetailsResponse(BaseModel):
+    physicians: list[PhysicianDetail]
+
+
+class PhysicianUpdateRequest(PhysicianDetail):
+    """Same shape as PhysicianDetail — the full, edited record to save."""
+    pass
+
+
+class CreatePhysicianRequest(BaseModel):
+    id: str            # single-word roster id, e.g. "Dickey"
+    first_name: str
+    last_name: str
+
+
+class RemovePhysicianRequest(BaseModel):
+    confirmation: str    # must exactly equal the literal word "REMOVE"
+
+
+class RemovePhysicianResponse(BaseModel):
+    ok: bool
+    status: str = ""
 
 
 # ---------------------------------------------------------------------------

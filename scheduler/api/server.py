@@ -45,6 +45,12 @@ from scheduler.api.schemas import (
     OnCallCandidatesResponse,
     PhysicianInfo,
     PhysiciansResponse,
+    PhysicianDetail,
+    PhysicianDetailsResponse,
+    PhysicianUpdateRequest,
+    CreatePhysicianRequest,
+    RemovePhysicianRequest,
+    RemovePhysicianResponse,
     ImportDirectoryResponse,
     LoadScheduleRequest,
     OverrideAllRequest,
@@ -63,11 +69,24 @@ from scheduler.api.schemas import (
     ByteBlocPreviewResponse,
     ByteBlocSendRequest,
     ByteBlocSendResponse,
+    EmailStatusResponse,
+    SendReminderEmailRequest,
+    SendReminderEmailResponse,
 )
 import os
 
 from scheduler.backend import bytebloc as bytebloc_mod
-from scheduler.backend.config import load_roster
+from scheduler.backend import email_sender
+from scheduler.backend.config import (
+    GROUP_B_PREFS,
+    VALID_RULE_OVERRIDES,
+    VALID_SITES,
+    PhysicianConfig,
+    add_physician,
+    load_roster,
+    remove_physician,
+    save_physician,
+)
 from scheduler.backend.generator import (
     Assignment,
     OnCallAssignment,
@@ -608,6 +627,198 @@ def get_physicians() -> PhysiciansResponse:
     )
 
 
+def _physician_to_detail(cfg: PhysicianConfig) -> PhysicianDetail:
+    return PhysicianDetail(
+        id=cfg.id,
+        name=cfg.name,
+        email=cfg.email,
+        notes=cfg.notes,
+        active=cfg.active,
+        last_name=cfg.last_name,
+        first_name=cfg.first_name,
+        aliases=list(cfg.aliases),
+        max_consecutive_shifts=cfg.max_consecutive_shifts,
+        max_consecutive_nights=cfg.max_consecutive_nights,
+        group_b_site_preference=cfg.group_b_site_preference,
+        forbidden_sites=list(cfg.forbidden_sites),
+        only_2400h=cfg.only_2400h,
+        prefer_weekends=cfg.prefer_weekends,
+        max_weekends=cfg.max_weekends,
+        honor_all_requests=cfg.honor_all_requests,
+        prefer_singleton_nights=cfg.prefer_singleton_nights,
+        forbidden_shift_times=list(cfg.forbidden_shift_times),
+        no_call=cfg.no_call,
+        avoid_mondays=cfg.avoid_mondays,
+        rest_after_late_shift=cfg.rest_after_late_shift,
+        max_consecutive_1800h=cfg.max_consecutive_1800h,
+        cap_at_requested=cfg.cap_at_requested,
+        rule_overrides=dict(cfg.rule_overrides),
+    )
+
+
+@app.get("/api/physicians/full", response_model=PhysicianDetailsResponse)
+def get_physicians_full() -> PhysicianDetailsResponse:
+    """
+    Every field of every physician in the roster — for the roster editor
+    window, which needs more than the summary /api/physicians exposes.
+    """
+    roster = load_roster()
+    physicians = sorted(roster.values(), key=lambda c: (c.last_name or c.name, c.first_name))
+    return PhysicianDetailsResponse(physicians=[_physician_to_detail(cfg) for cfg in physicians])
+
+
+@app.put("/api/physicians/{physician_id}", response_model=PhysicianDetail)
+def update_physician(physician_id: str, body: PhysicianUpdateRequest) -> PhysicianDetail:
+    """
+    Save edits to one existing physician back into physicians.yaml.
+
+    Editing only — physician_id must already exist in the roster (roster
+    editor doesn't support adding/removing physicians). Values are
+    validated the same way the file itself is validated on load (valid
+    group_b_site_preference, valid forbidden site names, known
+    rule_overrides keys) before anything is written.
+    """
+    roster = load_roster()
+    if physician_id not in roster:
+        raise HTTPException(status_code=404, detail=f"No physician with id {physician_id!r}.")
+    if body.id != physician_id:
+        raise HTTPException(status_code=400, detail="Body id must match the URL id.")
+
+    if body.group_b_site_preference and body.group_b_site_preference not in GROUP_B_PREFS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid group_b_site_preference {body.group_b_site_preference!r}. "
+                   f"Valid values: {sorted(GROUP_B_PREFS)}",
+        )
+    unknown_sites = set(body.forbidden_sites) - VALID_SITES
+    if unknown_sites:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown forbidden site(s): {sorted(unknown_sites)}. Valid sites: {sorted(VALID_SITES)}",
+        )
+    unknown_rules = set(body.rule_overrides) - VALID_RULE_OVERRIDES
+    if unknown_rules:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown rule_overrides key(s): {sorted(unknown_rules)}. "
+                   f"Valid keys: {sorted(VALID_RULE_OVERRIDES)}",
+        )
+
+    cfg = PhysicianConfig(
+        id=physician_id,
+        name=body.name,
+        email=body.email,
+        notes=body.notes,
+        active=body.active,
+        last_name=body.last_name,
+        first_name=body.first_name,
+        aliases=list(body.aliases),
+        max_consecutive_shifts=body.max_consecutive_shifts,
+        max_consecutive_nights=body.max_consecutive_nights,
+        group_b_site_preference=body.group_b_site_preference,
+        forbidden_sites=list(body.forbidden_sites),
+        only_2400h=body.only_2400h,
+        prefer_weekends=body.prefer_weekends,
+        max_weekends=body.max_weekends,
+        honor_all_requests=body.honor_all_requests,
+        prefer_singleton_nights=body.prefer_singleton_nights,
+        forbidden_shift_times=list(body.forbidden_shift_times),
+        no_call=body.no_call,
+        avoid_mondays=body.avoid_mondays,
+        rest_after_late_shift=body.rest_after_late_shift,
+        max_consecutive_1800h=body.max_consecutive_1800h,
+        cap_at_requested=body.cap_at_requested,
+        rule_overrides=dict(body.rule_overrides),
+    )
+
+    try:
+        save_physician(physician_id, cfg)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    # Keep an already-imported session's cached roster in sync so the
+    # change is reflected immediately without a re-import.
+    if physician_id in _state.get("roster", {}):
+        _state["roster"][physician_id] = cfg
+
+    return _physician_to_detail(cfg)
+
+
+# The exact phrase a human must type before delete_physician() will run.
+# Checked case-sensitively, verbatim — see bytebloc.py's identical pattern
+# for send_shift_requests(). Do not make this configurable.
+REMOVE_CONFIRMATION_PHRASE = "REMOVE"
+
+
+@app.post("/api/physicians", response_model=PhysicianDetail)
+def create_physician(body: CreatePhysicianRequest) -> PhysicianDetail:
+    """
+    Add a new physician to the roster. id must be a single word of
+    letters/numbers not already in use; every other field starts at the
+    same bare defaults as any minimally-configured roster entry (active,
+    3 max consecutive shifts, no site preference or overrides) — edit
+    further from the roster editor's detail form afterward.
+    """
+    new_id = body.id.strip()
+    first_name = body.first_name.strip()
+    last_name = body.last_name.strip()
+
+    if not new_id or not re.fullmatch(r"[A-Za-z0-9]+", new_id):
+        raise HTTPException(status_code=422, detail="Id must be a single word of letters/numbers only.")
+    if not first_name or not last_name:
+        raise HTTPException(status_code=422, detail="First and last name are both required.")
+
+    roster = load_roster()
+    if new_id in roster:
+        raise HTTPException(status_code=409, detail=f"A physician with id {new_id!r} already exists.")
+
+    cfg = PhysicianConfig(
+        id=new_id,
+        name=f"{first_name} {last_name}",
+        first_name=first_name,
+        last_name=last_name,
+        active=True,
+    )
+
+    try:
+        add_physician(cfg)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    if _state.get("roster"):
+        _state["roster"][new_id] = cfg
+
+    return _physician_to_detail(cfg)
+
+
+@app.post("/api/physicians/{physician_id}/remove", response_model=RemovePhysicianResponse)
+def delete_physician(physician_id: str, body: RemovePhysicianRequest) -> RemovePhysicianResponse:
+    """
+    Permanently remove a physician from the roster. Requires the literal
+    confirmation phrase "REMOVE", typed by a human — this is a hard gate,
+    not a formality; the frontend must collect it fresh each time, never
+    pre-fill or remember it.
+    """
+    if body.confirmation != REMOVE_CONFIRMATION_PHRASE:
+        raise HTTPException(
+            status_code=400,
+            detail=f'Type "{REMOVE_CONFIRMATION_PHRASE}" exactly to confirm removal.',
+        )
+
+    roster = load_roster()
+    if physician_id not in roster:
+        raise HTTPException(status_code=404, detail=f"No physician with id {physician_id!r}.")
+
+    try:
+        remove_physician(physician_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    _state.get("roster", {}).pop(physician_id, None)
+
+    return RemovePhysicianResponse(ok=True, status=f"Removed {physician_id}.")
+
+
 @app.post("/api/import", response_model=ImportDirectoryResponse)
 def import_submissions(body: ImportRequest) -> ImportDirectoryResponse:
     """Import all .xlsx files from a directory for the given year/month."""
@@ -731,7 +942,9 @@ def validation_summary() -> ValidationSummaryResponse:
     for r in results:
         errors = [i.message for i in r.issues if i.severity == "error" and not i.overridden]
         if errors:
-            items.append(ValidationSummaryItem(physician_name=r.physician_name, errors=errors))
+            items.append(ValidationSummaryItem(
+                physician_id=r.physician_id, physician_name=r.physician_name, errors=errors,
+            ))
     return ValidationSummaryResponse(items=items)
 
 
@@ -760,6 +973,67 @@ def override_log() -> OverrideLogResponse:
             message = messages_by_rule.get(rule, "(no longer applicable — submission has changed)")
             items.append(OverrideLogItem(physician_name=name, rule=rule, message=message))
     return OverrideLogResponse(items=items)
+
+
+@app.get("/api/email/status", response_model=EmailStatusResponse)
+def email_status() -> EmailStatusResponse:
+    """Whether outgoing email (reminder notifications) is configured."""
+    config = email_sender.load_email_config()
+    configured = config is not None and email_sender.is_fully_configured(config)
+    return EmailStatusResponse(configured=configured)
+
+
+@app.post("/api/email/send-reminder", response_model=SendReminderEmailResponse)
+def send_reminder_email(body: SendReminderEmailRequest) -> SendReminderEmailResponse:
+    """
+    Email one physician their current, non-overridden shift-request
+    validation errors. Only ever runs from an explicit "Send Reminder
+    Email" click in the app — nothing calls this automatically.
+    """
+    config = email_sender.load_email_config()
+    if config is None or not email_sender.is_fully_configured(config):
+        raise HTTPException(
+            status_code=400,
+            detail="Email sending is not configured. Copy scheduler/config/email_template.yaml "
+                   "to email.yaml (in the physician config folder) and fill it in.",
+        )
+
+    submissions: list[PhysicianSubmission] = _state.get("submissions") or []
+    roster = _state.get("roster") or {}
+    sub = next((s for s in submissions if s.physician_id == body.physician_id), None)
+    if sub is None:
+        raise HTTPException(status_code=404, detail=f"No submission for physician_id {body.physician_id!r}")
+
+    physician_cfg = roster.get(body.physician_id)
+    to_address = physician_cfg.email if physician_cfg else ""
+    if not to_address:
+        raise HTTPException(
+            status_code=400,
+            detail="No email on file for this physician — add one in the Physician Roster editor.",
+        )
+
+    index = build_alias_index(roster)
+    unresolved = {body.physician_id} if _resolve_submission_id(sub, index) is None else set()
+    [result] = _build_import_results([sub], unresolved, roster)
+    errors = [i.message for i in result.issues if i.severity == "error" and not i.overridden]
+    if not errors:
+        return SendReminderEmailResponse(ok=False, status="No current validation errors for this physician.")
+
+    subject = f"Shift Request Follow-up — {result.physician_name}"
+    body_text = (
+        f"Hi {result.physician_name},\n\n"
+        f"Your shift request submission for {sub.year}-{sub.month:02d} has the following "
+        f"issue(s) that need to be corrected:\n\n"
+        + "\n".join(f"  - {e}" for e in errors)
+        + "\n\nPlease revise and resubmit your preferences.\n"
+    )
+
+    try:
+        email_sender.send_email(to_address, subject, body_text, config)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return SendReminderEmailResponse(ok=True, status=f"Sent to {to_address}.")
 
 
 # ---------------------------------------------------------------------------

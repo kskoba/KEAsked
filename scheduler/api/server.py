@@ -282,7 +282,15 @@ _FILENAME_BOILERPLATE = re.compile(
 def _clean_filename_candidate(sub: PhysicianSubmission) -> str:
     stem = Path(sub.source_file).stem if sub.source_file else sub.physician_id
     cleaned = _FILENAME_BOILERPLATE.sub(" ", stem)
-    return " ".join(cleaned.split())
+    cleaned = " ".join(cleaned.split())
+    # Trailing revision marker (a resubmission renamed "Taylor-1", "Taylor 2",
+    # "Taylor(1)", etc. — see _revision_score) isn't part of the physician's
+    # name; strip it so "Taylor-1" resolves the same as "Taylor" instead of
+    # ending up unresolved. Deliberately narrow (1-2 digits, at the very end,
+    # after a separator) so it can't eat a real 4-digit year or a digit that's
+    # actually part of someone's name.
+    cleaned = re.sub(r"[\s\-_]\(?\d{1,2}\)?$", "", cleaned).strip()
+    return cleaned
 
 
 def _resolve_submission_id(sub: PhysicianSubmission, index: dict) -> str | None:
@@ -325,13 +333,18 @@ def _revision_score(sub: PhysicianSubmission) -> int:
     Heuristic for picking the authoritative file when the same physician
     has multiple submissions this month (a resubmitted/revised request).
     Higher wins. "updated" anywhere in the filename is a strong deliberate
-    signal; a trailing "(N)" (e.g. from a browser appending a number to a
-    duplicate download) is a weaker but still meaningful "later" signal —
-    N itself is used so (2) beats (1) beats no marker.
+    signal; a trailing revision number — "(N)" (e.g. from a browser
+    appending a number to a duplicate download) or a bare "-N"/" N" (this
+    practice's own resubmission convention, e.g. "Taylor-1.xlsx" for
+    Michael Taylor's 2nd version) — is a weaker but still meaningful
+    "later" signal — N itself is used so 2/(2) beats 1/(1) beats no marker.
+    The bare form is deliberately narrow (1-2 digits, right before the
+    extension, after a separator) so it can't mistake a 4-digit year for a
+    revision number.
     """
     name = Path(sub.source_file).name.lower()
     score = 1000 if "updated" in name else 0
-    m = re.search(r"\((\d+)\)", name)
+    m = re.search(r"\((\d+)\)", name) or re.search(r"[\s\-_](\d{1,2})\.\w+$", name)
     if m:
         score += int(m.group(1))
     return score
@@ -652,6 +665,8 @@ def _physician_to_detail(cfg: PhysicianConfig) -> PhysicianDetail:
         rest_after_late_shift=cfg.rest_after_late_shift,
         max_consecutive_1800h=cfg.max_consecutive_1800h,
         cap_at_requested=cfg.cap_at_requested,
+        special_provisions=cfg.special_provisions,
+        casual=cfg.casual,
         rule_overrides=dict(cfg.rule_overrides),
     )
 
@@ -728,6 +743,8 @@ def update_physician(physician_id: str, body: PhysicianUpdateRequest) -> Physici
         rest_after_late_shift=body.rest_after_late_shift,
         max_consecutive_1800h=body.max_consecutive_1800h,
         cap_at_requested=body.cap_at_requested,
+        special_provisions=body.special_provisions,
+        casual=body.casual,
         rule_overrides=dict(body.rule_overrides),
     )
 
@@ -819,6 +836,27 @@ def delete_physician(physician_id: str, body: RemovePhysicianRequest) -> RemoveP
     return RemovePhysicianResponse(ok=True, status=f"Removed {physician_id}.")
 
 
+def _auto_override_flagged_physicians(submissions: list[PhysicianSubmission], roster: dict) -> None:
+    """
+    Auto-override every current error for physicians flagged special_provisions
+    or casual in physicians.yaml — same effect as clicking "Override All" for
+    them, done automatically at import time so nobody has to remember to do
+    it every month. Errors remain visible in the Validate page's expandable
+    detail, just already marked overridden. Must run after _apply_roster
+    (needs sub.physician_id already resolved to the roster's canonical id);
+    only applies to submissions that actually resolved — an
+    unresolved_physician error still needs a human regardless of any flag.
+    """
+    for sub in submissions:
+        cfg = roster.get(sub.physician_id)
+        if not cfg or not (cfg.special_provisions or cfg.casual):
+            continue
+        vr = validate(sub)
+        error_rules = {i.rule for i in vr.issues if i.severity == "error"}
+        if error_rules:
+            _state["overrides"].setdefault(sub.physician_id, set()).update(error_rules)
+
+
 @app.post("/api/import", response_model=ImportDirectoryResponse)
 def import_submissions(body: ImportRequest) -> ImportDirectoryResponse:
     """Import all .xlsx files from a directory for the given year/month."""
@@ -834,6 +872,7 @@ def import_submissions(body: ImportRequest) -> ImportDirectoryResponse:
 
     _state["overrides"] = {}
     unresolved = _apply_roster(submissions, roster)
+    _auto_override_flagged_physicians(submissions, roster)
     results = _build_import_results(submissions, unresolved, roster)
     _state.update(submissions=submissions, roster=roster, scheduler_config=scheduler_cfg,
                   year=body.year, month=body.month, directory=body.directory, source_file=None)
@@ -859,6 +898,7 @@ def import_flat(body: ImportFlatRequest) -> ImportDirectoryResponse:
 
     _state["overrides"] = {}
     unresolved = _apply_roster(submissions, roster)
+    _auto_override_flagged_physicians(submissions, roster)
     results = _build_import_results(submissions, unresolved, roster)
     _state.update(submissions=submissions, roster=roster, scheduler_config=scheduler_cfg,
                   year=body.year, month=body.month, directory=None, source_file=str(file_path))

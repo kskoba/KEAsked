@@ -149,6 +149,25 @@ class PhysicianConfig:
     # If True, hard-cap total shifts at shifts_requested rather than shifts_max.
     cap_at_requested: bool = False
 
+    # If True, this physician has a standing scheduling limitation serious
+    # enough that their monthly submission's validation errors are expected
+    # and should be auto-overridden at import time rather than making a
+    # human click through them every month (e.g. Francescutti/Krisik — a
+    # site or shift-type restriction that will always fail the generic
+    # min_valid_days/min_valid_blocks/etc. thresholds). Overridden issues
+    # still show up in the Validate page's expandable detail, just already
+    # marked resolved. Independent of casual below — a physician can be
+    # either, both, or neither.
+    special_provisions: bool = False
+
+    # If True, this physician is casual staff: also auto-overridden like
+    # special_provisions, but additionally deprioritized by the scheduler —
+    # only assigned shifts once every non-casual physician has reached
+    # their own requested shift count (not their max), and only into slots
+    # still open after that. See generator.py/generator_cpsat.py's casual
+    # handling for the actual priority ordering.
+    casual: bool = False
+
     # Validation rule overrides.
     # Keys: "min_valid_days" | "min_valid_blocks" | "min_weekend_days" | "min_anchored_days"
     #     | "min_blocks_per_day" (per-day block threshold for what counts as a
@@ -244,6 +263,8 @@ def _parse_physician(raw: dict) -> PhysicianConfig:
         rest_after_late_shift=bool(sched.get("rest_after_late_shift", False)),
         max_consecutive_1800h=int(sched.get("max_consecutive_1800h", 3)),
         cap_at_requested=bool(sched.get("cap_at_requested", False)),
+        special_provisions=bool(sched.get("special_provisions", False)),
+        casual=bool(sched.get("casual", False)),
     )
 
 
@@ -326,6 +347,10 @@ def physician_config_to_raw(cfg: PhysicianConfig) -> dict:
         sched["max_consecutive_1800h"] = cfg.max_consecutive_1800h
     if cfg.cap_at_requested:
         sched["cap_at_requested"] = True
+    if cfg.special_provisions:
+        sched["special_provisions"] = True
+    if cfg.casual:
+        sched["casual"] = True
     raw["scheduling"] = sched
 
     if cfg.forbidden_sites:

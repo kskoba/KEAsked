@@ -22,6 +22,7 @@ import logging
 import os
 import sys
 from collections import defaultdict
+from dataclasses import replace as _dc_replace
 from typing import Callable, Optional
 
 _FROZEN = getattr(sys, 'frozen', False)
@@ -194,6 +195,54 @@ class CpsatScheduleGenerator:
         """
         Solve the scheduling problem with CP-SAT and return a ScheduleResult.
 
+        If any physician in the roster is flagged `casual`, this runs a
+        3-phase sequential solve instead of a single pass, to *guarantee*
+        (not just weight toward) the priority order: (1) every non-casual
+        physician gets their own requested shift count, (2) only then are
+        casual physicians filled up to their own requested count, (3) only
+        then do non-casual physicians get filled beyond requested, up to
+        their real max. Casual physicians are never scheduled beyond their
+        own requested count — there's no equivalent of phase 3 for them.
+        See _generate_casual_priority for the phase mechanics; each phase
+        is a full CP-SAT solve with every existing hard/soft rule intact,
+        just scoped to a subset of physicians and remaining open slots —
+        weight-tuning a single solve can't *guarantee* this ordering the
+        way locking in phases between solves can.
+
+        See _generate_single_phase for the actual solve parameters
+        (time_limit, num_workers, progress_callback, cancel_check).
+        """
+        if self._has_casual_submissions():
+            return self._generate_casual_priority(
+                year, month, time_limit, num_workers, progress_callback, cancel_check
+            )
+        return self._generate_single_phase(
+            year, month, time_limit, num_workers, progress_callback, cancel_check
+        )
+
+    def _cfg_for(self, pid: str) -> Optional[PhysicianConfig]:
+        return (
+            self.roster.get(pid)
+            or self._roster_lower.get(pid.lower())
+            or self._roster_by_name.get(pid.lower())
+        )
+
+    def _has_casual_submissions(self) -> bool:
+        return any(getattr(self._cfg_for(pid), "casual", False) for pid in self.submissions)
+
+    def _generate_single_phase(
+        self,
+        year: int,
+        month: int,
+        time_limit: float = 60.0,
+        num_workers: Optional[int] = None,
+        progress_callback: Optional[Callable] = None,
+        cancel_check: Optional[Callable[[], bool]] = None,
+        allowed_slots: Optional[frozenset[tuple[int, str]]] = None,
+    ) -> ScheduleResult:
+        """
+        Solve the scheduling problem with CP-SAT and return a ScheduleResult.
+
         If OR-Tools is not installed this falls back to the greedy
         ScheduleGenerator so the caller never gets an import error.
 
@@ -218,6 +267,11 @@ class CpsatScheduleGenerator:
             When it returns True, the solver is stopped early via
             StopSearch() and the best solution found so far is returned —
             same code path as hitting the time limit, just sooner.
+        allowed_slots:
+            Internal — used by _generate_casual_priority to restrict a
+            phase's solve to only the (day_index, shift_code) slots a
+            previous phase left unfilled. None means no restriction (every
+            slot is in play), the normal single-phase behavior.
         """
         if num_workers is None:
             num_workers = max(1, round((os.cpu_count() or 4) * 0.75))
@@ -261,6 +315,20 @@ class CpsatScheduleGenerator:
                         shifts[(pid, d_idx, shift.code)] = model.new_bool_var(
                             f"s_{pid}_{d_idx}_{shift.code}"
                         )
+
+        # Restrict this phase to a subset of slots (casual-priority phases
+        # 2/3 — see _generate_casual_priority) by hard-forcing every other
+        # slot to stay empty for everyone in this solve, regardless of
+        # anyone's individual availability. None (the normal case) means
+        # no restriction at all.
+        if allowed_slots is not None:
+            for d_idx in range(len(all_dates)):
+                for block in BLOCKS:
+                    for shift in block:
+                        if (d_idx, shift.code) not in allowed_slots:
+                            model.add(
+                                sum(shifts[(pid, d_idx, shift.code)] for pid in pids) == 0
+                            )
 
         # ----------------------------------------------------------------
         # Hard constraint helpers
@@ -1174,6 +1242,133 @@ class CpsatScheduleGenerator:
                 result.issues.append(f"{d.strftime('%b %d')} {shift.code}: no eligible physician")
         result.stats = self._compute_stats(result)
         return result
+
+    # ------------------------------------------------------------------
+    # Casual-priority orchestration (3 sequential CP-SAT solves)
+    # ------------------------------------------------------------------
+
+    def _generate_casual_priority(
+        self,
+        year: int,
+        month: int,
+        time_limit: float,
+        num_workers: Optional[int],
+        progress_callback: Optional[Callable],
+        cancel_check: Optional[Callable[[], bool]],
+    ) -> ScheduleResult:
+        """
+        Three full CP-SAT solves, each locking in the previous one's
+        assignments before the next runs on whatever's left unfilled:
+
+          Phase 1 — non-casual physicians only, each hard-capped at their
+                    own shifts_requested (not max).
+          Phase 2 — casual physicians only, into phase 1's leftover slots,
+                    each hard-capped at their own shifts_requested. Casual
+                    physicians are never scheduled beyond this — there's
+                    no phase 4 that lets them exceed their request.
+          Phase 3 — non-casual physicians again, into whatever's still
+                    unfilled after phase 2, this time uncapped (their real
+                    shifts_max applies, same as a normal single-phase solve).
+
+        Every existing hard/soft rule (rest spacing, consecutive limits,
+        A:B balance, the shift-swing penalty, etc.) still applies within
+        each phase — only the *candidate pool* and *effective max* differ
+        per phase. This guarantees the priority order exactly, which a
+        single weighted solve could only approximate.
+        """
+        all_subs = list(self.submissions.values())
+        normal_subs = [s for s in all_subs if not getattr(self._cfg_for(s.physician_id), "casual", False)]
+        casual_subs = [s for s in all_subs if getattr(self._cfg_for(s.physician_id), "casual", False)]
+
+        # Same roster, but every physician's cap_at_requested forced True —
+        # reuses the existing HC-7 hard-cap mechanism unchanged rather than
+        # inventing a second way to express "cap at requested, not max".
+        roster_capped_at_requested = {
+            pid: _dc_replace(cfg, cap_at_requested=True) for pid, cfg in self.roster.items()
+        }
+
+        def _scaled_progress(lo: int, hi: int):
+            if progress_callback is None:
+                return None
+            def _cb(current, total, best_score):
+                pct = lo + (hi - lo) * (current / total if total else 0)
+                progress_callback(pct, 100, best_score)
+            return _cb
+
+        def _filled_slots_of(result: ScheduleResult) -> frozenset[tuple[int, str]]:
+            return frozenset((a.date.day - 1, a.shift.code) for a in result.assignments)
+
+        # Track what's still open by subtracting what got *filled*, never by
+        # reading a phase's own .unfilled list directly — that list also
+        # includes every slot this phase's allowed_slots restriction forced
+        # empty (i.e. slots outside its scope, not slots with no eligible
+        # candidate), so trusting it as "still open" would hand a later
+        # phase slots an earlier phase already filled, double-booking them.
+        days_in_month = calendar.monthrange(year, month)[1]
+        remaining = frozenset(
+            (d_idx, shift.code)
+            for d_idx in range(days_in_month)
+            for block in BLOCKS
+            for shift in block
+        )
+
+        logger.info("CP-SAT casual-priority: phase 1 (non-casual, capped at requested)")
+        gen1 = CpsatScheduleGenerator(normal_subs, roster_capped_at_requested, self.config)
+        result1 = gen1._generate_single_phase(
+            year, month, time_limit, num_workers, _scaled_progress(0, 33), cancel_check,
+            allowed_slots=remaining,
+        )
+        remaining = remaining - _filled_slots_of(result1)
+
+        logger.info("CP-SAT casual-priority: phase 2 (casual, capped at requested, %d slots open)",
+                    len(remaining))
+        gen2 = CpsatScheduleGenerator(casual_subs, roster_capped_at_requested, self.config)
+        result2 = gen2._generate_single_phase(
+            year, month, time_limit, num_workers, _scaled_progress(33, 66), cancel_check,
+            allowed_slots=remaining,
+        )
+        remaining = remaining - _filled_slots_of(result2)
+
+        logger.info("CP-SAT casual-priority: phase 3 (non-casual, up to real max, %d slots open)",
+                    len(remaining))
+        gen3 = CpsatScheduleGenerator(normal_subs, self.roster, self.config)
+        result3 = gen3._generate_single_phase(
+            year, month, time_limit, num_workers, _scaled_progress(66, 100), cancel_check,
+            allowed_slots=remaining,
+        )
+
+        # Same reasoning as `remaining` above: result3.unfilled also includes
+        # every slot outside phase 3's own allowed_slots (i.e. everything
+        # phases 1/2 already filled), not just genuinely-no-candidate slots
+        # — filter down to the ones actually still open after all 3 phases.
+        still_open = remaining - _filled_slots_of(result3)
+        final_unfilled = [
+            u for u in result3.unfilled if (u.date.day - 1, u.shift.code) in still_open
+        ]
+
+        merged = ScheduleResult(year=year, month=month)
+        merged.assignments = result1.assignments + result2.assignments + result3.assignments
+        merged.unfilled = final_unfilled
+        merged.issues = [
+            f"{u.date.strftime('%b %d')} {u.shift.code}: no eligible physician"
+            for u in final_unfilled
+        ]
+
+        # Rebuild this (the orchestrating, full-roster) instance's own
+        # mutable state from the merged assignments — each phase only
+        # populated its own throwaway sub-generator's state, and
+        # post-generation features (manual assign, check-violations,
+        # candidates) read this instance's state, not a phase's.
+        self._pid_to_slots = defaultdict(list)
+        self._slot_to_pid = {}
+        self._shift_count = defaultdict(int)
+        self._anchor_count = defaultdict(int)
+        self._weekend_keys = defaultdict(set)
+        for a in merged.assignments:
+            self._assign(a.physician_id, a.date, a.shift)
+
+        merged.stats = self._compute_stats(merged)
+        return merged
 
     # ------------------------------------------------------------------
     # Post-solve result construction

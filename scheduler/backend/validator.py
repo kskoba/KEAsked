@@ -177,6 +177,32 @@ def check_zero_shifts_requested(sub: PhysicianSubmission) -> list[ValidationIssu
     return []
 
 
+def check_month_mismatch(sub: PhysicianSubmission) -> list[ValidationIssue]:
+    """
+    Sanity check: this sheet's own row-4 day-of-week labels don't match
+    the year/month it was imported under (see importer.py's
+    _parse_worksheet). The sheet itself may be fine — this fires when the
+    wrong Month/Year was selected in the import screen, silently shifting
+    every date in the submission to the wrong day of the week. Every other
+    validation result for this physician is unreliable until this is
+    fixed, so it's reported as its own clear error rather than left to
+    surface as a confusing, unrelated-looking shortfall elsewhere (e.g.
+    "not enough valid weekend days" when the physician's actual weekends
+    are all fine).
+    """
+    if sub.month_mismatch:
+        return [
+            _error(
+                "month_mismatch",
+                "This file's day-of-week labels (row 4) don't match the selected "
+                "import month/year — re-check the Month/Year selected before "
+                "importing this physician's file.",
+                sub.physician_id,
+            )
+        ]
+    return []
+
+
 # --------------------------------------------------------------------------- #
 # Rule registry — ordered list of (rule_id, function) pairs.
 # Override-aware rules accept an optional int parameter.
@@ -211,7 +237,11 @@ def validate(sub: PhysicianSubmission) -> ValidationResult:
       minimum for that rule.
     - If rule_overrides[rule_id] is None, the rule is skipped entirely.
     """
-    issues: list[ValidationIssue] = []
+    # Checked first and separately from _FIXED_RULES: if the wrong
+    # month/year was selected, every other issue below is a downstream
+    # symptom of that, not a real problem with the submission — this
+    # should be the first thing a reviewer sees, not buried after them.
+    issues: list[ValidationIssue] = list(check_month_mismatch(sub))
 
     for rule_id, fn in _OVERRIDE_RULES.items():
         if rule_id in sub.rule_overrides:

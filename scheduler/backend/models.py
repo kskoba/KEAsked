@@ -40,10 +40,21 @@ class DayAvailability:
         True when the physician marked row-5 (the "Z" row) for this day.
     available_blocks:
         Set of block indices (0–4) for which the physician marked the entire
-        block available.  Partial blocks are NOT included.
+        block available.  Partial blocks are NOT included.  This is a
+        submission-quality signal for the validator only (min_valid_blocks,
+        anchored-day rules) — it nudges physicians toward offering whole
+        blocks, but some legitimately don't and have allowances there.
+        Scheduling itself must not rely on it; see requested_shifts.
     requested_shifts:
-        Specific shift codes the physician explicitly requested for this day.
-        These are the preferred assignments within the available blocks.
+        The specific shift codes this physician is available for on this
+        day, cell by cell — independent of whether every row in that
+        shift's block was filled. This is what the generator actually
+        schedules against: available for 2400h RAH A but not 2400h NEHC
+        means available for exactly that, not "the whole 2400h block" and
+        not "nothing". For flat-file imports this instead holds whatever
+        specific shifts were explicitly requested; the two importers don't
+        currently distinguish "available for" from "requested", which is
+        fine given each is used by a differently-shaped source file.
     """
 
     date: datetime.date
@@ -153,6 +164,15 @@ class PhysicianSubmission:
     # validator (e.g. "min_valid_days"); values are replacement thresholds
     # or None to disable the rule entirely for this physician.
     rule_overrides: dict[str, object] = field(default_factory=dict)
+
+    # True when most of this sheet's own row-4 day-of-week labels (M/T/W/
+    # R/F/S/SU) don't match the actual weekday for the year/month the
+    # import was run under — the sheet is real, but the wrong month/year
+    # was selected when importing it (see importer.py's _parse_worksheet
+    # and validator.py's check_month_mismatch). Every other check on this
+    # submission is unreliable until this is fixed, since every date is
+    # potentially assigned to the wrong day of the week.
+    month_mismatch: bool = False
 
 
 @dataclass

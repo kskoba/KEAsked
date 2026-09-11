@@ -270,6 +270,8 @@ class PhysicianDetail(BaseModel):
     rest_after_late_shift: bool = False
     max_consecutive_1800h: int = 3
     cap_at_requested: bool = False
+    special_provisions: bool = False
+    casual: bool = False
     rule_overrides: dict[str, Optional[int]] = {}
 
 

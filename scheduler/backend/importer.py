@@ -50,7 +50,13 @@ _N_0600H_ROW = 61
 _N_0600H_COL = 37      # Col AK  — requested 0600h shifts
 
 _Z_ROW = 5             # "Service Days" row
+_DOW_ROW = 4           # Day-of-week abbreviation row
 _FIRST_DAY_COL = 2     # Col B = day 1
+
+# Physician-facing day-of-week abbreviations, keyed by Python's
+# date.weekday() (Monday=0 ... Sunday=6). "R" for Thursday (not "T") is
+# this practice's own convention, avoiding a T/Th clash with Tuesday.
+_DOW_LABELS: dict[int, str] = {0: "M", 1: "T", 2: "W", 3: "R", 4: "F", 5: "S", 6: "SU"}
 
 # Block definitions: list of (excel_rows,) that must ALL be non-empty.
 # Rows are 1-based.
@@ -67,6 +73,16 @@ assert len(_BLOCK_ROWS) == len(BLOCKS), (
     f"Block count mismatch: importer has {len(_BLOCK_ROWS)}, "
     f"shifts.py has {len(BLOCKS)}"
 )
+
+# Row -> shift code, positional within each block (row_list[i] is that
+# block's specific cell for BLOCKS[block_idx][i] — e.g. row 26 is
+# "2400h RAH A side", row 28 is "2400h NEHC", etc.). Built once from the
+# same structure available_blocks itself uses.
+_ROW_TO_SHIFT_CODE: dict[int, str] = {
+    row: shift.code
+    for block_idx, row_list in enumerate(_BLOCK_ROWS)
+    for row, shift in zip(row_list, BLOCKS[block_idx])
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -133,6 +149,8 @@ def _parse_worksheet(
 
     days_in_month = calendar.monthrange(year, month)[1]
     days: list[DayAvailability] = []
+    dow_labeled = 0
+    dow_mismatched = 0
 
     for day_num in range(1, days_in_month + 1):
         col = _day_col(day_num)
@@ -141,19 +159,61 @@ def _parse_worksheet(
         # --- Z marker (wants to work) ---
         wants = str(_cell(ws, _Z_ROW, col) or "").strip().upper() == "Z"
 
-        # --- Block availability ---
+        # --- Block availability (submission-quality signal for the
+        # validator's min_valid_blocks/anchored-day rules ONLY — this
+        # stays "every row in the block filled", unchanged. It exists to
+        # nudge physicians toward offering whole blocks; some legitimately
+        # don't and have allowances there, which is exactly why scheduling
+        # itself must not rely on it — see available_shifts below.) ---
         available_blocks: set[int] = set()
         for block_idx, row_list in enumerate(_BLOCK_ROWS):
             if all(_is_filled(_cell(ws, r, col)) for r in row_list):
                 available_blocks.add(block_idx)
+
+        # --- Per-shift availability (what the generator actually schedules
+        # against). Each row stands on its own: a physician available for
+        # 2400h RAH A but not 2400h NEHC on the same day is available for
+        # exactly that — not "the whole 2400h block" and not "nothing" —
+        # regardless of whether that makes the block count as valid above.
+        available_shifts: set[str] = {
+            shift_code
+            for row, shift_code in _ROW_TO_SHIFT_CODE.items()
+            if _is_filled(_cell(ws, row, col))
+        }
 
         days.append(
             DayAvailability(
                 date=date,
                 wants_to_work=wants,
                 available_blocks=frozenset(available_blocks),
+                requested_shifts=frozenset(available_shifts),
             )
         )
+
+        # --- Day-of-week sanity check ---
+        # The physician's own row-4 label for this column should match the
+        # actual weekday of (year, month, day_num). If most labeled days
+        # disagree, the year/month selected for this import doesn't match
+        # what this sheet was actually filled out for (e.g. an October
+        # sheet imported under a leftover "June" selection) — every date
+        # in this submission is then off, silently, until that's fixed.
+        dow_label = str(_cell(ws, _DOW_ROW, col) or "").strip().upper()
+        if dow_label:
+            dow_labeled += 1
+            if dow_label != _DOW_LABELS[date.weekday()]:
+                dow_mismatched += 1
+
+    month_mismatch = dow_labeled > 0 and (dow_mismatched / dow_labeled) > 0.5
+
+    # If no "Z" was found anywhere in the whole submission, this physician
+    # almost certainly forgot to mark row 5 at all — not that they want
+    # zero days all month. Fall back to treating any day they otherwise
+    # marked availability for as a potential working day, rather than
+    # discarding the whole submission as "wants nothing".
+    if not any(d.wants_to_work for d in days):
+        for d in days:
+            if d.available_blocks:
+                d.wants_to_work = True
 
     return PhysicianSubmission(
         physician_id=physician_id,
@@ -168,6 +228,7 @@ def _parse_worksheet(
         days=days,
         source_file=source_file,
         raw_name_candidates=raw_name_candidates,
+        month_mismatch=month_mismatch,
     )
 
 

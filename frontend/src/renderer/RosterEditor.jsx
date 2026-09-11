@@ -278,6 +278,30 @@ export default function RosterEditor() {
                 />
               </Section>
 
+              <Section title="Status">
+                <CheckboxField
+                  label="Special Provisions (excluded from request validation)"
+                  checked={form.special_provisions}
+                  onChange={(v) => setField('special_provisions', v)}
+                />
+                <p className="text-xs text-slate-400 -mt-1.5 pl-6">
+                  A standing scheduling limitation serious enough that this physician's monthly
+                  submission errors are expected — they're auto-overridden at import instead of
+                  needing a manual click every month. Still viewable in the Validate page's expandable
+                  detail, just already marked resolved.
+                </p>
+                <CheckboxField
+                  label="Casual"
+                  checked={form.casual}
+                  onChange={(v) => setField('casual', v)}
+                />
+                <p className="text-xs text-slate-400 -mt-1.5 pl-6">
+                  Also auto-overridden like Special Provisions, and deprioritized by the scheduler —
+                  only assigned shifts once every non-casual physician has their own requested count,
+                  and only into slots still open after that.
+                </p>
+              </Section>
+
               <Section title="Scheduling rules">
                 <div className="grid grid-cols-2 gap-3">
                   <IntegerField

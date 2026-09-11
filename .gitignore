@@ -57,5 +57,11 @@ scheduler/config/bytebloc.yaml
 # only email_template.yaml is committed
 scheduler/config/email.yaml
 
+# Real physician names, aliases, and personal scheduling restrictions —
+# only physicians_template.yaml is committed. (This was tracked in git
+# until 2026-09-11; still present in history — see the pending
+# history-purge decision before treating past commits as clean.)
+scheduler/config/physicians.yaml
+
 # Local certificates and credentials (never push)
 certs/

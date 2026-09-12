@@ -47,6 +47,7 @@ _check_requirements()
 # Standard imports
 # ---------------------------------------------------------------------------
 import argparse
+import datetime
 import io
 import math
 import os
@@ -351,19 +352,53 @@ _REQ_0600H_ROW = 61
 _REQ_ANCHOR_COL = 37  # Col AK
 
 
+def _parse_anchor_value(raw) -> tuple[int, bool]:
+    """
+    Parse a raw AK59/AK61 cell value into (value, stated).
+
+    stated is False only for a genuinely blank cell or free text with no
+    number in it at all ("whatever", "all", "about half", "No pref") —
+    confirmed against real submissions this needs to distinguish a
+    physician who explicitly typed "0" (a real "I want none", stated=True)
+    from one who left the cell blank (no signal at all, stated=False):
+    both parse to the same int 0 with a naive int(cell.value or 0), but
+    mean opposite things for an overage check. Also handles free-text
+    ranges ("3 or 4", "1 to 2", "up to 4" -> the higher end) and Excel
+    silently reinterpreting a typed range like "4/6" as a date (-> the
+    higher of month/day). Mirrors scheduler/backend/importer.py's
+    _parse_anchor_value; duplicated here to keep this tool self-contained.
+    """
+    if raw is None or isinstance(raw, bool):
+        return 0, False
+    if isinstance(raw, (int, float)):
+        return int(raw), True
+    if isinstance(raw, datetime.datetime):
+        return max(raw.month, raw.day), True
+    text = str(raw).strip()
+    if not text:
+        return 0, False
+    numbers = re.findall(r"\d+", text)
+    if numbers:
+        return max(int(n) for n in numbers), True
+    return 0, False
+
+
 def load_anchor_requests(
     requests_dir: str, roster_key_map: dict[str, str],
-) -> dict[str, tuple[int, int]]:
+) -> dict[str, tuple[int, int, bool, bool]]:
     """
     Reads every individual physician request .xlsx in `requests_dir` for
     their stated 2400h/0600h target counts.
 
-    Returns {roster-resolved key: (2400h_requested, 0600h_requested)},
-    keyed the same way unify_physician_names groups schedule assignments
-    (roster id where known, else canon_name()), so counts from a parsed
-    Schedule can be joined against these requests directly.
+    Returns {roster-resolved key: (2400h_requested, 0600h_requested,
+    2400h_stated, 0600h_stated)}, keyed the same way unify_physician_names
+    groups schedule assignments (roster id where known, else canon_name()),
+    so counts from a parsed Schedule can be joined against these requests
+    directly. An entry with both *_stated False is dropped — there's
+    nothing to compare against — but an explicit 0 on either field keeps
+    the entry (it's real signal, not a blank).
     """
-    requests: dict[str, tuple[int, int]] = {}
+    requests: dict[str, tuple[int, int, bool, bool]] = {}
     if not requests_dir or not os.path.isdir(requests_dir):
         return requests
     for fname in sorted(os.listdir(requests_dir)):
@@ -374,15 +409,15 @@ def load_anchor_requests(
             wb = openpyxl.load_workbook(path, data_only=True)
             ws = wb.worksheets[0]
             name = str(ws.cell(row=_REQ_NAME_ROW, column=_REQ_NAME_COL).value or "").strip()
-            req_2400 = int(ws.cell(row=_REQ_2400H_ROW, column=_REQ_ANCHOR_COL).value or 0)
-            req_0600 = int(ws.cell(row=_REQ_0600H_ROW, column=_REQ_ANCHOR_COL).value or 0)
+            req_2400, stated_2400 = _parse_anchor_value(ws.cell(row=_REQ_2400H_ROW, column=_REQ_ANCHOR_COL).value)
+            req_0600, stated_0600 = _parse_anchor_value(ws.cell(row=_REQ_0600H_ROW, column=_REQ_ANCHOR_COL).value)
         except Exception:
             continue
-        if not name or (req_2400 <= 0 and req_0600 <= 0):
+        if not name or (not stated_2400 and not stated_0600):
             continue
         key = canon_name(name)
         key = roster_key_map.get(key, key)
-        requests[key] = (req_2400, req_0600)
+        requests[key] = (req_2400, req_0600, stated_2400, stated_0600)
     return requests
 
 
@@ -1250,7 +1285,7 @@ def _section_swings(s1: Schedule, s2: Schedule, threshold: int = 10) -> str:
 
 def _section_anchor_overage(
     s1: Schedule, s2: Schedule,
-    requests: dict[str, tuple[int, int]],
+    requests: dict[str, tuple[int, int, bool, bool]],
     roster_key_map: dict[str, str],
     tolerance: int = 1,
 ) -> str:
@@ -1280,14 +1315,14 @@ def _section_anchor_overage(
 
     detail_rows: list[str] = []
 
-    for label, idx in (("2400h", 0), ("0600h", 1)):
-        def _tally(counts: dict[str, tuple[int, int]]):
+    for label, idx, stated_idx in (("2400h", 0, 2), ("0600h", 1, 3)):
+        def _tally(counts: dict[str, tuple[int, int]], idx=idx, stated_idx=stated_idx):
             total = over = beyond = 0
             rows = []
             for key, req_pair in requests.items():
-                req = req_pair[idx]
-                if req <= 0:
+                if not req_pair[stated_idx]:
                     continue
+                req = req_pair[idx]
                 total += 1
                 got = counts.get(key, (0, 0))[idx]
                 if got > req:

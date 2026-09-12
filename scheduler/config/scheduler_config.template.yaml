@@ -127,6 +127,15 @@ conditional_cowork:
     no_shared_weekends: true
     weekday_requires_one_at: "0600h"
 
+# Linked-rest pairs: two physicians who are separate roster identities
+# for shift-count/priority purposes but whose real-world rest needs are
+# shared, not independent. Neither may work the same day as the other,
+# and the same 23h-minimum / 36h-maximum / >10h-swing rules that apply
+# to one physician's own day-to-day sequence apply across their
+# COMBINED sequence too.
+linked_rest_pairs:
+  - physicians: [KLam, MRico]   # Kenneth Lam & Michelle Rico
+
 # ----------------------------------------------------------
 # Linked-pair constraints
 # ----------------------------------------------------------

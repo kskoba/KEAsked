@@ -757,6 +757,7 @@ def update_physician(physician_id: str, body: PhysicianUpdateRequest) -> Physici
         default_shifts_requested=existing.default_shifts_requested,
         combined_headcount=existing.combined_headcount,
         priority_weight=existing.priority_weight,
+        anchor_preference=existing.anchor_preference,
     )
 
     try:

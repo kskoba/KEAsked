@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import calendar
 import datetime
+import re
 from pathlib import Path
 
 import openpyxl
@@ -111,6 +112,40 @@ def _day_col(day_num: int) -> int:
     return _FIRST_DAY_COL + day_num - 1
 
 
+def _parse_anchor_value(raw) -> tuple[int, bool]:
+    """
+    Parse a physician's raw AK59/AK61 (2400h/0600h requested) cell value.
+
+    Returns (value, stated) — stated is False only for a genuinely blank
+    cell or free text with no number in it at all (e.g. "whatever", "all",
+    "about half", "No pref"); value is 0 in that case since there's
+    nothing to use. Confirmed against real submissions this needs to
+    handle:
+      - A plain number, including a literal 0 (an explicit "I want
+        none" — stated=True, distinct from a blank cell).
+      - Free-text ranges ("3 or 4", "1 to 2", "up to 4") — takes the
+        higher end (max of every integer found in the text).
+      - Excel silently reinterpreting a typed range like "4/6" as a date
+        — takes max(month, day) as the range's two ends.
+      - Genuinely non-numeric free text with no digits at all — no
+        number to extract, so treated the same as blank (stated=False)
+        rather than guessing.
+    """
+    if raw is None or isinstance(raw, bool):
+        return 0, False
+    if isinstance(raw, (int, float)):
+        return int(raw), True
+    if isinstance(raw, datetime.datetime):
+        return max(raw.month, raw.day), True
+    text = str(raw).strip()
+    if not text:
+        return 0, False
+    numbers = re.findall(r"\d+", text)
+    if numbers:
+        return max(int(n) for n in numbers), True
+    return 0, False
+
+
 # --------------------------------------------------------------------------- #
 # Core parser
 # --------------------------------------------------------------------------- #
@@ -149,8 +184,8 @@ def _parse_worksheet(
     shifts_requested = _int_cell(_N_SHIFTS_ROW, _N_SHIFTS_COL)
     shifts_min = _int_cell(_MIN_SHIFTS_ROW, _MIN_SHIFTS_COL, shifts_requested)
     shifts_max = _int_cell(_MAX_SHIFTS_ROW, _MAX_SHIFTS_COL, shifts_requested)
-    shifts_2400h_requested = _int_cell(_N_2400H_ROW, _N_2400H_COL)
-    shifts_0600h_requested = _int_cell(_N_0600H_ROW, _N_0600H_COL)
+    shifts_2400h_requested, shifts_2400h_stated = _parse_anchor_value(_cell(ws, _N_2400H_ROW, _N_2400H_COL))
+    shifts_0600h_requested, shifts_0600h_stated = _parse_anchor_value(_cell(ws, _N_0600H_ROW, _N_0600H_COL))
 
     days_in_month = calendar.monthrange(year, month)[1]
     days: list[DayAvailability] = []
@@ -238,6 +273,8 @@ def _parse_worksheet(
         shifts_max=shifts_max,
         shifts_2400h_requested=shifts_2400h_requested,
         shifts_0600h_requested=shifts_0600h_requested,
+        shifts_2400h_stated=shifts_2400h_stated,
+        shifts_0600h_stated=shifts_0600h_stated,
         days=days,
         source_file=source_file,
         raw_name_candidates=raw_name_candidates,

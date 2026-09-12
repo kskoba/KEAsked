@@ -520,6 +520,96 @@ class CpsatScheduleGenerator:
                                     )
 
         # ----------------------------------------------------------------
+        # HC-9a: Linked-rest pairs (scheduler_config.yaml's
+        # linked_rest_pairs, e.g. Kenneth Lam / Michelle Rico). Two
+        # physicians who are separate roster identities for shift-count
+        # and priority purposes but must be treated as a single combined
+        # timeline for rest spacing, shift-time-swing, and consecutive-run
+        # purposes: never both scheduled the same day, the exact same
+        # 23h-minimum / 36h-maximum / >10h-swing rules that apply to one
+        # physician's own day-to-day sequence apply across their combined
+        # sequence — checked in both directions (A→B and B→A) since this
+        # is a symmetric pair relationship, not one person's own
+        # forward-only timeline — and their COMBINED consecutive-day run
+        # is capped the same way HC-8 caps one physician's own run.
+        # Without that last part, HC-8 only bounds each member's own run
+        # separately, so one finishing a run right as the other starts
+        # could chain into a combined run far longer than either's
+        # individual cap — confirmed against the human schedule: their
+        # real pre-split combined runs topped out at 5 days, matching
+        # each member's own max_consecutive_shifts, never 10.
+        # ----------------------------------------------------------------
+        for rule in self.config.get("linked_rest_pairs", []):
+            phys = [p for p in rule.get("physicians", []) if p in pids]
+            if len(phys) != 2:
+                continue
+            pid_a, pid_b = phys
+
+            # Never both scheduled the same day, unconditionally.
+            for d_idx in range(len(all_dates)):
+                works_a = sum(shifts[(pid_a, d_idx, s.code)] for block in BLOCKS for s in block)
+                works_b = sum(shifts[(pid_b, d_idx, s.code)] for block in BLOCKS for s in block)
+                model.add(works_a + works_b <= 1)
+
+            # Combined consecutive-day limit (see docstring above).
+            mc = min(_max_consec(pid_a), _max_consec(pid_b))
+            window_size = mc + 1
+            if window_size <= len(all_dates):
+                for start in range(len(all_dates) - mc):
+                    window_vars = []
+                    for d_idx in range(start, start + window_size):
+                        for block in BLOCKS:
+                            for shift in block:
+                                window_vars.append(shifts[(pid_a, d_idx, shift.code)])
+                                window_vars.append(shifts[(pid_b, d_idx, shift.code)])
+                    model.add(sum(window_vars) <= mc)
+
+            for first, second in ((pid_a, pid_b), (pid_b, pid_a)):
+                for d_idx in range(len(all_dates) - 1):
+                    for block1 in BLOCKS:
+                        for shift1 in block1:
+                            for block2 in BLOCKS:
+                                for shift2 in block2:
+                                    if not is_next_shift_ok(shift1, 1, shift2):
+                                        model.add(
+                                            shifts[(first, d_idx, shift1.code)]
+                                            + shifts[(second, d_idx + 1, shift2.code)] <= 1
+                                        )
+                                        continue
+                                    if violates_max_spacing(shift1, shift2):
+                                        long_gap = model.new_bool_var(
+                                            f"longgap_link_{first}_{second}_{d_idx}_{shift1.code}_{shift2.code}"
+                                        )
+                                        model.add(
+                                            shifts[(first, d_idx, shift1.code)]
+                                            + shifts[(second, d_idx + 1, shift2.code)] <= 1 + long_gap
+                                        )
+                                        long_gap_penalty_terms.append(-_LONG_GAP_PENALTY * long_gap)
+                                    if abs(shift1.start_hour - shift2.start_hour) > _SHIFT_SWING_MAX_HOURS:
+                                        swing = model.new_bool_var(
+                                            f"swing_link_{first}_{second}_{d_idx}_{shift1.code}_{shift2.code}"
+                                        )
+                                        model.add(
+                                            shifts[(first, d_idx, shift1.code)]
+                                            + shifts[(second, d_idx + 1, shift2.code)] <= 1 + swing
+                                        )
+                                        swing_penalty_terms.append(-_SWING_PENALTY * swing)
+
+                # 2-day gap: only 2400h → next morning matters (36h rest rule)
+                for d_idx in range(len(all_dates) - 2):
+                    for block1 in BLOCKS:
+                        for shift1 in block1:
+                            if shift1.time != "2400h":
+                                continue
+                            for block2 in BLOCKS:
+                                for shift2 in block2:
+                                    if not is_next_shift_ok(shift1, 2, shift2):
+                                        model.add(
+                                            shifts[(first, d_idx, shift1.code)]
+                                            + shifts[(second, d_idx + 2, shift2.code)] <= 1
+                                        )
+
+        # ----------------------------------------------------------------
         # HC-9b: Conditional co-working (scheduler_config.yaml's
         # conditional_cowork, e.g. Edgecumbe/Houston). Ported from the
         # greedy generator's soft check (generator.py _check_constraints,
@@ -628,6 +718,28 @@ class CpsatScheduleGenerator:
         # nothing else can fill the slot.
         anchor_overage_penalty_terms = []
         _ANCHOR_OVERAGE_PENALTY = 500
+        # A physician's stated numbers can themselves signal which anchor
+        # type they'd rather absorb overage in — e.g. explicitly wanting 0
+        # 0600h and a real positive 2400h count says "give me another
+        # night before ever putting me on an early start". When overage is
+        # genuinely unavoidable, it should preferentially land on whoever
+        # already leans that way, not be indifferent between anyone. A
+        # roster-level anchor_preference (physicians.yaml) always wins when
+        # set; otherwise inferred fresh from this month's own submission.
+        _ANCHOR_OVERAGE_PENALTY_PREFERRED = 150
+
+        def _anchor_preference(pid: str, sub) -> Optional[str]:
+            cfg = _get_cfg(pid)
+            if cfg and cfg.anchor_preference in ("2400h", "0600h"):
+                return cfg.anchor_preference
+            if (sub.shifts_2400h_stated and sub.shifts_2400h_requested > 0
+                    and sub.shifts_0600h_stated and sub.shifts_0600h_requested == 0):
+                return "2400h"
+            if (sub.shifts_0600h_stated and sub.shifts_0600h_requested > 0
+                    and sub.shifts_2400h_stated and sub.shifts_2400h_requested == 0):
+                return "0600h"
+            return None
+
         for pid in pids:
             sub = self.submissions[pid]
             anchor_vars = []
@@ -653,15 +765,26 @@ class CpsatScheduleGenerator:
                     if shift.time == "0600h"
                 ]
 
-                # Per-physician 2400h cap
-                if sub.shifts_2400h_requested > 0:
+                # Per-physician 2400h cap. Checked via shifts_2400h_stated,
+                # not `> 0` — a physician who explicitly typed "0" (a real
+                # "I want none") and one who left the cell blank (no signal
+                # at all) both parse to the same int 0, but must be treated
+                # oppositely: an explicit 0 gets the tight requested+tolerance
+                # cap below (effectively "almost never"), not the more
+                # permissive unstated fallback.
+                if sub.shifts_2400h_stated:
                     pid_cap_2400 = sub.shifts_2400h_requested + self._anchor_tol
                     if vars_2400:
                         model.add(sum(vars_2400) <= pid_cap_2400)
                         if self._anchor_tol > 0:
                             over_2400 = model.new_int_var(0, self._anchor_tol, f"over2400_{pid}")
                             model.add(over_2400 >= sum(vars_2400) - sub.shifts_2400h_requested)
-                            anchor_overage_penalty_terms.append(-_ANCHOR_OVERAGE_PENALTY * over_2400)
+                            weight_2400 = (
+                                _ANCHOR_OVERAGE_PENALTY_PREFERRED
+                                if _anchor_preference(pid, sub) == "2400h"
+                                else _ANCHOR_OVERAGE_PENALTY
+                            )
+                            anchor_overage_penalty_terms.append(-weight_2400 * over_2400)
                 elif vars_2400:
                     # No stated 2400h preference at all. Unlike 0600h below,
                     # this still gets a firm fallback ceiling: night-shift
@@ -675,22 +798,30 @@ class CpsatScheduleGenerator:
                     # nights.
                     model.add(sum(vars_2400) <= self._default_2400h_cap_unstated)
 
-                # Per-physician 0600h cap — only when explicitly stated.
-                # No fallback ceiling when unstated: a guessed default here
-                # was tried (flat, then proportional to total shifts) and
-                # confirmed wrong against real data — real physicians who
-                # state no anchor preference take on far more than any
-                # guess would allow. 0600h carries none of 2400h's
-                # fairness/wellbeing concern, so there's no reason to guess
-                # a limit here the way there is for nights.
-                if sub.shifts_0600h_requested > 0:
+                # Per-physician 0600h cap — only when shifts_0600h_stated
+                # (same explicit-0-vs-blank distinction as 2400h above).
+                # No fallback ceiling for a genuinely blank cell: a guessed
+                # default here was tried (flat, then proportional to total
+                # shifts) and confirmed wrong against real data — real
+                # physicians who truly state no anchor preference take on
+                # far more than any guess would allow. 0600h carries none
+                # of 2400h's fairness/wellbeing concern, so there's no
+                # reason to guess a limit here the way there is for nights
+                # — but an explicit 0 is real signal, not a blank, and
+                # still gets capped below like any other explicit request.
+                if sub.shifts_0600h_stated:
                     pid_cap_0600 = sub.shifts_0600h_requested + self._anchor_tol
                     if vars_0600:
                         model.add(sum(vars_0600) <= pid_cap_0600)
                         if self._anchor_tol > 0:
                             over_0600 = model.new_int_var(0, self._anchor_tol, f"over0600_{pid}")
                             model.add(over_0600 >= sum(vars_0600) - sub.shifts_0600h_requested)
-                            anchor_overage_penalty_terms.append(-_ANCHOR_OVERAGE_PENALTY * over_0600)
+                            weight_0600 = (
+                                _ANCHOR_OVERAGE_PENALTY_PREFERRED
+                                if _anchor_preference(pid, sub) == "0600h"
+                                else _ANCHOR_OVERAGE_PENALTY
+                            )
+                            anchor_overage_penalty_terms.append(-weight_0600 * over_0600)
 
         # ----------------------------------------------------------------
         # HC-12: Weekend limit

@@ -195,6 +195,18 @@ class PhysicianConfig:
     # in their own separate, strictly-lower priority tier (see `casual`).
     priority_weight: float = 1.0
 
+    # Manual override for which anchor shift type (2400h or 0600h) this
+    # physician prefers, when they should have to absorb an anchor-shift
+    # overage (see generator_cpsat.py's anchor_overage_penalty_terms).
+    # None (default) means no override — fall back to inferring it from
+    # each month's own submission instead (explicit 0 for one type and a
+    # real positive request for the other is a clear signal even without
+    # a roster-level toggle). Set this only when that per-month inference
+    # isn't enough, e.g. a standing preference that should hold regardless
+    # of what a given month's numbers happen to look like. Valid values:
+    # "2400h", "0600h", or None.
+    anchor_preference: Optional[str] = None
+
     # Validation rule overrides.
     # Keys: "min_valid_days" | "min_valid_blocks" | "min_weekend_days" | "min_anchored_days"
     #     | "min_blocks_per_day" (per-day block threshold for what counts as a
@@ -299,6 +311,11 @@ def _parse_physician(raw: dict) -> PhysicianConfig:
         ),
         combined_headcount=int(sched.get("combined_headcount", 1)),
         priority_weight=float(sched.get("priority_weight", 1.0)),
+        anchor_preference=(
+            sched["anchor_preference"]
+            if sched.get("anchor_preference") in ("2400h", "0600h")
+            else None
+        ),
     )
 
 
@@ -391,6 +408,8 @@ def physician_config_to_raw(cfg: PhysicianConfig) -> dict:
         sched["combined_headcount"] = cfg.combined_headcount
     if cfg.priority_weight != 1.0:
         sched["priority_weight"] = cfg.priority_weight
+    if cfg.anchor_preference in ("2400h", "0600h"):
+        sched["anchor_preference"] = cfg.anchor_preference
     raw["scheduling"] = sched
 
     if cfg.forbidden_sites:

@@ -440,7 +440,7 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
               <span className="ml-2 text-slate-400 font-normal">— longer runs get closer to optimal</span>
             </label>
             <div className="flex gap-2">
-              {[5, 10, 20].map(mins => (
+              {[5, 10, 20, 30].map(mins => (
                 <button
                   key={mins}
                   onClick={() => setTimeLimitMinutes(mins)}

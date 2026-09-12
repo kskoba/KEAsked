@@ -153,6 +153,23 @@ def _int_or(value, default: int) -> int:
         return default
 
 
+def _int_or_stated(value, default: int) -> tuple[int, bool]:
+    """
+    Like _int_or, but also reports whether a value was actually present —
+    a physician who explicitly enters 0 and one who leaves the cell blank
+    both parse to the same int here, but mean opposite things for
+    scheduling (see PhysicianSubmission.shifts_2400h_stated). None
+    specifically means blank; anything else that fails to parse as an int
+    falls back to the same "not stated" treatment.
+    """
+    if value is None:
+        return default, False
+    try:
+        return int(value), True
+    except (TypeError, ValueError):
+        return default, False
+
+
 # --------------------------------------------------------------------------- #
 # Core parser
 # --------------------------------------------------------------------------- #
@@ -187,8 +204,8 @@ def _build_submissions(
         shifts_requested  = _int_or(first[4], 0)
         shifts_min        = _int_or(first[5], shifts_requested)
         shifts_max        = _int_or(first[6], shifts_requested)
-        shifts_0600h      = _int_or(first[7], 0)
-        shifts_2400h      = _int_or(first[8], 0)
+        shifts_0600h, shifts_0600h_stated = _int_or_stated(first[7], 0)
+        shifts_2400h, shifts_2400h_stated = _int_or_stated(first[8], 0)
 
         # Sort rows by date.
         rows_sorted = sorted(rows, key=lambda r: _to_date(r[1]))
@@ -220,6 +237,8 @@ def _build_submissions(
             shifts_max=shifts_max,
             shifts_0600h_requested=shifts_0600h,
             shifts_2400h_requested=shifts_2400h,
+            shifts_0600h_stated=shifts_0600h_stated,
+            shifts_2400h_stated=shifts_2400h_stated,
             days=days,
             source_file=source_file,
         ))

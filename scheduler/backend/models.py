@@ -146,9 +146,21 @@ class PhysicianSubmission:
     # Anchor shift targets read from the Excel submission.
     # shifts_2400h_requested — how many 2400h shifts desired this month (AK59).
     # shifts_0600h_requested — how many 0600h shifts desired this month (AK61).
-    # 0 means not specified; scheduler falls back to the global anchor cap.
+    #
+    # A physician who explicitly types "0" (deliberately wants none) and one
+    # who leaves the cell blank (never said) both parse to the same int 0
+    # here — real submissions confirmed both cases exist for both fields,
+    # and they mean opposite things for scheduling: an explicit 0 is a hard
+    # request to honor, a blank one is no signal to guess from at all. The
+    # *_stated flags below carry that distinction; the plain int fields
+    # stay exactly as before (0 = "no number", never None) so any existing
+    # code doing `> 0` — including the deprecated generator.py, which this
+    # session does not touch — keeps working unchanged. Always check the
+    # matching *_stated flag before treating a 0 here as "not specified".
     shifts_2400h_requested: int = 0
     shifts_0600h_requested: int = 0
+    shifts_2400h_stated: bool = False
+    shifts_0600h_stated: bool = False
 
     days: list[DayAvailability] = field(default_factory=list)
     source_file: str = ""

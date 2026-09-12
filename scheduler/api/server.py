@@ -2148,4 +2148,12 @@ if __name__ == "__main__":
             logging.FileHandler(str(log_path), encoding="utf-8"),
         ],
     )
-    uvicorn.run(app, host="127.0.0.1", port=5000, log_level="warning", access_log=False)
+    # Loopback-only by default — the desktop app only ever needs to reach
+    # its own locally-spawned backend, and this keeps it unreachable from
+    # the rest of the LAN. BACKEND_HOST=0.0.0.0 (set by the Dockerfile)
+    # is required for a container deployment: Docker's -p port mapping
+    # forwards to the container's network interface, not its loopback, so
+    # a service bound to 127.0.0.1 inside a container is unreachable from
+    # outside it no matter how the port is published.
+    bind_host = os.environ.get("BACKEND_HOST", "127.0.0.1")
+    uvicorn.run(app, host=bind_host, port=5000, log_level="warning", access_log=False)

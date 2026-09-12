@@ -44,6 +44,10 @@ COPY tools/ tools/
 
 ENV CONFIG_DIR=/config
 ENV PYTHONUNBUFFERED=1
+# Required for a container: without this the app binds to loopback only,
+# which Docker's -p port mapping cannot reach from outside the container
+# no matter how the port is published (see server.py's bind_host).
+ENV BACKEND_HOST=0.0.0.0
 
 EXPOSE 5000
 

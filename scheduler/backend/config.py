@@ -168,6 +168,33 @@ class PhysicianConfig:
     # handling for the actual priority ordering.
     casual: bool = False
 
+    # If set, this physician's monthly shifts_requested is always treated
+    # as this value, overriding whatever their submission actually says
+    # (including a blank/zero submission). For a physician whose submitted
+    # count is unreliable but who should still get normal scheduling
+    # priority every month (e.g. MacGougan — always request 10). None means
+    # no override; use whatever the submission reports, as normal.
+    default_shifts_requested: Optional[int] = None
+
+    # Number of real people sharing this single roster identity (e.g.
+    # LamRico = Kenneth Lam + Michelle Rico, each submitting their own
+    # identical-values sheet under aliases that both resolve to this one
+    # id). Only one submission survives import-time id resolution, so its
+    # shifts_requested/min/max are multiplied by this factor to reflect the
+    # combined capacity of every person behind the identity. 1 (default)
+    # means a normal single-person identity — no scaling.
+    combined_headcount: int = 1
+
+    # Multiplier on this physician's requested-count scheduling priority
+    # (see generator_cpsat.py's per-physician requested-count bonus). 1.0
+    # (default) is normal priority. Use > 1.0 for a physician who should
+    # get more say over reaching their own requested count than the
+    # general population — e.g. a department chief (Haager, MacGougan)
+    # whose preferences carry more institutional weight. Never applies to
+    # a casual physician regardless of this value — casual physicians stay
+    # in their own separate, strictly-lower priority tier (see `casual`).
+    priority_weight: float = 1.0
+
     # Validation rule overrides.
     # Keys: "min_valid_days" | "min_valid_blocks" | "min_weekend_days" | "min_anchored_days"
     #     | "min_blocks_per_day" (per-day block threshold for what counts as a
@@ -265,6 +292,13 @@ def _parse_physician(raw: dict) -> PhysicianConfig:
         cap_at_requested=bool(sched.get("cap_at_requested", False)),
         special_provisions=bool(sched.get("special_provisions", False)),
         casual=bool(sched.get("casual", False)),
+        default_shifts_requested=(
+            int(sched["default_shifts_requested"])
+            if sched.get("default_shifts_requested") is not None
+            else None
+        ),
+        combined_headcount=int(sched.get("combined_headcount", 1)),
+        priority_weight=float(sched.get("priority_weight", 1.0)),
     )
 
 
@@ -351,6 +385,12 @@ def physician_config_to_raw(cfg: PhysicianConfig) -> dict:
         sched["special_provisions"] = True
     if cfg.casual:
         sched["casual"] = True
+    if cfg.default_shifts_requested is not None:
+        sched["default_shifts_requested"] = cfg.default_shifts_requested
+    if cfg.combined_headcount != 1:
+        sched["combined_headcount"] = cfg.combined_headcount
+    if cfg.priority_weight != 1.0:
+        sched["priority_weight"] = cfg.priority_weight
     raw["scheduling"] = sched
 
     if cfg.forbidden_sites:

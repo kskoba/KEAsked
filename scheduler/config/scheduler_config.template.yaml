@@ -48,12 +48,17 @@ consecutive:
 # Per-physician caps for early and overnight shifts.
 # If a physician specifies counts in their Excel submission
 # (AK59 = 2400h requested, AK61 = 0600h requested), the
-# scheduler targets that number ±1.  If unspecified (0),
-# the total of 0600h + 2400h shifts is capped at anchor_max_total.
+# scheduler targets that number ±1.
+#
+# If 0600h is left unspecified (0), no cap applies at all — only
+# the physician's overall shift-count max (shifts_max) bounds
+# them. If 2400h is left unspecified, default_2400h_cap_unstated
+# still applies as a flat fallback ceiling — night-shift burden
+# is a fairness/wellbeing concern in a way 0600h isn't.
 # ----------------------------------------------------------
 anchor_shifts:
-  anchor_max_total: 4          # max combined 0600h + 2400h when not specified
-  anchor_target_tolerance: 1   # ±1 from physician's stated target
+  anchor_target_tolerance: 1        # ±1 from physician's stated target
+  default_2400h_cap_unstated: 4     # 2400h ceiling when a physician states no 2400h preference at all
 
 # ----------------------------------------------------------
 # Weekend limits

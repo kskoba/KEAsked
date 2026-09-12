@@ -61,8 +61,8 @@ _START_HOURS: dict[str, int] = {
     "1800h": 18,
     "2000h": 20,
     "2400h": 24,   # midnight; kept as 24 so spacing is always positive
-    "DOC": 5,      # Day On Call
-    "NOC": 13,     # Night On Call
+    "DOC": 5,      # Day On Call — 0500h to 1600h
+    "NOC": 16,     # Night On Call — 1600h to 0500h
 }
 
 _MIN_HOURS_BETWEEN_SHIFTS = 23

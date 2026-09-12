@@ -6,9 +6,11 @@ Layout (confirmed from sample KS- June 2026 ... .xlsx):
   Row 3,  Col B+      : Day numbers (1 … 30/31); Col B = day 1
   Row 4,  Col B+      : Day-of-week abbreviations (M/T/W/R/F/S/SU)
   Row 5,  Col B+      : Service Days – "Z" means physician wants to work
+  Row 7,  Col B+      : Day On Call (DOC) – physician types "DOC" on days available
+  Row 19, Col B+      : Night On Call (NOC) – physician types "NOC" on days available
   Row 38, Col AK (37) : shifts_requested  (labelled "N")
 
-  Shift rows (1-based), skip row 7 (DOC on-call) and row 19 (NOC):
+  Shift rows (1-based), rows 7 (DOC) and 19 (NOC) are on-call, not regular shifts:
     Block 0  0600h  : rows  8–11  (all 4 must be non-blank)
     Block 1  0900-1200h : rows 12–16  (all 5 must be non-blank)
     Block 2  1400-1700h : rows 17,18,20,21  (row 19 excluded)
@@ -52,6 +54,9 @@ _N_0600H_COL = 37      # Col AK  — requested 0600h shifts
 _Z_ROW = 5             # "Service Days" row
 _DOW_ROW = 4           # Day-of-week abbreviation row
 _FIRST_DAY_COL = 2     # Col B = day 1
+
+_DOC_ROW = 7           # Day On Call — physician types "DOC" on days they're available
+_NOC_ROW = 19          # Night On Call — physician types "NOC" on days they're available
 
 # Physician-facing day-of-week abbreviations, keyed by Python's
 # date.weekday() (Monday=0 ... Sunday=6). "R" for Thursday (not "T") is
@@ -181,12 +186,20 @@ def _parse_worksheet(
             if _is_filled(_cell(ws, row, col))
         }
 
+        # --- On-call availability (Day On Call / Night On Call) — physicians
+        # type "DOC" / "NOC" on the days they're available for each, on their
+        # own dedicated rows separate from the regular shift grid. ---
+        doc_available = _is_filled(_cell(ws, _DOC_ROW, col))
+        noc_available = _is_filled(_cell(ws, _NOC_ROW, col))
+
         days.append(
             DayAvailability(
                 date=date,
                 wants_to_work=wants,
                 available_blocks=frozenset(available_blocks),
                 requested_shifts=frozenset(available_shifts),
+                doc_available=doc_available,
+                noc_available=noc_available,
             )
         )
 

@@ -1526,7 +1526,7 @@ class ScheduleGenerator:
           - Next-day rest: the day after an on-call must be free of regular shifts.
           - Previous-day rest: the regular shift worked the day before (if
             any) must respect the same 23-to-36-hour spacing window as
-            regular shifts, using DOC=0500h/NOC=1300h as the on-call start
+            regular shifts, using DOC=0500h/NOC=1600h as the on-call start
             time (see shifts.py's is_spacing_ok — this is what blocks e.g.
             a 2400h shift followed by DOC the next morning).
           - DOC preferred during the day; NOC preferred at night — both are

@@ -334,6 +334,74 @@ def unify_physician_names(
 
 
 # ---------------------------------------------------------------------------
+# Anchor-shift (0600h / 2400h) requested-count loading
+#
+# These come from a DIFFERENT file shape than the schedule-grid outputs
+# this tool otherwise parses — the individual physician REQUEST submission
+# files (row 1 col A = name, row 59/61 col AK(37) = stated 2400h/0600h
+# target — see scheduler/backend/importer.py's _N_2400H_ROW/_N_0600H_ROW).
+# Re-implemented standalone here (not imported from the backend package)
+# to keep this tool self-contained, matching its existing style.
+# ---------------------------------------------------------------------------
+
+_REQ_NAME_ROW = 1
+_REQ_NAME_COL = 1
+_REQ_2400H_ROW = 59
+_REQ_0600H_ROW = 61
+_REQ_ANCHOR_COL = 37  # Col AK
+
+
+def load_anchor_requests(
+    requests_dir: str, roster_key_map: dict[str, str],
+) -> dict[str, tuple[int, int]]:
+    """
+    Reads every individual physician request .xlsx in `requests_dir` for
+    their stated 2400h/0600h target counts.
+
+    Returns {roster-resolved key: (2400h_requested, 0600h_requested)},
+    keyed the same way unify_physician_names groups schedule assignments
+    (roster id where known, else canon_name()), so counts from a parsed
+    Schedule can be joined against these requests directly.
+    """
+    requests: dict[str, tuple[int, int]] = {}
+    if not requests_dir or not os.path.isdir(requests_dir):
+        return requests
+    for fname in sorted(os.listdir(requests_dir)):
+        if not fname.lower().endswith(".xlsx") or fname.startswith("~$"):
+            continue
+        path = os.path.join(requests_dir, fname)
+        try:
+            wb = openpyxl.load_workbook(path, data_only=True)
+            ws = wb.worksheets[0]
+            name = str(ws.cell(row=_REQ_NAME_ROW, column=_REQ_NAME_COL).value or "").strip()
+            req_2400 = int(ws.cell(row=_REQ_2400H_ROW, column=_REQ_ANCHOR_COL).value or 0)
+            req_0600 = int(ws.cell(row=_REQ_0600H_ROW, column=_REQ_ANCHOR_COL).value or 0)
+        except Exception:
+            continue
+        if not name or (req_2400 <= 0 and req_0600 <= 0):
+            continue
+        key = canon_name(name)
+        key = roster_key_map.get(key, key)
+        requests[key] = (req_2400, req_0600)
+    return requests
+
+
+def anchor_counts_by_key(
+    schedule: 'Schedule', roster_key_map: dict[str, str],
+) -> dict[str, tuple[int, int]]:
+    """{roster-resolved key: (2400h_count, 0600h_count)} for one schedule."""
+    counts: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+    for a in schedule.assignments:
+        key = canon_name(a.physician)
+        key = roster_key_map.get(key, key)
+        if is_2400(a.time_code):
+            counts[key][0] += 1
+        elif start_hour(a.time_code) == 6:
+            counts[key][1] += 1
+    return {k: (v[0], v[1]) for k, v in counts.items()}
+
+
+# ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
 @dataclass
@@ -1180,6 +1248,80 @@ def _section_swings(s1: Schedule, s2: Schedule, threshold: int = 10) -> str:
     return "\n".join(lines)
 
 
+def _section_anchor_overage(
+    s1: Schedule, s2: Schedule,
+    requests: dict[str, tuple[int, int]],
+    roster_key_map: dict[str, str],
+    tolerance: int = 1,
+) -> str:
+    """
+    Flags physicians who received more 2400h or 0600h shifts than they
+    explicitly stated on their own submission (cells AK59/AK61), tracked
+    against the scheduler's own built-in tolerance (scheduler_config.yaml's
+    anchor_target_tolerance — the hard cap allows requested+tolerance, not
+    requested exactly). Landing exactly at that ceiling is within the hard
+    cap by design, not a bug on its own — this section exists to show
+    whether that tolerance is being used as a rare exception or as a
+    routine extra shift for most anchor-requesting physicians, which is
+    the actual undesirable pattern to watch for.
+
+    Only prints when `requests` is non-empty (i.e. --requests-dir was
+    given) — there's nothing to compare against otherwise.
+    """
+    if not requests:
+        return ""
+
+    c1 = anchor_counts_by_key(s1, roster_key_map)
+    c2 = anchor_counts_by_key(s2, roster_key_map)
+
+    lines = [_hdr("ANCHOR SHIFT OVERAGE  (2400h / 0600h vs. own stated request)")]
+    lines.append(f"  Hard cap allows requested + {tolerance} (scheduler_config.yaml's anchor_target_tolerance)")
+    lines.append("")
+
+    detail_rows: list[str] = []
+
+    for label, idx in (("2400h", 0), ("0600h", 1)):
+        def _tally(counts: dict[str, tuple[int, int]]):
+            total = over = beyond = 0
+            rows = []
+            for key, req_pair in requests.items():
+                req = req_pair[idx]
+                if req <= 0:
+                    continue
+                total += 1
+                got = counts.get(key, (0, 0))[idx]
+                if got > req:
+                    over += 1
+                    rows.append((key, req, got))
+                    if got > req + tolerance:
+                        beyond += 1
+            return total, over, beyond, rows
+
+        tot1, over1, beyond1, rows1 = _tally(c1)
+        tot2, over2, beyond2, rows2 = _tally(c2)
+
+        pct1 = _pct(over1, tot1) if tot1 else "-"
+        pct2 = _pct(over2, tot2) if tot2 else "-"
+        c_over1 = yellow(f"{over1}/{tot1} ({pct1})") if over1 else green(f"{over1}/{tot1}")
+        c_over2 = yellow(f"{over2}/{tot2} ({pct2})") if over2 else green(f"{over2}/{tot2}")
+        lines.append(_row2(f"{label} over own request", c_over1, c_over2))
+        if beyond1 or beyond2:
+            lines.append(_row2(f"  ...beyond +{tolerance} tolerance", red(str(beyond1)), red(str(beyond2))))
+
+        if rows1:
+            detail_rows.append(f"  {label} over-request in {s1.name}:")
+            for key, req, got in sorted(rows1, key=lambda r: r[0]):
+                detail_rows.append(f"    {_truncate(key, 20):<20}  requested={req}  actual={got}")
+
+    lines.append("")
+    if detail_rows:
+        lines.extend(detail_rows)
+    else:
+        lines.append(f"  {green('No anchor over-requests in either schedule.')}")
+
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Consecutive violations — cleaner implementation
 # ---------------------------------------------------------------------------
@@ -1247,6 +1389,7 @@ def print_report(
     physician_max_consec: Optional[dict[str, int]] = None,
     roster_key_map: Optional[dict[str, str]] = None,
     swing_threshold: int = 10,
+    anchor_requests: Optional[dict[str, tuple[int, int]]] = None,
 ) -> None:
     print()
     print(bold("=" * 78))
@@ -1262,6 +1405,8 @@ def print_report(
     print(_section_singletons(s1, s2))
     print(_section_any_singletons(s1, s2))
     print(_section_swings(s1, s2, swing_threshold))
+    if anchor_requests:
+        print(_section_anchor_overage(s1, s2, anchor_requests, roster_key_map or {}))
     print(_section_consecutive_v2(s1, s2, max_consec, physician_max_consec, roster_key_map))
     print(_section_physician_shifts(s1, s2))
     print(_section_summary(s1, s2, target_a, swing_threshold))
@@ -1326,6 +1471,15 @@ def main() -> None:
             "Matches the soft penalty in generator_cpsat.py."
         ),
     )
+    parser.add_argument(
+        "--requests-dir", default=None, metavar="PATH",
+        help=(
+            "Directory of individual physician REQUEST submission .xlsx files "
+            "(not a schedule output) — enables the anchor-shift-overage section, "
+            "which flags physicians who received more 2400h/0600h shifts than "
+            "they explicitly stated (cells AK59/AK61). Omit to skip that section."
+        ),
+    )
     args = parser.parse_args()
 
     if args.no_color:
@@ -1365,6 +1519,19 @@ def main() -> None:
 
     roster_key_map = build_roster_key_map(yaml_path) if yaml_path else {}
     unify_physician_names(s1, s2, roster_key_map)
+
+    anchor_requests = None
+    if args.requests_dir:
+        anchor_requests = load_anchor_requests(args.requests_dir, roster_key_map)
+        if anchor_requests:
+            print(f"Loaded anchor-shift requests for {len(anchor_requests)} physicians from {args.requests_dir}")
+        else:
+            print(
+                f"WARNING: no anchor-shift requests found in {args.requests_dir}; "
+                "skipping the anchor-overage section.",
+                file=sys.stderr,
+            )
+
     print_report(
         s1, s2,
         target_a=args.target_a,
@@ -1372,6 +1539,7 @@ def main() -> None:
         physician_max_consec=phys_max_consec,
         roster_key_map=roster_key_map,
         swing_threshold=args.swing_threshold,
+        anchor_requests=anchor_requests,
     )
 
 

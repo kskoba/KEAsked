@@ -85,6 +85,15 @@ function weekLabel(weekDates) {
 function truncateName(name, max = 13) {
   if (!name) return ''
   if (name.length <= max) return name
+  const commaIdx = name.indexOf(',')
+  if (commaIdx !== -1) {
+    // "Lastname, F" display form — the surname (before the comma) is
+    // already the most identifying part. Splitting on whitespace here
+    // would grab the trailing initial instead (e.g. "L" for
+    // "Francescutti, L"), so truncate the surname itself.
+    const surname = name.slice(0, commaIdx)
+    return surname.length <= max ? surname : surname.slice(0, max - 1) + '…'
+  }
   const parts = name.trim().split(/\s+/)
   if (parts.length > 1) {
     const last = parts[parts.length - 1]
@@ -142,9 +151,9 @@ export default function ScheduleGrid({ scheduleData, onOpenConflict, onReplaceAs
         <h2 className="text-lg font-bold text-slate-800">{monthName} {year} Schedule</h2>
         <div className="flex items-center gap-2 text-xs">
           <span className="inline-block w-3 h-3 rounded-sm bg-blue-100" />
-          <span className="text-slate-600">Group A (RAH A/B)</span>
+          <span className="text-slate-600">Acute (RAH A/B)</span>
           <span className="inline-block w-3 h-3 rounded-sm bg-emerald-100 ml-2" />
-          <span className="text-slate-600">Group B</span>
+          <span className="text-slate-600">Non-acute</span>
           <span className="inline-block w-3 h-3 rounded-sm bg-red-200 ml-2" />
           <span className="text-slate-600">Unfilled</span>
           <span className="inline-block w-3 h-3 rounded-full bg-amber-400 ml-2" />

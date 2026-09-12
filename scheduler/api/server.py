@@ -14,6 +14,7 @@ import asyncio
 import calendar
 import datetime
 import io
+import math
 import re
 import traceback
 from pathlib import Path
@@ -719,6 +720,13 @@ def update_physician(physician_id: str, body: PhysicianUpdateRequest) -> Physici
                    f"Valid keys: {sorted(VALID_RULE_OVERRIDES)}",
         )
 
+    # default_shifts_requested / combined_headcount / priority_weight aren't
+    # exposed in the roster editor's form, so they must be carried forward
+    # from the existing config rather than left to default away — otherwise
+    # any unrelated edit through the UI silently wipes them (confirmed: this
+    # is exactly what happened to MacGougan's default_shifts_requested).
+    existing = roster[physician_id]
+
     cfg = PhysicianConfig(
         id=physician_id,
         name=body.name,
@@ -746,6 +754,9 @@ def update_physician(physician_id: str, body: PhysicianUpdateRequest) -> Physici
         special_provisions=body.special_provisions,
         casual=body.casual,
         rule_overrides=dict(body.rule_overrides),
+        default_shifts_requested=existing.default_shifts_requested,
+        combined_headcount=existing.combined_headcount,
+        priority_weight=existing.priority_weight,
     )
 
     try:
@@ -857,6 +868,68 @@ def _auto_override_flagged_physicians(submissions: list[PhysicianSubmission], ro
             _state["overrides"].setdefault(sub.physician_id, set()).update(error_rules)
 
 
+def _apply_shift_count_overrides(submissions: list[PhysicianSubmission], roster: dict) -> None:
+    """
+    Apply two per-physician shift-count adjustments from physicians.yaml,
+    after _apply_roster has resolved sub.physician_id to the roster's
+    canonical id:
+
+    - default_shifts_requested: always use this value as shifts_requested,
+      regardless of what the submission itself says (including a blank/
+      zero submission) — for a physician whose reported count is
+      unreliable but who should still get normal scheduling priority
+      every month. shifts_max is floored to at least this value too, so a
+      stale lower max can't silently undercut the overridden request.
+    - combined_headcount: multiply shifts_requested/min/max by this factor
+      — for a roster identity shared by more than one real person (each
+      submitting their own identical-values sheet under aliases that all
+      resolve to the same id), since only one of their submissions
+      survives id resolution and its counts reflect just one person's
+      share of the combined capacity.
+    """
+    for sub in submissions:
+        cfg = roster.get(sub.physician_id)
+        if not cfg:
+            continue
+        if cfg.default_shifts_requested is not None:
+            sub.shifts_requested = cfg.default_shifts_requested
+            if sub.shifts_max < cfg.default_shifts_requested:
+                sub.shifts_max = cfg.default_shifts_requested
+        if cfg.combined_headcount != 1:
+            sub.shifts_requested *= cfg.combined_headcount
+            sub.shifts_min *= cfg.combined_headcount
+            sub.shifts_max *= cfg.combined_headcount
+
+
+def _apply_casual_availability_default(submissions: list[PhysicianSubmission], roster: dict) -> None:
+    """
+    A casual physician who marks days available but never fills in a
+    monthly shift-count (shifts_requested == 0) hasn't said "I want zero
+    shifts" — they just didn't state a number. Treat their requested count
+    as however many days they marked available (wants_to_work), matching
+    how the human scheduler has read this in practice (e.g. Felicity Brown
+    marked 2 days available with no stated count and was scheduled for
+    exactly 2 shifts).
+
+    A casual physician who DOES state a count (e.g. Gill) keeps that value
+    as their max, unaffected by this — this only fills in a genuinely
+    unstated number. Only applies to casual physicians; a non-casual
+    physician's blank submission is left for the existing
+    effective_requested fallback in generator_cpsat.py to handle. Does not
+    change scheduling priority — casual physicians remain lowest-priority
+    regardless of how their requested count was determined.
+    """
+    for sub in submissions:
+        cfg = roster.get(sub.physician_id)
+        if not cfg or not cfg.casual or sub.shifts_requested > 0:
+            continue
+        available_days = sum(1 for d in sub.days if d.wants_to_work)
+        if available_days > 0:
+            sub.shifts_requested = available_days
+            if sub.shifts_max < available_days:
+                sub.shifts_max = available_days
+
+
 @app.post("/api/import", response_model=ImportDirectoryResponse)
 def import_submissions(body: ImportRequest) -> ImportDirectoryResponse:
     """Import all .xlsx files from a directory for the given year/month."""
@@ -873,6 +946,8 @@ def import_submissions(body: ImportRequest) -> ImportDirectoryResponse:
     _state["overrides"] = {}
     unresolved = _apply_roster(submissions, roster)
     _auto_override_flagged_physicians(submissions, roster)
+    _apply_shift_count_overrides(submissions, roster)
+    _apply_casual_availability_default(submissions, roster)
     results = _build_import_results(submissions, unresolved, roster)
     _state.update(submissions=submissions, roster=roster, scheduler_config=scheduler_cfg,
                   year=body.year, month=body.month, directory=body.directory, source_file=None)
@@ -899,6 +974,8 @@ def import_flat(body: ImportFlatRequest) -> ImportDirectoryResponse:
     _state["overrides"] = {}
     unresolved = _apply_roster(submissions, roster)
     _auto_override_flagged_physicians(submissions, roster)
+    _apply_shift_count_overrides(submissions, roster)
+    _apply_casual_availability_default(submissions, roster)
     results = _build_import_results(submissions, unresolved, roster)
     _state.update(submissions=submissions, roster=roster, scheduler_config=scheduler_cfg,
                   year=body.year, month=body.month, directory=None, source_file=str(file_path))
@@ -1248,8 +1325,13 @@ async def generate(body: GenerateCachedRequest) -> ScheduleResponse:
     def progress_cb(current: int, total: int, best_score: float) -> None:
         _state["progress"]["current"] = current
         # Derive approximate unfilled count from score: score = -unfilled*1000 + ...
-        # Just show the raw best score for now
-        _state["progress"]["best_unfilled"] = round(-best_score / 1000)
+        # Just show the raw best score for now. best_score can be +/-inf if
+        # the solver hasn't found any solution yet — round()/int() can't
+        # convert that, so fall back to None (unknown) rather than crashing.
+        if math.isfinite(best_score):
+            _state["progress"]["best_unfilled"] = round(-best_score / 1000)
+        else:
+            _state["progress"]["best_unfilled"] = None
 
     try:
         if use_cpsat:

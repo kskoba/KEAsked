@@ -7,7 +7,7 @@ const SCHEDULING_RULES = [
   { id: 'consecutive_limit', label: 'Consecutive shift limit', desc: 'No physician may work more than a defined number of consecutive days.' },
   { id: 'forbidden_sites', label: 'Forbidden sites', desc: 'Some physicians cannot be assigned to specific sites (e.g., no paediatric experience).' },
   { id: 'paired_exclusions', label: 'Paired exclusions', desc: 'Certain physician pairs cannot be scheduled on the same shift.' },
-  { id: 'group_mix', label: 'Group A/B mix', desc: 'The schedule must maintain the required ratio of Group A vs Group B physicians.' },
+  { id: 'group_mix', label: 'Acute/Non-acute mix', desc: 'The schedule must maintain the required ratio of Acute vs Non-acute shifts.' },
   { id: 'singleton_rules', label: 'Singleton rules', desc: 'Specific shifts require a designated lead physician (singleton).' },
   { id: 'night_q_limit', label: 'Night call limit', desc: 'Physicians have stated maximum night/overnight calls per period.' },
   { id: 'pref_respected', label: 'Preference blocks', desc: 'Physician-submitted preference blocks (want/avoid/unavailable) are respected.' },
@@ -56,14 +56,18 @@ export default function Sidebar({ scheduleData, importResult = null, physicianVi
     return map
   }, [importResult])
 
-  // Per-physician Group A/B breakdown computed from assignments
+  // Per-physician Acute/Non-acute breakdown computed from assignments.
+  // Keyed by physician_id — must match physician_counts' keys (also
+  // physician_id, see generator.py/generator_cpsat.py's _compute_stats),
+  // not physician_name, or every lookup below silently misses and falls
+  // back to the 50/50 default.
   const physicianGroupCounts = useMemo(() => {
     const counts = {}
     assignments.forEach(a => {
-      const name = a.physician_name || a.physician_id
-      if (!counts[name]) counts[name] = { a: 0, b: 0 }
-      if (a.shift?.site_group === 'A') counts[name].a++
-      else counts[name].b++
+      const key = a.physician_id
+      if (!counts[key]) counts[key] = { a: 0, b: 0 }
+      if (a.shift?.site_group === 'A') counts[key].a++
+      else counts[key].b++
     })
     return counts
   }, [assignments])
@@ -254,10 +258,10 @@ export default function Sidebar({ scheduleData, importResult = null, physicianVi
                                 {singletons > 0 ? singletons : '-'}
                               </span>
                             </div>
-                            {/* Group A/B balance bar with 40% target line */}
+                            {/* Acute/Non-acute balance bar with 40% target line */}
                             <div
                               className="relative h-1.5 rounded-full overflow-hidden flex mt-0.5"
-                              title={`Group A: ${g.a} (${Math.round(aPct)}%)  Group B: ${g.b} (${Math.round(100 - aPct)}%)  Target: 40% A / 60% B`}
+                              title={`Acute: ${g.a} (${Math.round(aPct)}%)  Non-acute: ${g.b} (${Math.round(100 - aPct)}%)  Target: 40% Acute / 60% Non-acute`}
                             >
                               <div className="h-full bg-blue-400 transition-all" style={{ width: `${aPct}%` }} />
                               <div className="h-full bg-emerald-400 flex-1" />

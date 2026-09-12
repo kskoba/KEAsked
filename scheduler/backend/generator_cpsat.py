@@ -22,7 +22,6 @@ import logging
 import os
 import sys
 from collections import defaultdict
-from dataclasses import replace as _dc_replace
 from typing import Callable, Optional
 
 _FROZEN = getattr(sys, 'frozen', False)
@@ -36,7 +35,6 @@ from scheduler.backend.generator import (
     ScheduleStats,
     UnfilledSlot,
     ViolationReason,
-    _DEFAULT_ANCHOR_MAX,
     _DEFAULT_MAX_CONSEC,
     _DEFAULT_MAX_WEEKENDS,
     _HARD_VIOLATION_RULES,
@@ -141,8 +139,11 @@ class CpsatScheduleGenerator:
 
         # Config shortcuts (mirrors ScheduleGenerator.__init__)
         anchor_cfg = config.get("anchor_shifts", {})
-        self._anchor_max: int = anchor_cfg.get("anchor_max_total", _DEFAULT_ANCHOR_MAX)
         self._anchor_tol: int = anchor_cfg.get("anchor_target_tolerance", 1)
+        # Fallback 2400h cap for a physician who stated no 2400h preference
+        # at all — see HC-11's use of it for why this exists only for
+        # nights and not 0600h.
+        self._default_2400h_cap_unstated: int = anchor_cfg.get("default_2400h_cap_unstated", 4)
         self._max_weekends: int = (
             config.get("weekends", {}).get("max_weekends_per_month", _DEFAULT_MAX_WEEKENDS)
         )
@@ -195,40 +196,29 @@ class CpsatScheduleGenerator:
         """
         Solve the scheduling problem with CP-SAT and return a ScheduleResult.
 
-        If any physician in the roster is flagged `casual`, this runs a
-        3-phase sequential solve instead of a single pass, to *guarantee*
-        (not just weight toward) the priority order: (1) every non-casual
-        physician gets their own requested shift count, (2) only then are
-        casual physicians filled up to their own requested count, (3) only
-        then do non-casual physicians get filled beyond requested, up to
-        their real max. Casual physicians are never scheduled beyond their
-        own requested count — there's no equivalent of phase 3 for them.
-        See _generate_casual_priority for the phase mechanics; each phase
-        is a full CP-SAT solve with every existing hard/soft rule intact,
-        just scoped to a subset of physicians and remaining open slots —
-        weight-tuning a single solve can't *guarantee* this ordering the
-        way locking in phases between solves can.
+        If any physician in the roster is flagged `casual`, the single model
+        built here adds two extra "lexicographic" solves before the final
+        one, to *guarantee* (not just weight toward) the priority order:
+        (1) every non-casual physician gets their own requested shift count,
+        (2) only then are casual physicians filled up to their own requested
+        count, (3) only then does the full objective (which lets non-casual
+        physicians go beyond requested, up to their real max) get optimized.
+        Casual physicians are hard-capped at their own requested count via
+        HC-7 regardless — there's no tier that lets them exceed it.
 
-        See _generate_single_phase for the actual solve parameters
-        (time_limit, num_workers, progress_callback, cancel_check).
+        This all happens on ONE persistent CpModel with every hard/soft
+        constraint built exactly once for every physician (see
+        _generate_single_phase): each tier just re-maximizes a different
+        objective on that same model and then adds a constraint locking in
+        the achieved value before the next tier runs, so later tiers can
+        never undo an earlier tier's guarantee. This is necessary — three
+        separate models (one per phase) would have no way to know what
+        another phase already assigned, so per-physician caps and
+        consecutive-shift history wouldn't carry over between them.
         """
-        if self._has_casual_submissions():
-            return self._generate_casual_priority(
-                year, month, time_limit, num_workers, progress_callback, cancel_check
-            )
         return self._generate_single_phase(
             year, month, time_limit, num_workers, progress_callback, cancel_check
         )
-
-    def _cfg_for(self, pid: str) -> Optional[PhysicianConfig]:
-        return (
-            self.roster.get(pid)
-            or self._roster_lower.get(pid.lower())
-            or self._roster_by_name.get(pid.lower())
-        )
-
-    def _has_casual_submissions(self) -> bool:
-        return any(getattr(self._cfg_for(pid), "casual", False) for pid in self.submissions)
 
     def _generate_single_phase(
         self,
@@ -238,7 +228,6 @@ class CpsatScheduleGenerator:
         num_workers: Optional[int] = None,
         progress_callback: Optional[Callable] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
-        allowed_slots: Optional[frozenset[tuple[int, str]]] = None,
     ) -> ScheduleResult:
         """
         Solve the scheduling problem with CP-SAT and return a ScheduleResult.
@@ -267,11 +256,6 @@ class CpsatScheduleGenerator:
             When it returns True, the solver is stopped early via
             StopSearch() and the best solution found so far is returned —
             same code path as hitting the time limit, just sooner.
-        allowed_slots:
-            Internal — used by _generate_casual_priority to restrict a
-            phase's solve to only the (day_index, shift_code) slots a
-            previous phase left unfilled. None means no restriction (every
-            slot is in play), the normal single-phase behavior.
         """
         if num_workers is None:
             num_workers = max(1, round((os.cpu_count() or 4) * 0.75))
@@ -316,20 +300,6 @@ class CpsatScheduleGenerator:
                             f"s_{pid}_{d_idx}_{shift.code}"
                         )
 
-        # Restrict this phase to a subset of slots (casual-priority phases
-        # 2/3 — see _generate_casual_priority) by hard-forcing every other
-        # slot to stay empty for everyone in this solve, regardless of
-        # anyone's individual availability. None (the normal case) means
-        # no restriction at all.
-        if allowed_slots is not None:
-            for d_idx in range(len(all_dates)):
-                for block in BLOCKS:
-                    for shift in block:
-                        if (d_idx, shift.code) not in allowed_slots:
-                            model.add(
-                                sum(shifts[(pid, d_idx, shift.code)] for pid in pids) == 0
-                            )
-
         # ----------------------------------------------------------------
         # Hard constraint helpers
         # ----------------------------------------------------------------
@@ -354,14 +324,6 @@ class CpsatScheduleGenerator:
             if cfg and cfg.max_weekends is not None:
                 return cfg.max_weekends
             return self._max_weekends
-
-        def _anchor_limit(pid: str, shift: Shift) -> int:
-            sub = self.submissions[pid]
-            if shift.time == "2400h" and sub.shifts_2400h_requested > 0:
-                return sub.shifts_2400h_requested + self._anchor_tol
-            if shift.time == "0600h" and sub.shifts_0600h_requested > 0:
-                return sub.shifts_0600h_requested + self._anchor_tol
-            return self._anchor_max
 
         # ----------------------------------------------------------------
         # HC-1: At most one physician per slot per day
@@ -438,12 +400,18 @@ class CpsatScheduleGenerator:
                             continue
 
         # ----------------------------------------------------------------
-        # HC-7: Max shifts hard cap (cap_at_requested overrides shifts_max)
+        # HC-7: Max shifts hard cap (cap_at_requested / casual override shifts_max)
+        # Casual physicians are always hard-capped at their own requested
+        # count — there is no tier that lets them go beyond it, unlike
+        # non-casual physicians who may be filled up to shifts_max once
+        # every non-casual physician has their requested count (see the
+        # lexicographic tiers below).
         # ----------------------------------------------------------------
         for pid in pids:
             sub = self.submissions[pid]
             cfg = _get_cfg(pid)
-            if cfg and cfg.cap_at_requested and sub.shifts_requested > 0:
+            is_casual = bool(cfg and cfg.casual)
+            if is_casual or (cfg and cfg.cap_at_requested and sub.shifts_requested > 0):
                 hard_max = sub.shifts_requested
             else:
                 hard_max = sub.shifts_max if sub.shifts_max > 0 else sub.shifts_requested
@@ -632,6 +600,34 @@ class CpsatScheduleGenerator:
         # physicians like LamRico who request 16 2400h shifts, the global
         # cap of 4 must NOT override their explicit per-physician request —
         # doing so is the bug that caused them to receive only 4-6 shifts.
+        #
+        # anchor_overage_penalty_terms: the hard cap above allows a
+        # physician up to their own stated 2400h/0600h request PLUS
+        # anchor_target_tolerance — a genuine safety valve for when a slot
+        # would otherwise go unfilled, mirroring how a human scheduler
+        # occasionally has to ask someone for "just one more" night. But
+        # with no cost attached, the solver was reaching for that valve
+        # constantly rather than rarely: a real October run gave ~38-40%
+        # of anchor-requesting physicians one more 2400h/0600h than they
+        # asked for, vs. under 7% in the human-built schedule for the same
+        # month. This penalty makes using the tolerance actually cost
+        # something, so it only gets spent when a slot genuinely can't be
+        # filled any other way — the fill reward (~1000+/shift) still
+        # outweighs this penalty when that's truly the only option.
+        #
+        # 250 wasn't enough on its own: a follow-up real run still pushed
+        # 2400h overage on 8 physicians, and checking every one of those
+        # nights via the candidate-eligibility logic found a fully clean,
+        # unused alternative candidate in every single case (frequently a
+        # physician not even at their own cap yet) — i.e. every instance
+        # was avoidable, not need-driven. 250 could still lose out to a
+        # combination of other secondary preferences (group balance,
+        # clustering, weekend spread — each in the 20-35 range, or the
+        # 300-weighted long-gap penalty). Raised to 500, comfortably above
+        # every other secondary term, so this only yields when truly
+        # nothing else can fill the slot.
+        anchor_overage_penalty_terms = []
+        _ANCHOR_OVERAGE_PENALTY = 500
         for pid in pids:
             sub = self.submissions[pid]
             anchor_vars = []
@@ -642,41 +638,59 @@ class CpsatScheduleGenerator:
                             anchor_vars.append(shifts[(pid, d_idx, shift.code)])
 
             if anchor_vars:
-                pid_cap_2400 = 0
-                pid_cap_0600 = 0
+                vars_2400 = [
+                    shifts[(pid, d_idx, shift.code)]
+                    for d_idx in range(len(all_dates))
+                    for block in BLOCKS
+                    for shift in block
+                    if shift.time == "2400h"
+                ]
+                vars_0600 = [
+                    shifts[(pid, d_idx, shift.code)]
+                    for d_idx in range(len(all_dates))
+                    for block in BLOCKS
+                    for shift in block
+                    if shift.time == "0600h"
+                ]
 
                 # Per-physician 2400h cap
                 if sub.shifts_2400h_requested > 0:
                     pid_cap_2400 = sub.shifts_2400h_requested + self._anchor_tol
-                    vars_2400 = [
-                        shifts[(pid, d_idx, shift.code)]
-                        for d_idx in range(len(all_dates))
-                        for block in BLOCKS
-                        for shift in block
-                        if shift.time == "2400h"
-                    ]
                     if vars_2400:
                         model.add(sum(vars_2400) <= pid_cap_2400)
+                        if self._anchor_tol > 0:
+                            over_2400 = model.new_int_var(0, self._anchor_tol, f"over2400_{pid}")
+                            model.add(over_2400 >= sum(vars_2400) - sub.shifts_2400h_requested)
+                            anchor_overage_penalty_terms.append(-_ANCHOR_OVERAGE_PENALTY * over_2400)
+                elif vars_2400:
+                    # No stated 2400h preference at all. Unlike 0600h below,
+                    # this still gets a firm fallback ceiling: night-shift
+                    # burden is a fairness/wellbeing concern in a way early
+                    # starts aren't, so leaving it fully unbounded risks
+                    # quietly loading someone up with midnight shifts just
+                    # because they left the field blank, not because they
+                    # want or can handle it. Kept deliberately conservative
+                    # (flat, not tied to their total shift count) until
+                    # there's a reliable way to know who actually prefers
+                    # nights.
+                    model.add(sum(vars_2400) <= self._default_2400h_cap_unstated)
 
-                # Per-physician 0600h cap
+                # Per-physician 0600h cap — only when explicitly stated.
+                # No fallback ceiling when unstated: a guessed default here
+                # was tried (flat, then proportional to total shifts) and
+                # confirmed wrong against real data — real physicians who
+                # state no anchor preference take on far more than any
+                # guess would allow. 0600h carries none of 2400h's
+                # fairness/wellbeing concern, so there's no reason to guess
+                # a limit here the way there is for nights.
                 if sub.shifts_0600h_requested > 0:
                     pid_cap_0600 = sub.shifts_0600h_requested + self._anchor_tol
-                    vars_0600 = [
-                        shifts[(pid, d_idx, shift.code)]
-                        for d_idx in range(len(all_dates))
-                        for block in BLOCKS
-                        for shift in block
-                        if shift.time == "0600h"
-                    ]
                     if vars_0600:
                         model.add(sum(vars_0600) <= pid_cap_0600)
-
-                # Combined cap: use global default only when per-physician
-                # requested totals don't already exceed it.  This prevents the
-                # global cap from silently overriding explicit high-volume requests.
-                explicit_total = pid_cap_2400 + pid_cap_0600
-                effective_cap = max(self._anchor_max, explicit_total)
-                model.add(sum(anchor_vars) <= effective_cap)
+                        if self._anchor_tol > 0:
+                            over_0600 = model.new_int_var(0, self._anchor_tol, f"over0600_{pid}")
+                            model.add(over_0600 >= sum(vars_0600) - sub.shifts_0600h_requested)
+                            anchor_overage_penalty_terms.append(-_ANCHOR_OVERAGE_PENALTY * over_0600)
 
         # ----------------------------------------------------------------
         # HC-12: Weekend limit
@@ -838,21 +852,54 @@ class CpsatScheduleGenerator:
                 model.add(sum(day_vars) == w)
                 worked_bool[(pid, d_idx)] = w
 
+        # requested_bonus_by_pid captures each physician's own bonus expression
+        # so the lexicographic tiers below (normal-vs-casual priority) can sum
+        # a subset of them into a tier-specific objective. Every physician
+        # not flagged casual is "normal" for this purpose.
+        #
+        # Split into two tiers (first half of requested vs. second half)
+        # instead of one flat-weight bonus, so the marginal value of a
+        # physician's shifts decreases as they approach their own requested
+        # count. A flat per-shift bonus makes the objective indifferent
+        # between giving a contested slot to someone already close to their
+        # cap vs. someone still far below it — both are worth the same +1
+        # marginal unit — so scarce slots can end up spread thin across many
+        # people instead of actually closing anyone's gap (confirmed via a
+        # real run: Lam-Rico and MacGougan, both with real availability and
+        # a real target, landed far under it while other physicians got
+        # topped up instead). Weighting the first half higher makes closing
+        # a large existing gap worth more than incrementally topping off
+        # someone already near their own target.
+        #
+        # priority_weight (physicians.yaml) scales both tiers for a
+        # physician whose requested count should carry more weight than the
+        # general population (e.g. a department chief) — never applied to a
+        # casual physician, who stays in their own separate, strictly-lower
+        # priority tier regardless of this value.
+        requested_bonus_by_pid: dict[str, object] = {}
         deficit_penalty_terms = []
         for pid in pids:
             sub = self.submissions[pid]
+            cfg = _get_cfg(pid)
             effective_requested = sub.shifts_requested
             if effective_requested == 0 and sub.shifts_max > 0:
                 effective_requested = min(10, sub.shifts_max)
 
             if effective_requested > 0:
-                # Capped bonus: strongly rewards filling up to requested count.
-                # new_int_var upper-bound = effective_requested, and the add()
-                # constraint forces bonus <= actual assigned count. The maximiser
-                # will push bonus up to min(assigned, requested).
-                bonus = model.new_int_var(0, effective_requested, f"reqbonus_{pid}")
-                model.add(bonus <= physician_shift_exprs[pid])
-                deficit_penalty_terms.append(50 * bonus)
+                priority = (cfg.priority_weight if cfg and not cfg.casual else 1.0)
+                high_span = (effective_requested + 1) // 2
+                low_span = effective_requested - high_span
+
+                bonus_high = model.new_int_var(0, high_span, f"reqbonus_hi_{pid}")
+                bonus_low = model.new_int_var(0, low_span, f"reqbonus_lo_{pid}")
+                model.add(bonus_high + bonus_low <= physician_shift_exprs[pid])
+                # 100/50 base weights (vs the old flat 50) — the maximiser
+                # will always prefer filling bonus_high before bonus_low
+                # since it's worth strictly more per unit.
+                deficit_penalty_terms.append(round(100 * priority) * bonus_high)
+                if low_span > 0:
+                    deficit_penalty_terms.append(round(50 * priority) * bonus_low)
+                requested_bonus_by_pid[pid] = bonus_high + bonus_low
 
             # Small linear term: slight incentive to fill toward max even above requested.
             deficit_penalty_terms.append(3 * physician_shift_exprs[pid])
@@ -1169,6 +1216,97 @@ class CpsatScheduleGenerator:
         objective_terms.extend(monday_penalty_terms)
         objective_terms.extend(long_gap_penalty_terms)
         objective_terms.extend(swing_penalty_terms)
+        objective_terms.extend(anchor_overage_penalty_terms)
+
+        # ----------------------------------------------------------------
+        # Lexicographic casual-priority tiers (only when casual physicians
+        # exist in this roster). Everything above — every hard constraint,
+        # every decision variable, HC-7's casual hard-cap — is already built
+        # into this ONE model for every physician. Each tier just picks a
+        # different objective to maximize on that same model, solves, and
+        # then locks in the achieved value with model.add(...) before the
+        # next tier runs, so a later tier can never undo an earlier one's
+        # guarantee. This is what makes the priority order (1) normal
+        # physicians to their requested count, (2) casual physicians to
+        # their requested count, (3) normal physicians up to their real
+        # max — a guarantee rather than just a weighted preference, without
+        # ever losing sight of the full problem (unlike three separate
+        # models, which would have no way to know what another phase
+        # already assigned).
+        # ----------------------------------------------------------------
+        casual_pids = {pid for pid in pids if getattr(_get_cfg(pid), "casual", False)}
+        normal_bonus_terms = [
+            requested_bonus_by_pid[pid] for pid in pids
+            if pid not in casual_pids and pid in requested_bonus_by_pid
+        ]
+        casual_bonus_terms = [
+            requested_bonus_by_pid[pid] for pid in pids
+            if pid in casual_pids and pid in requested_bonus_by_pid
+        ]
+
+        # Tiers 1/2 get a small slice of the total budget, not a share on
+        # top of tier 3 getting the full time_limit again — otherwise the
+        # actual wall-clock time can run to ~1.7x what the caller asked
+        # for (and what the UI's countdown displays), since each tier
+        # used to get its own independent allocation. Whatever tiers 1/2
+        # actually spend (via .wall_time, not the cap itself) is deducted
+        # from tier 3's budget, so total time stays close to time_limit.
+        remaining_time_limit = time_limit
+
+        def _apply_hint(cb: "_SolutionCallback") -> None:
+            # Warm-start the next solve from this tier's actual found
+            # solution, so it only has to improve on a known-feasible
+            # point instead of rediscovering feasibility from scratch.
+            # Without this, each tier's fresh CpSolver() cold-starts with
+            # no memory of the previous tier's search, which can make an
+            # otherwise easy (or even looser/more relaxed) problem take an
+            # unpredictable, sometimes very long time to find anything at
+            # all — a search-quality artifact, not a feasibility one.
+            if not cb.best_values:
+                return
+            model.clear_hints()
+            for k, v in cb.best_values.items():
+                model.add_hint(shifts[k], v)
+
+        if casual_pids and casual_bonus_terms:
+            tier_time_limit = min(60.0, max(5.0, time_limit * 0.1))
+
+            if normal_bonus_terms:
+                logger.info("CP-SAT lexicographic: tier 1/3 — normal physicians toward requested")
+                tier1_expr = sum(normal_bonus_terms)
+                model.maximize(tier1_expr)
+                tier1_solver = _cp_model.CpSolver()
+                tier1_solver.parameters.max_time_in_seconds = tier_time_limit
+                tier1_solver.parameters.num_search_workers = num_workers
+                tier1_cb = _SolutionCallback(shifts, should_stop=cancel_check)
+                tier1_status = tier1_solver.solve(model, tier1_cb)
+                if tier1_status in (_cp_model.OPTIMAL, _cp_model.FEASIBLE) and tier1_cb.best_values:
+                    model.add(tier1_expr >= int(tier1_cb.best_objective))
+                    _apply_hint(tier1_cb)
+                remaining_time_limit -= tier1_solver.wall_time
+                if progress_callback:
+                    progress_callback(60, 100, tier1_cb.best_objective if tier1_cb.best_values else 0.0)
+
+            logger.info("CP-SAT lexicographic: tier 2/3 — casual physicians toward requested")
+            tier2_expr = sum(casual_bonus_terms)
+            model.maximize(tier2_expr)
+            tier2_solver = _cp_model.CpSolver()
+            tier2_solver.parameters.max_time_in_seconds = tier_time_limit
+            tier2_solver.parameters.num_search_workers = num_workers
+            tier2_cb = _SolutionCallback(shifts, should_stop=cancel_check)
+            tier2_status = tier2_solver.solve(model, tier2_cb)
+            if tier2_status in (_cp_model.OPTIMAL, _cp_model.FEASIBLE) and tier2_cb.best_values:
+                model.add(tier2_expr >= int(tier2_cb.best_objective))
+                _apply_hint(tier2_cb)
+            remaining_time_limit -= tier2_solver.wall_time
+            if progress_callback:
+                progress_callback(75, 100, tier2_cb.best_objective if tier2_cb.best_values else 0.0)
+
+            # Floor so tier 3 — the tier that actually matters most for
+            # schedule quality — always gets a meaningful budget even if
+            # tiers 1/2 ate most of their (small) allocations.
+            remaining_time_limit = max(30.0, remaining_time_limit)
+            logger.info("CP-SAT lexicographic: tier 3/3 — full objective (normal physicians up to max)")
 
         model.maximize(sum(objective_terms))
 
@@ -1176,7 +1314,7 @@ class CpsatScheduleGenerator:
         # Solve
         # ----------------------------------------------------------------
         solver = _cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = time_limit
+        solver.parameters.max_time_in_seconds = remaining_time_limit
         solver.parameters.num_search_workers = num_workers
         solver.parameters.log_search_progress = True  # TODO: disable after diagnosis
 
@@ -1199,7 +1337,12 @@ class CpsatScheduleGenerator:
         )
 
         if progress_callback:
-            progress_callback(100, 100, -solution_cb.best_objective)
+            # best_objective stays at its -inf default when the solve found
+            # zero improving solutions in its time budget (on_solution_callback
+            # never fired) — report 0.0 rather than passing inf through to a
+            # caller that may round()/int() it (e.g. server.py's progress_cb).
+            reported_score = -solution_cb.best_objective if solution_cb.best_values else 0.0
+            progress_callback(100, 100, reported_score)
 
         # ----------------------------------------------------------------
         # Extract solution
@@ -1242,133 +1385,6 @@ class CpsatScheduleGenerator:
                 result.issues.append(f"{d.strftime('%b %d')} {shift.code}: no eligible physician")
         result.stats = self._compute_stats(result)
         return result
-
-    # ------------------------------------------------------------------
-    # Casual-priority orchestration (3 sequential CP-SAT solves)
-    # ------------------------------------------------------------------
-
-    def _generate_casual_priority(
-        self,
-        year: int,
-        month: int,
-        time_limit: float,
-        num_workers: Optional[int],
-        progress_callback: Optional[Callable],
-        cancel_check: Optional[Callable[[], bool]],
-    ) -> ScheduleResult:
-        """
-        Three full CP-SAT solves, each locking in the previous one's
-        assignments before the next runs on whatever's left unfilled:
-
-          Phase 1 — non-casual physicians only, each hard-capped at their
-                    own shifts_requested (not max).
-          Phase 2 — casual physicians only, into phase 1's leftover slots,
-                    each hard-capped at their own shifts_requested. Casual
-                    physicians are never scheduled beyond this — there's
-                    no phase 4 that lets them exceed their request.
-          Phase 3 — non-casual physicians again, into whatever's still
-                    unfilled after phase 2, this time uncapped (their real
-                    shifts_max applies, same as a normal single-phase solve).
-
-        Every existing hard/soft rule (rest spacing, consecutive limits,
-        A:B balance, the shift-swing penalty, etc.) still applies within
-        each phase — only the *candidate pool* and *effective max* differ
-        per phase. This guarantees the priority order exactly, which a
-        single weighted solve could only approximate.
-        """
-        all_subs = list(self.submissions.values())
-        normal_subs = [s for s in all_subs if not getattr(self._cfg_for(s.physician_id), "casual", False)]
-        casual_subs = [s for s in all_subs if getattr(self._cfg_for(s.physician_id), "casual", False)]
-
-        # Same roster, but every physician's cap_at_requested forced True —
-        # reuses the existing HC-7 hard-cap mechanism unchanged rather than
-        # inventing a second way to express "cap at requested, not max".
-        roster_capped_at_requested = {
-            pid: _dc_replace(cfg, cap_at_requested=True) for pid, cfg in self.roster.items()
-        }
-
-        def _scaled_progress(lo: int, hi: int):
-            if progress_callback is None:
-                return None
-            def _cb(current, total, best_score):
-                pct = lo + (hi - lo) * (current / total if total else 0)
-                progress_callback(pct, 100, best_score)
-            return _cb
-
-        def _filled_slots_of(result: ScheduleResult) -> frozenset[tuple[int, str]]:
-            return frozenset((a.date.day - 1, a.shift.code) for a in result.assignments)
-
-        # Track what's still open by subtracting what got *filled*, never by
-        # reading a phase's own .unfilled list directly — that list also
-        # includes every slot this phase's allowed_slots restriction forced
-        # empty (i.e. slots outside its scope, not slots with no eligible
-        # candidate), so trusting it as "still open" would hand a later
-        # phase slots an earlier phase already filled, double-booking them.
-        days_in_month = calendar.monthrange(year, month)[1]
-        remaining = frozenset(
-            (d_idx, shift.code)
-            for d_idx in range(days_in_month)
-            for block in BLOCKS
-            for shift in block
-        )
-
-        logger.info("CP-SAT casual-priority: phase 1 (non-casual, capped at requested)")
-        gen1 = CpsatScheduleGenerator(normal_subs, roster_capped_at_requested, self.config)
-        result1 = gen1._generate_single_phase(
-            year, month, time_limit, num_workers, _scaled_progress(0, 33), cancel_check,
-            allowed_slots=remaining,
-        )
-        remaining = remaining - _filled_slots_of(result1)
-
-        logger.info("CP-SAT casual-priority: phase 2 (casual, capped at requested, %d slots open)",
-                    len(remaining))
-        gen2 = CpsatScheduleGenerator(casual_subs, roster_capped_at_requested, self.config)
-        result2 = gen2._generate_single_phase(
-            year, month, time_limit, num_workers, _scaled_progress(33, 66), cancel_check,
-            allowed_slots=remaining,
-        )
-        remaining = remaining - _filled_slots_of(result2)
-
-        logger.info("CP-SAT casual-priority: phase 3 (non-casual, up to real max, %d slots open)",
-                    len(remaining))
-        gen3 = CpsatScheduleGenerator(normal_subs, self.roster, self.config)
-        result3 = gen3._generate_single_phase(
-            year, month, time_limit, num_workers, _scaled_progress(66, 100), cancel_check,
-            allowed_slots=remaining,
-        )
-
-        # Same reasoning as `remaining` above: result3.unfilled also includes
-        # every slot outside phase 3's own allowed_slots (i.e. everything
-        # phases 1/2 already filled), not just genuinely-no-candidate slots
-        # — filter down to the ones actually still open after all 3 phases.
-        still_open = remaining - _filled_slots_of(result3)
-        final_unfilled = [
-            u for u in result3.unfilled if (u.date.day - 1, u.shift.code) in still_open
-        ]
-
-        merged = ScheduleResult(year=year, month=month)
-        merged.assignments = result1.assignments + result2.assignments + result3.assignments
-        merged.unfilled = final_unfilled
-        merged.issues = [
-            f"{u.date.strftime('%b %d')} {u.shift.code}: no eligible physician"
-            for u in final_unfilled
-        ]
-
-        # Rebuild this (the orchestrating, full-roster) instance's own
-        # mutable state from the merged assignments — each phase only
-        # populated its own throwaway sub-generator's state, and
-        # post-generation features (manual assign, check-violations,
-        # candidates) read this instance's state, not a phase's.
-        self._pid_to_slots = defaultdict(list)
-        self._slot_to_pid = {}
-        self._shift_count = defaultdict(int)
-        self._anchor_count = defaultdict(int)
-        self._weekend_keys = defaultdict(set)
-        for a in merged.assignments:
-            self._assign(a.physician_id, a.date, a.shift)
-
-        merged.stats = self._compute_stats(merged)
-        return merged
 
     # ------------------------------------------------------------------
     # Post-solve result construction

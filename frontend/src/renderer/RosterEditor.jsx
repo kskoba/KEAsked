@@ -329,7 +329,7 @@ export default function RosterEditor() {
                   />
                 </div>
                 <SelectField
-                  label="Group B site preference"
+                  label="Non-acute site preference"
                   value={form.group_b_site_preference || ''}
                   options={GROUP_B_PREFS}
                   onChange={(v) => setField('group_b_site_preference', v || null)}

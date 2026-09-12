@@ -1,0 +1,23 @@
+# KEA Physician Scheduler — backend only. See Dockerfile for the full
+# explanation of why the frontend isn't part of this.
+#
+# Before first run: copy your existing scheduler/config/ folder (the one
+# with your real physicians.yaml and scheduler_config.yaml — never
+# committed to git) to wherever you set CONFIG_HOST_DIR below, or create
+# a fresh one there and use the app's own Settings/roster editor to build
+# it out. The backend will not start without both files present, exactly
+# like the desktop app.
+#
+# Usage:
+#   CONFIG_HOST_DIR=/mnt/user/appdata/kea-scheduler/config docker compose up -d
+
+services:
+  backend:
+    build: .
+    image: kea-scheduler-backend
+    container_name: kea-scheduler-backend
+    ports:
+      - "5000:5000"
+    volumes:
+      - ${CONFIG_HOST_DIR:-./scheduler/config}:/config
+    restart: unless-stopped

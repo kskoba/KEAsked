@@ -1,0 +1,20 @@
+# Real physician data — never baked into the image under any
+# circumstances, even if it exists locally at build time. Mounted in at
+# runtime via CONFIG_DIR instead (see Dockerfile).
+scheduler/config/physicians.yaml
+scheduler/config/scheduler_config.yaml
+
+# Frontend isn't part of this image at all.
+frontend/
+.claude/
+
+# Everything else that shouldn't end up in a build context.
+.git/
+**/__pycache__/
+**/*.pyc
+.venv/
+**/.pytest_cache/
+*.xlsx
+*.xls
+Request-Imports/
+scheduler/scheduler_debug.log

@@ -1,7 +1,8 @@
 import React from 'react'
+import { getApiBaseUrl } from '../api'
 
 async function downloadExport() {
-  const res = await fetch('http://127.0.0.1:5000/api/export')
+  const res = await fetch(`${getApiBaseUrl()}/api/export`)
   if (!res.ok) return
   const blob = await res.blob()
   const url = URL.createObjectURL(blob)
@@ -14,7 +15,7 @@ async function downloadExport() {
   URL.revokeObjectURL(url)
 }
 
-export default function Header({ view, onBack, hasSchedule, onViewSchedule, onOpenSettings, onOpenRoster }) {
+export default function Header({ view, onBack, hasSchedule, onViewSchedule, onOpenSettings, onOpenRoster, onOpenIndividualSchedules }) {
   return (
     <header
       className="flex items-center justify-between px-6 py-3 shadow-md flex-shrink-0"
@@ -57,6 +58,16 @@ export default function Header({ view, onBack, hasSchedule, onViewSchedule, onOp
                 <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3" />
               </svg>
               Export .xlsx
+            </button>
+            <button
+              onClick={onOpenIndividualSchedules}
+              className="flex items-center gap-2 px-4 py-1.5 rounded-md bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm transition-colors"
+              title="View each physician's individual monthly schedule"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+              </svg>
+              Individual Schedules
             </button>
             <button
               onClick={onBack}

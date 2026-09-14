@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, session } from 'electron'
 import { join } from 'path'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { spawn } from 'child_process'
@@ -50,6 +50,51 @@ function writeAppSettings(patch) {
 
 function configDirLooksValid(dir) {
   return !!dir && existsSync(join(dir, 'physicians.yaml'))
+}
+
+// ---------------------------------------------------------------------------
+// Backend location (local vs. a remote host, e.g. a Docker container on
+// another machine — see Dockerfile at the repo root). The renderer talks to
+// whichever one is configured; the local backend below is always spawned on
+// startup regardless, so local dev and "no remote configured" keep working
+// exactly as before — this setting only changes which URL the UI's own API
+// calls target, not whether a local backend exists.
+// ---------------------------------------------------------------------------
+
+function getEffectiveBackendUrl() {
+  const settings = readAppSettings()
+  if (settings.backendMode === 'remote' && settings.remoteBackendUrl) {
+    return settings.remoteBackendUrl.replace(/\/+$/, '')
+  }
+  return 'http://127.0.0.1:5000'
+}
+
+// Sets the Content-Security-Policy response header for the app's own
+// top-level page load, computed from the actual configured backend URL —
+// the static meta tag in index.html deliberately leaves connect-src
+// unrestricted (connect-src *) since it can't know that URL ahead of time,
+// and Chromium enforces the INTERSECTION of every CSP source, so this
+// header is what actually narrows it down in practice.
+function registerDynamicCsp() {
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    if (details.resourceType !== 'mainFrame') {
+      callback({})
+      return
+    }
+    const backendUrl = getEffectiveBackendUrl()
+    const policy = [
+      "default-src 'self'",
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+      "style-src 'self' 'unsafe-inline'",
+      `connect-src 'self' ${backendUrl} http://localhost:5173 ws://localhost:5173`
+    ].join('; ')
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': [policy]
+      }
+    })
+  })
 }
 
 // Resolves the config folder to use, prompting the user to pick one (and
@@ -188,6 +233,24 @@ function stopPythonServer() {
       pythonProcess.kill('SIGTERM')
     }
     pythonProcess = null
+  }
+}
+
+// Shared restart path for both the config-folder and backend-location
+// settings changes below. app.exit() (unlike app.quit()) skips the
+// before-quit event entirely, so stopPythonServer() must be called
+// explicitly here or the old local backend is orphaned holding port 5000.
+// app.relaunch() is also unreliable under electron-vite's dev-mode process
+// supervision (it owns the electron child process and doesn't expect it to
+// re-spawn itself) — only use it in a packaged build; in dev, quit cleanly
+// and let the developer re-run `npm run dev`.
+function restartApp() {
+  stopPythonServer()
+  if (app.isPackaged) {
+    app.relaunch()
+    app.exit(0)
+  } else {
+    app.quit()
   }
 }
 
@@ -339,6 +402,42 @@ async function createRosterWindow() {
   return rosterWindow
 }
 
+// Same pattern as rosterWindow above — a separate window/renderer showing
+// each physician's individual monthly schedule at a glance, for the person
+// overseeing the schedule to sanity-check before it goes out.
+let scheduleViewerWindow = null
+
+async function createScheduleViewerWindow() {
+  if (scheduleViewerWindow && !scheduleViewerWindow.isDestroyed()) {
+    scheduleViewerWindow.focus()
+    return scheduleViewerWindow
+  }
+
+  scheduleViewerWindow = new BrowserWindow({
+    width: 1000,
+    height: 800,
+    backgroundColor: '#f8fafc',
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
+    }
+  })
+
+  scheduleViewerWindow.on('closed', () => {
+    scheduleViewerWindow = null
+  })
+
+  if (isDev && process.env['ELECTRON_RENDERER_URL']) {
+    scheduleViewerWindow.loadURL(`${process.env['ELECTRON_RENDERER_URL']}#schedule-viewer`)
+  } else {
+    scheduleViewerWindow.loadFile(join(__dirname, '../renderer/index.html'), { hash: 'schedule-viewer' })
+  }
+
+  return scheduleViewerWindow
+}
+
 // IPC: open native directory picker
 ipcMain.handle('dialog:openDirectory', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
@@ -363,6 +462,11 @@ ipcMain.handle('dialog:openFile', async (_event, filters) => {
 // IPC: open (or focus) the physician roster editor window
 ipcMain.handle('window:openRoster', () => {
   createRosterWindow()
+})
+
+// IPC: open (or focus) the per-physician monthly schedule viewer window
+ipcMain.handle('window:openScheduleViewer', () => {
+  createScheduleViewerWindow()
 })
 
 // IPC: force-close whichever window sent this, bypassing its own
@@ -405,16 +509,60 @@ ipcMain.handle('settings:chooseConfigDir', async () => {
     buttons: ['Restart Now', 'Later'],
     defaultId: 0,
     message: 'Config folder updated.',
-    detail: 'KEA Physician Scheduler needs to restart to load data from the new location.'
+    detail: app.isPackaged
+      ? 'KEA Physician Scheduler needs to restart to load data from the new location.'
+      : 'The app will quit to load data from the new location — re-run "npm run dev" to start it again.'
   })
   if (response === 0) {
-    app.relaunch()
-    app.exit(0)
+    restartApp()
   }
   return { changed: true, path: dir }
 })
 
+// IPC: current backend location (Settings screen)
+ipcMain.handle('settings:getBackendConfig', () => {
+  const settings = readAppSettings()
+  return {
+    mode: settings.backendMode === 'remote' ? 'remote' : 'local',
+    remoteUrl: settings.remoteBackendUrl || '',
+    effectiveUrl: getEffectiveBackendUrl()
+  }
+})
+
+// IPC: let the user switch between the local backend and a remote one
+// (e.g. a Docker container on another machine) from Settings. Takes effect
+// after a restart, which this offers to do immediately — same pattern as
+// settings:chooseConfigDir above. The local backend still always spawns on
+// startup either way; this only changes which URL the renderer's own API
+// calls target.
+ipcMain.handle('settings:setBackendConfig', async (_event, { mode, remoteUrl }) => {
+  if (mode === 'remote') {
+    const trimmed = (remoteUrl || '').trim()
+    if (!/^https?:\/\/.+/.test(trimmed)) {
+      return { changed: false, error: 'Enter a full URL, e.g. http://192.168.0.5:5000' }
+    }
+    writeAppSettings({ backendMode: 'remote', remoteBackendUrl: trimmed.replace(/\/+$/, '') })
+  } else {
+    writeAppSettings({ backendMode: 'local' })
+  }
+
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: 'question',
+    buttons: ['Restart Now', 'Later'],
+    defaultId: 0,
+    message: 'Backend location updated.',
+    detail: app.isPackaged
+      ? 'KEA Physician Scheduler needs to restart to connect to the new backend.'
+      : 'The app will quit to connect to the new backend — re-run "npm run dev" to start it again.'
+  })
+  if (response === 0) {
+    restartApp()
+  }
+  return { changed: true }
+})
+
 app.whenReady().then(async () => {
+  registerDynamicCsp()
   const loadingWin = createLoadingWindow()
 
   // configDir may be null (no physicians.yaml found/chosen yet) — the app

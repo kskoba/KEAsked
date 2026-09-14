@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
-import { getPhysiciansFull, updatePhysician, createPhysician, removePhysician } from './api'
+import { getPhysiciansFull, updatePhysician, createPhysician, removePhysician, setApiBaseUrl } from './api'
 
 // Mirrors scheduler/backend/config.py's VALID_SITES / GROUP_B_PREFS /
 // VALID_RULE_OVERRIDES, and the non-call shift start times from
@@ -39,6 +39,7 @@ export default function RosterEditor() {
   const [saveOk, setSaveOk] = useState(false)
   const [addModalOpen, setAddModalOpen] = useState(false)
   const [removeModalOpen, setRemoveModalOpen] = useState(false)
+  const [apiBaseResolved, setApiBaseResolved] = useState(false)
 
   const loadPhysicians = useCallback(() => {
     setLoadError(null)
@@ -50,7 +51,24 @@ export default function RosterEditor() {
       .catch(err => setLoadError(err.message))
   }, [])
 
-  useEffect(() => { loadPhysicians() }, [loadPhysicians])
+  // This is a separate BrowserWindow from the main app window (see
+  // main/index.js's rosterWindow) — a fresh renderer with its own JS module
+  // state, so api.js's BASE_URL here starts back at its hardcoded default
+  // (127.0.0.1:5000) regardless of what the main window resolved. Must
+  // re-resolve the backend location here too, or this window silently talks
+  // to the local backend even when the app is configured for a remote one.
+  useEffect(() => {
+    let cancelled = false
+    window.electronAPI.getBackendConfig()
+      .then(({ effectiveUrl }) => { if (!cancelled) setApiBaseUrl(effectiveUrl) })
+      .finally(() => { if (!cancelled) setApiBaseResolved(true) })
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    if (!apiBaseResolved) return
+    loadPhysicians()
+  }, [apiBaseResolved, loadPhysicians])
 
   const selected = useMemo(
     () => (physicians || []).find(p => p.id === selectedId) || null,

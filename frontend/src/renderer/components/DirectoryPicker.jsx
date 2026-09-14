@@ -1,5 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { importSubmissions, importFlatFile, generateSchedule, cancelGenerate, detectFlatMonth, getGenerateProgress, loadScheduleFromFile } from '../api'
+import { importSubmissions, importFlatFile, generateSchedule, cancelGenerate, detectFlatMonth, getGenerateProgress, loadScheduleFromFile, getApiBaseUrl } from '../api'
+
+// Whether the active backend is this machine or a remote one (e.g. a Docker
+// container on Unraid). The native file/folder picker only browses this
+// computer's filesystem, so on a remote backend the path field needs to
+// accept a typed path instead — one that exists on the *backend's* side
+// (e.g. inside a mounted /config volume), not this machine's.
+function isRemoteBackend() {
+  return !/^https?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/.test(getApiBaseUrl())
+}
 
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -29,6 +38,7 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
   const pollRef = useRef(null)
   const countdownRef = useRef(null)
   const countdownStartedRef = useRef(false)
+  const remote = isRemoteBackend()
 
   async function handleBrowse() {
     let selected = null
@@ -222,23 +232,31 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
           <div className="flex gap-2">
             <input
               type="text"
-              readOnly
+              readOnly={!remote}
               value={path}
+              onChange={remote ? (e) => setPath(e.target.value) : undefined}
               placeholder={
+                remote ? 'Type the path as it exists on the remote backend, e.g. /config/request-imports/october' :
                 mode === 'flat' ? 'Select the flat preferences Excel file…' :
                 mode === 'directory' ? 'Select the folder containing per-physician request files…' :
                 'Select a previously exported schedule .xlsx…'
               }
-              className="flex-1 px-3 py-2 rounded-md border border-slate-300 bg-slate-50 text-slate-700 text-sm cursor-default focus:outline-none"
+              className={`flex-1 px-3 py-2 rounded-md border border-slate-300 text-slate-700 text-sm focus:outline-none ${remote ? 'bg-white focus:ring-2 focus:ring-sky-400' : 'bg-slate-50 cursor-default'}`}
             />
             <button
               onClick={handleBrowse}
               disabled={importing || generating || loading}
+              title={remote ? 'Browses this computer, not the remote backend — usually you want to type the path instead' : undefined}
               className="px-4 py-2 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-400 text-white text-sm font-medium rounded-md transition-colors"
             >
               Browse…
             </button>
           </div>
+          {remote && (
+            <p className="mt-1.5 text-xs text-amber-600">
+              Backend is remote — paths are resolved on the backend's filesystem, not this computer.
+            </p>
+          )}
         </div>
 
         {/* Month / Year row */}
@@ -331,14 +349,16 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
             <div className="flex gap-2">
               <input
                 type="text"
-                readOnly
+                readOnly={!remote}
                 value={prefPath}
-                placeholder={prefMode === 'flat' ? 'Select flat preferences file…' : 'Select submissions directory…'}
-                className="flex-1 px-3 py-1.5 rounded border border-slate-300 bg-white text-slate-700 text-sm cursor-default focus:outline-none"
+                onChange={remote ? (e) => setPrefPath(e.target.value) : undefined}
+                placeholder={remote ? 'Type the path as it exists on the remote backend…' : (prefMode === 'flat' ? 'Select flat preferences file…' : 'Select submissions directory…')}
+                className={`flex-1 px-3 py-1.5 rounded border border-slate-300 text-slate-700 text-sm focus:outline-none ${remote ? 'focus:ring-2 focus:ring-sky-400' : 'cursor-default'} bg-white`}
               />
               <button
                 onClick={handleBrowsePref}
                 disabled={loading}
+                title={remote ? 'Browses this computer, not the remote backend — usually you want to type the path instead' : undefined}
                 className="px-3 py-1.5 bg-slate-600 hover:bg-slate-500 disabled:bg-slate-300 text-white text-sm font-medium rounded transition-colors"
               >
                 Browse…
@@ -354,6 +374,11 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
                 </button>
               )}
             </div>
+            {remote && (
+              <p className="mt-1.5 text-xs text-amber-600">
+                Backend is remote — paths are resolved on the backend's filesystem, not this computer.
+              </p>
+            )}
           </div>
         )}
 

@@ -9,7 +9,7 @@ import ReplaceModal from './components/ReplaceModal'
 import OnCallModal from './components/OnCallModal'
 import AssignOrSwapModal from './components/AssignOrSwapModal'
 import SettingsModal from './components/SettingsModal'
-import { assignPhysician, getSchedule, checkViolations } from './api'
+import { assignPhysician, getSchedule, checkViolations, setApiBaseUrl } from './api'
 
 export default function App() {
   // 'setup' | 'schedule'
@@ -48,6 +48,19 @@ export default function App() {
   // Settings modal (physician config folder location)
   const [settingsOpen, setSettingsOpen] = useState(false)
 
+  // Resolve which backend (local, or a configured remote host) the app's
+  // own API calls should target, before anything else tries to call the
+  // API — see api.js's setApiBaseUrl. Every effect below that hits the API
+  // is gated on this so nothing races ahead using the wrong default.
+  const [apiBaseResolved, setApiBaseResolved] = useState(false)
+  useEffect(() => {
+    let cancelled = false
+    window.electronAPI.getBackendConfig()
+      .then(({ effectiveUrl }) => { if (!cancelled) setApiBaseUrl(effectiveUrl) })
+      .finally(() => { if (!cancelled) setApiBaseResolved(true) })
+    return () => { cancelled = true }
+  }, [])
+
   // Whether a valid physicians.yaml has been found — null while checking.
   // Re-checked whenever Settings closes, since that's the only place this
   // can change during a running session.
@@ -61,7 +74,7 @@ export default function App() {
   // reload/HMR interrupted the in-flight /api/generate request client-side
   // while the backend kept solving in the background and finished anyway.
   useEffect(() => {
-    if (scheduleData) return
+    if (scheduleData || !apiBaseResolved) return
     let cancelled = false
     getSchedule()
       .then(result => {
@@ -73,7 +86,7 @@ export default function App() {
       .catch(() => { /* no schedule yet — normal on a fresh start */ })
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [apiBaseResolved])
 
   // When schedule refreshes, prune violations for assignments that no longer exist
   useEffect(() => {
@@ -268,6 +281,7 @@ export default function App() {
         onViewSchedule={handleViewSchedule}
         onOpenSettings={() => setSettingsOpen(true)}
         onOpenRoster={() => window.electronAPI.openRosterWindow()}
+        onOpenIndividualSchedules={() => window.electronAPI.openScheduleViewerWindow()}
       />
 
       {view === 'setup' && (

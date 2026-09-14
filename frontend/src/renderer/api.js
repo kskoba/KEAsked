@@ -1,4 +1,18 @@
-const BASE_URL = 'http://127.0.0.1:5000'
+let BASE_URL = 'http://127.0.0.1:5000'
+
+/**
+ * Set the backend base URL — called once at startup (see App.jsx) after
+ * resolving the configured backend location (local, or a remote host like
+ * a Docker container on another machine). Local dev/packaged default stays
+ * http://127.0.0.1:5000 until this is called.
+ */
+export function setApiBaseUrl(url) {
+  if (url) BASE_URL = url.replace(/\/+$/, '')
+}
+
+export function getApiBaseUrl() {
+  return BASE_URL
+}
 
 async function request(method, path, body) {
   const options = {

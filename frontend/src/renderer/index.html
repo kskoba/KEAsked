@@ -3,7 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src http://127.0.0.1:5000 ws://localhost:5173 http://localhost:5173" />
+    <!-- connect-src is intentionally unrestricted here — the backend location
+         (local vs. a user-configured remote URL) isn't known until runtime, and
+         Chromium enforces the INTERSECTION of every CSP source. The main
+         process (see registerDynamicCsp in main/index.js) sets the real,
+         narrow connect-src via a response header computed from the actual
+         configured backend URL — that header is what actually restricts this
+         in practice, not this tag. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src *" />
     <title>KEA Physician Scheduler</title>
   </head>
   <body>

@@ -717,6 +717,23 @@ class CpsatScheduleGenerator:
         # every other secondary term, so this only yields when truly
         # nothing else can fill the slot.
         anchor_overage_penalty_terms = []
+        # Positive counterpart to the overage penalty below: reward filling
+        # a physician's own explicit 0600h/2400h request with the matching
+        # shift type, not just counting toward their total requested shift
+        # count. Without this, nothing prefers giving a physician who
+        # explicitly asked for (say) 6 0600h shifts an actual 0600h slot
+        # over some other time — only their total shift count was rewarded,
+        # and the cap below only stops them going OVER their request, it
+        # never pulls them toward it. Anchor shifts are generally less
+        # desirable, so honouring an explicit request for them first means
+        # fewer of them have to fall on physicians who never asked for one.
+        # Weighted just under the total-shift-count bonus_high (100, below)
+        # so reaching a physician's overall requested count always still
+        # wins first if the two ever genuinely conflict, but this clearly
+        # outranks the everyday secondary terms (group balance, clustering,
+        # site preference — each 20-35).
+        anchor_fulfillment_bonus_terms = []
+        _ANCHOR_FULFILLMENT_BONUS = 90
         _ANCHOR_OVERAGE_PENALTY = 500
         # A physician's stated numbers can themselves signal which anchor
         # type they'd rather absorb overage in — e.g. explicitly wanting 0
@@ -764,6 +781,15 @@ class CpsatScheduleGenerator:
                     for shift in block
                     if shift.time == "0600h"
                 ]
+
+                if sub.shifts_2400h_stated and sub.shifts_2400h_requested > 0 and vars_2400:
+                    fill_2400 = model.new_int_var(0, sub.shifts_2400h_requested, f"anchorfill_2400_{pid}")
+                    model.add(fill_2400 <= sum(vars_2400))
+                    anchor_fulfillment_bonus_terms.append(_ANCHOR_FULFILLMENT_BONUS * fill_2400)
+                if sub.shifts_0600h_stated and sub.shifts_0600h_requested > 0 and vars_0600:
+                    fill_0600 = model.new_int_var(0, sub.shifts_0600h_requested, f"anchorfill_0600_{pid}")
+                    model.add(fill_0600 <= sum(vars_0600))
+                    anchor_fulfillment_bonus_terms.append(_ANCHOR_FULFILLMENT_BONUS * fill_0600)
 
                 # Per-physician 2400h cap. Checked via shifts_2400h_stated,
                 # not `> 0` — a physician who explicitly typed "0" (a real
@@ -1008,6 +1034,7 @@ class CpsatScheduleGenerator:
         # casual physician, who stays in their own separate, strictly-lower
         # priority tier regardless of this value.
         requested_bonus_by_pid: dict[str, object] = {}
+        effective_requested_by_pid: dict[str, int] = {}
         deficit_penalty_terms = []
         for pid in pids:
             sub = self.submissions[pid]
@@ -1017,6 +1044,7 @@ class CpsatScheduleGenerator:
                 effective_requested = min(10, sub.shifts_max)
 
             if effective_requested > 0:
+                effective_requested_by_pid[pid] = effective_requested
                 priority = (cfg.priority_weight if cfg and not cfg.casual else 1.0)
                 high_span = (effective_requested + 1) // 2
                 low_span = effective_requested - high_span
@@ -1348,6 +1376,7 @@ class CpsatScheduleGenerator:
         objective_terms.extend(long_gap_penalty_terms)
         objective_terms.extend(swing_penalty_terms)
         objective_terms.extend(anchor_overage_penalty_terms)
+        objective_terms.extend(anchor_fulfillment_bonus_terms)
 
         # ----------------------------------------------------------------
         # Lexicographic casual-priority tiers (only when casual physicians
@@ -1413,6 +1442,30 @@ class CpsatScheduleGenerator:
                 tier1_status = tier1_solver.solve(model, tier1_cb)
                 if tier1_status in (_cp_model.OPTIMAL, _cp_model.FEASIBLE) and tier1_cb.best_values:
                     model.add(tier1_expr >= int(tier1_cb.best_objective))
+                    # Also freeze each individual physician's achieved count,
+                    # not just the tier-wide sum. Locking only the sum lets a
+                    # later tier trade one physician's progress for another's
+                    # of equal weight — e.g. dropping someone a shift below
+                    # their own request to buy a group-balance or clustering
+                    # bonus elsewhere, since the total normal_bonus_terms sum
+                    # is unchanged either way. Confirmed via a real run: Keyes
+                    # landed a shift under his own stated request even though
+                    # tier1's sum-only lock was respected. Capped at each
+                    # physician's own effective_requested so this can never
+                    # ratchet in an accidental tier1 overage beyond what they
+                    # actually asked for.
+                    for pid, eff_req in effective_requested_by_pid.items():
+                        if pid in casual_pids:
+                            continue
+                        achieved = sum(
+                            tier1_cb.best_values.get((pid, d_idx, shift.code), 0)
+                            for d_idx in range(len(all_dates))
+                            for block in BLOCKS
+                            for shift in block
+                        )
+                        floor = min(achieved, eff_req)
+                        if floor > 0:
+                            model.add(physician_shift_exprs[pid] >= floor)
                     _apply_hint(tier1_cb)
                 remaining_time_limit -= tier1_solver.wall_time
                 if progress_callback:

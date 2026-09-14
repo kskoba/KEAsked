@@ -639,9 +639,19 @@ def unfilled_slots(schedule: Schedule) -> list[tuple[int, str, str]]:
 
 
 def physician_shift_counts(schedule: Schedule) -> dict[str, int]:
-    """Returns {physician: total_shift_count}."""
+    """
+    Returns {physician: total_shift_count} — real (Group A/B) shifts only.
+    On-call rows (DOC/NOC/AM CALL/PM CALL) are backup coverage, not a worked
+    shift, and are never counted toward a physician's requested shift count
+    by the scheduler itself (assigned in a separate post-processing pass,
+    never part of the CP-SAT shift variables) — this must match that so the
+    comparison doesn't misreport someone as having reached a count they
+    didn't actually reach in real shifts.
+    """
     counts: dict[str, int] = defaultdict(int)
     for a in schedule.assignments:
+        if a.group == "call":
+            continue
         counts[a.physician] += 1
     return dict(counts)
 

@@ -438,6 +438,78 @@ async function createScheduleViewerWindow() {
   return scheduleViewerWindow
 }
 
+// Same pattern as rosterWindow/scheduleViewerWindow above — a separate
+// window for pushing the roster + a period's master schedule template to
+// sked and emailing out each physician's signed magic link.
+let monthlyRequestsWindow = null
+
+async function createMonthlyRequestsWindow() {
+  if (monthlyRequestsWindow && !monthlyRequestsWindow.isDestroyed()) {
+    monthlyRequestsWindow.focus()
+    return monthlyRequestsWindow
+  }
+
+  monthlyRequestsWindow = new BrowserWindow({
+    width: 900,
+    height: 750,
+    backgroundColor: '#f8fafc',
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
+    }
+  })
+
+  monthlyRequestsWindow.on('closed', () => {
+    monthlyRequestsWindow = null
+  })
+
+  if (isDev && process.env['ELECTRON_RENDERER_URL']) {
+    monthlyRequestsWindow.loadURL(`${process.env['ELECTRON_RENDERER_URL']}#monthly-requests`)
+  } else {
+    monthlyRequestsWindow.loadFile(join(__dirname, '../renderer/index.html'), { hash: 'monthly-requests' })
+  }
+
+  return monthlyRequestsWindow
+}
+
+// Same pattern again — a window for tracking who has/hasn't completed the
+// annual preference survey. Viewer only; encoding responses into solver
+// rules is a manual/Claude-assisted step outside this app.
+let surveyResponsesWindow = null
+
+async function createSurveyResponsesWindow() {
+  if (surveyResponsesWindow && !surveyResponsesWindow.isDestroyed()) {
+    surveyResponsesWindow.focus()
+    return surveyResponsesWindow
+  }
+
+  surveyResponsesWindow = new BrowserWindow({
+    width: 950,
+    height: 750,
+    backgroundColor: '#f8fafc',
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
+    }
+  })
+
+  surveyResponsesWindow.on('closed', () => {
+    surveyResponsesWindow = null
+  })
+
+  if (isDev && process.env['ELECTRON_RENDERER_URL']) {
+    surveyResponsesWindow.loadURL(`${process.env['ELECTRON_RENDERER_URL']}#survey-responses`)
+  } else {
+    surveyResponsesWindow.loadFile(join(__dirname, '../renderer/index.html'), { hash: 'survey-responses' })
+  }
+
+  return surveyResponsesWindow
+}
+
 // IPC: open native directory picker
 ipcMain.handle('dialog:openDirectory', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
@@ -467,6 +539,16 @@ ipcMain.handle('window:openRoster', () => {
 // IPC: open (or focus) the per-physician monthly schedule viewer window
 ipcMain.handle('window:openScheduleViewer', () => {
   createScheduleViewerWindow()
+})
+
+// IPC: open (or focus) the "Send Monthly Shift Requests" window
+ipcMain.handle('window:openMonthlyRequests', () => {
+  createMonthlyRequestsWindow()
+})
+
+// IPC: open (or focus) the "Survey Responses" window
+ipcMain.handle('window:openSurveyResponses', () => {
+  createSurveyResponsesWindow()
 })
 
 // IPC: force-close whichever window sent this, bypassing its own

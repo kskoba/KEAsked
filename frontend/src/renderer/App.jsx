@@ -282,6 +282,8 @@ export default function App() {
         onOpenSettings={() => setSettingsOpen(true)}
         onOpenRoster={() => window.electronAPI.openRosterWindow()}
         onOpenIndividualSchedules={() => window.electronAPI.openScheduleViewerWindow()}
+        onOpenMonthlyRequests={() => window.electronAPI.openMonthlyRequestsWindow()}
+        onOpenSurveyResponses={() => window.electronAPI.openSurveyResponsesWindow()}
       />
 
       {view === 'setup' && (

@@ -24,8 +24,15 @@ const RULE_OVERRIDE_LABELS = {
 }
 const RULE_OVERRIDE_KEYS = Object.keys(RULE_OVERRIDE_LABELS)
 
+// Prefer first_name + last_name over the raw `name` field: many roster
+// entries have `name` set to just the last name (a historical artifact),
+// even when first_name IS on file -- combining them gives the fuller,
+// more correct display without touching the underlying yaml `name` value
+// (which has real significance elsewhere: it must match cell A1 of the
+// physician's Excel submission, so it's never silently rewritten here).
 function displayName(p) {
-  return p.name || `${p.first_name} ${p.last_name}`.trim() || p.id
+  const full = `${p.first_name || ''} ${p.last_name || ''}`.trim()
+  return full || p.name || p.id
 }
 
 export default function RosterEditor() {
@@ -187,9 +194,14 @@ export default function RosterEditor() {
   const filtered = useMemo(() => {
     if (!physicians) return []
     const q = search.trim().toLowerCase()
-    if (!q) return physicians
-    return physicians.filter(p =>
-      displayName(p).toLowerCase().includes(q) || p.id.toLowerCase().includes(q)
+    const base = q
+      ? physicians.filter(p => displayName(p).toLowerCase().includes(q) || p.id.toLowerCase().includes(q))
+      : physicians
+    // Sorted by last name regardless of display-name fixes above -- the
+    // list should read alphabetically by surname even though the label
+    // itself now leads with the first name.
+    return [...base].sort((a, b) =>
+      (a.last_name || displayName(a)).localeCompare(b.last_name || displayName(b))
     )
   }, [physicians, search])
 

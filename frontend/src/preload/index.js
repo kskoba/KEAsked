@@ -9,6 +9,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setBackendConfig: (cfg) => ipcRenderer.invoke('settings:setBackendConfig', cfg),
   openRosterWindow: () => ipcRenderer.invoke('window:openRoster'),
   openScheduleViewerWindow: () => ipcRenderer.invoke('window:openScheduleViewer'),
+  openMonthlyRequestsWindow: () => ipcRenderer.invoke('window:openMonthlyRequests'),
+  openSurveyResponsesWindow: () => ipcRenderer.invoke('window:openSurveyResponses'),
   forceCloseSelf: () => ipcRenderer.send('window:forceClose'),
   platform: process.platform
 })

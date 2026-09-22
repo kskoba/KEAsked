@@ -1,0 +1,29 @@
+# ============================================================
+# sked (physician shift-preference site) Connection — TEMPLATE
+# ============================================================
+# Copy this file to "sked.yaml" in this same directory and fill in the
+# admin secret. sked.yaml is gitignored (it holds a credential) — only
+# this template is committed.
+#
+# This lets "Send Monthly Shift Requests" push the physician roster and
+# that month's master schedule template to sked, generate each
+# physician's signed magic link, and email it out via the same mailbox
+# configured in email.yaml.
+# --------------------------------------------------------------
+
+# The deployed sked Worker's base URL (no trailing slash).
+base_url: "https://sked.keatools.org"
+
+# Same Worker/API as base_url, reachable at a second Custom Domain -- used
+# only for the annual survey, so its links resolve to the survey page
+# instead of the shift-preference grid. Leave blank to fall back to
+# base_url + "/survey" instead of a clean subdomain.
+survey_base_url: "https://survey.keatools.org"
+
+# The admin secret set on the Worker via `wrangler secret put ADMIN_SECRET`.
+# Get this from whoever deployed sked -- it is not the same as any physician
+# link and grants full roster/period-template write access.
+admin_secret: ""
+
+# How many days a generated magic link stays valid before it expires.
+link_days_valid: 21

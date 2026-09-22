@@ -15,7 +15,7 @@ async function downloadExport() {
   URL.revokeObjectURL(url)
 }
 
-export default function Header({ view, onBack, hasSchedule, onViewSchedule, onOpenSettings, onOpenRoster, onOpenIndividualSchedules }) {
+export default function Header({ view, onBack, hasSchedule, onViewSchedule, onOpenSettings, onOpenRoster, onOpenIndividualSchedules, onOpenMonthlyRequests, onOpenSurveyResponses }) {
   return (
     <header
       className="flex items-center justify-between px-6 py-3 shadow-md flex-shrink-0"
@@ -95,6 +95,26 @@ export default function Header({ view, onBack, hasSchedule, onViewSchedule, onOp
         <span className="text-slate-500 text-xs">
           {view === 'setup' ? 'Setup & Import' : 'Schedule View'}
         </span>
+
+        <button
+          onClick={onOpenMonthlyRequests}
+          className="text-slate-400 hover:text-white transition-colors"
+          title="Send Monthly Shift Requests"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+          </svg>
+        </button>
+
+        <button
+          onClick={onOpenSurveyResponses}
+          className="text-slate-400 hover:text-white transition-colors"
+          title="Survey Responses"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        </button>
 
         <button
           onClick={onOpenRoster}

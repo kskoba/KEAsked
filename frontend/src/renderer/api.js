@@ -159,6 +159,57 @@ export async function sendReminderEmail(physicianId) {
 }
 
 /**
+ * Whether sked (the physician shift-preference site) connection is configured.
+ * @returns {{ configured: boolean }}
+ */
+export async function getSkedStatus() {
+  return request('GET', '/api/sked/status')
+}
+
+/**
+ * Push the active roster + that period's master schedule template to sked,
+ * generate each physician's signed magic link, and email it out. Physicians
+ * with no email on file (or whose send fails) come back in needs_attention
+ * rather than being silently skipped. Pass physician_ids to target just
+ * those physicians instead of the whole active roster.
+ * @param {{ period_id: string, label: string, opens_at: string, closes_at: string, template_path: string, extra_message?: string, physician_ids?: string[] }} payload
+ * @returns {{ ok: boolean, sent_count: number, results: object[], needs_attention: object[] }}
+ */
+export async function sendMonthlyRequests(payload) {
+  return request('POST', '/api/monthly-requests/send', payload)
+}
+
+/**
+ * List annual-survey periods on sked.
+ * @returns {{ surveys: { id: string, label: string, opens_at: string, closes_at: string }[] }}
+ */
+export async function getSurveys() {
+  return request('GET', '/api/sked/surveys')
+}
+
+/**
+ * Completion status for every active roster physician against one survey,
+ * cross-referenced from sked's raw responses -- "not_started" for anyone
+ * active but missing from sked entirely.
+ * @param {string} surveyId
+ * @returns {{ survey: object, rows: object[], submitted_count: number, total_active: number }}
+ */
+export async function getSurveyCompletion(surveyId) {
+  return request('GET', `/api/sked/survey-completion?survey_id=${encodeURIComponent(surveyId)}`)
+}
+
+/**
+ * Regenerate one physician's survey link and email it. Only for physicians
+ * with no response yet -- backend looks up their address from physicians.yaml.
+ * @param {string} surveyId
+ * @param {string} physicianId
+ * @returns {{ ok: boolean, status: string, detail: string }}
+ */
+export async function resendSurveyLink(surveyId, physicianId) {
+  return request('POST', '/api/sked/survey/resend', { survey_id: surveyId, physician_id: physicianId })
+}
+
+/**
  * What's been overridden this session and why — for deciding whether any
  * should become a permanent rule_override in physicians.yaml.
  * @returns {{ items: { physician_name: string, rule: string, message: string }[] }}

@@ -73,11 +73,22 @@ from scheduler.api.schemas import (
     EmailStatusResponse,
     SendReminderEmailRequest,
     SendReminderEmailResponse,
+    SkedStatusResponse,
+    SendMonthlyRequestsRequest,
+    SendMonthlyRequestsResult,
+    SendMonthlyRequestsResponse,
+    SurveyInfo,
+    SurveysResponse,
+    SurveyCompletionRow,
+    SurveyCompletionResponse,
+    ResendSurveyLinkRequest,
+    ResendSurveyLinkResponse,
 )
 import os
 
 from scheduler.backend import bytebloc as bytebloc_mod
 from scheduler.backend import email_sender
+from scheduler.backend import sked_client
 from scheduler.backend.config import (
     GROUP_B_PREFS,
     VALID_RULE_OVERRIDES,
@@ -107,6 +118,20 @@ from scheduler.backend.importer import import_directory, import_single_file
 from scheduler.backend.importer_flat import import_flat_file
 from scheduler.backend.models import DayAvailability, PhysicianSubmission, ValidationIssue
 from scheduler.backend.shifts import ALL_SHIFT_CODES, BLOCKS, SHIFT_TO_BLOCK, Shift
+
+
+def _display_name(cfg) -> str:
+    """
+    Full name for anywhere a physician is shown/addressed (sked, emails,
+    the Survey Responses viewer) -- prefers first_name + last_name over the
+    raw `name` field, which is often just a surname (a historical artifact)
+    even when first_name IS on file. Mirrors RosterEditor.jsx's
+    displayName() on the frontend. Never touches cfg.name itself, which
+    must stay exactly as recorded (it's matched against Excel cell A1 and
+    used as the physician_resolver.py lookup key) -- this is display only.
+    """
+    full = f"{cfg.first_name or ''} {cfg.last_name or ''}".strip()
+    return full or cfg.name or cfg.id
 
 
 def _synthetic_submissions(result: ScheduleResult, roster: dict) -> list[PhysicianSubmission]:
@@ -1152,6 +1177,275 @@ def send_reminder_email(body: SendReminderEmailRequest) -> SendReminderEmailResp
         raise HTTPException(status_code=500, detail=str(exc))
 
     return SendReminderEmailResponse(ok=True, status=f"Sent to {to_address}.")
+
+
+# ---------------------------------------------------------------------------
+# Monthly shift requests — sked roster sync + magic links + email
+# ---------------------------------------------------------------------------
+# "Send Monthly Shift Requests": push the active roster and that month's
+# master schedule template to sked, get back one signed magic link per
+# physician, then email each link out via the same SMTP setup as reminder
+# emails. sked never sends email itself. Only ever runs from an explicit
+# click in the app, same as the reminder-email flow above.
+
+@app.get("/api/sked/status", response_model=SkedStatusResponse)
+def sked_status() -> SkedStatusResponse:
+    """Whether sked (the shift-preference site) connection is configured."""
+    config = sked_client.load_sked_config()
+    configured = config is not None and sked_client.is_fully_configured(config)
+    return SkedStatusResponse(configured=configured)
+
+
+@app.post("/api/monthly-requests/send", response_model=SendMonthlyRequestsResponse)
+def send_monthly_requests(body: SendMonthlyRequestsRequest) -> SendMonthlyRequestsResponse:
+    sked_config = sked_client.load_sked_config()
+    if sked_config is None or not sked_client.is_fully_configured(sked_config):
+        raise HTTPException(
+            status_code=400,
+            detail="sked is not configured. Copy scheduler/config/sked_template.yaml to sked.yaml "
+                   "(in the physician config folder) and fill it in.",
+        )
+    email_config = email_sender.load_email_config()
+    if email_config is None or not email_sender.is_fully_configured(email_config):
+        raise HTTPException(
+            status_code=400,
+            detail="Email sending is not configured. Copy scheduler/config/email_template.yaml "
+                   "to email.yaml (in the physician config folder) and fill it in.",
+        )
+
+    template_path = Path(body.template_path)
+    if not template_path.is_file():
+        raise HTTPException(status_code=400, detail=f"Template file not found: {body.template_path}")
+
+    roster: dict = _state.get("roster") or {}
+    if not roster:
+        # This is often the first action of a new monthly cycle, before
+        # anything else has loaded the roster into _state (see the same
+        # pattern in load_schedule() above).
+        try:
+            roster = load_roster()
+            _state["roster"] = roster
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Could not load physician roster: {exc}")
+
+    active_physicians = [cfg for cfg in roster.values() if cfg.active]
+    if not active_physicians:
+        raise HTTPException(status_code=400, detail="No active physicians in the roster.")
+    if body.physician_ids:
+        wanted = set(body.physician_ids)
+        active_physicians = [cfg for cfg in active_physicians if cfg.id in wanted]
+        if not active_physicians:
+            raise HTTPException(status_code=400, detail="None of the selected physicians are active in the roster.")
+
+    try:
+        sked_client.upsert_period(sked_config, body.period_id, body.label, body.opens_at, body.closes_at)
+        sked_client.upload_period_template(sked_config, body.period_id, template_path)
+        links = sked_client.generate_period_links(
+            sked_config,
+            body.period_id,
+            [
+                {
+                    "id": cfg.id,
+                    "name": _display_name(cfg),
+                    "email": cfg.email,
+                    "maxConsecutiveShifts": cfg.max_consecutive_shifts,
+                    "maxConsecutiveNights": cfg.max_consecutive_nights,
+                    "nonAcuteSitePreference": cfg.group_b_site_preference or "",
+                }
+                for cfg in active_physicians
+            ],
+        )
+    except sked_client.SkedApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    results: list[SendMonthlyRequestsResult] = []
+    for link in links:
+        physician_id, name, email, url, has_email = (
+            link["id"], link["name"], link["email"], link["url"], link["hasEmail"],
+        )
+        if not has_email:
+            results.append(SendMonthlyRequestsResult(
+                physician_id=physician_id, physician_name=name, email="",
+                status="no_email", detail="No email on file — add one in the Physician Roster editor.",
+            ))
+            continue
+
+        extra = body.extra_message.strip()
+        subject = f"{body.label} — Shift Preferences"
+        body_text = (
+            f"Hi {name},\n\n"
+            f"Please enter your shift preferences for {body.label} using the link below:\n\n"
+            f"{url}\n\n"
+            f"This link is unique to you — please don't forward it. It saves your progress "
+            f"automatically, so you can close the window and come back to this same link "
+            f"any time to pick up where you left off, right up until the submission window closes.\n"
+            + (f"\n{extra}\n" if extra else "")
+        )
+        try:
+            email_sender.send_email(email, subject, body_text, email_config)
+            results.append(SendMonthlyRequestsResult(
+                physician_id=physician_id, physician_name=name, email=email, status="sent",
+            ))
+        except RuntimeError as exc:
+            results.append(SendMonthlyRequestsResult(
+                physician_id=physician_id, physician_name=name, email=email,
+                status="send_failed", detail=str(exc),
+            ))
+
+    sent_count = sum(1 for r in results if r.status == "sent")
+    needs_attention = [r for r in results if r.status != "sent"]
+    return SendMonthlyRequestsResponse(
+        ok=True, sent_count=sent_count, results=results, needs_attention=needs_attention,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Annual survey — completion tracking (viewer only)
+# ---------------------------------------------------------------------------
+# Encoding free-text requests into CP-SAT solver rules is done by hand
+# (scheduler + Claude), not by this app -- these endpoints only let the
+# scheduler see who has/hasn't completed the survey and pull the raw data.
+
+@app.get("/api/sked/surveys", response_model=SurveysResponse)
+def sked_surveys() -> SurveysResponse:
+    sked_config = sked_client.load_sked_config()
+    if sked_config is None or not sked_client.is_fully_configured(sked_config):
+        raise HTTPException(
+            status_code=400,
+            detail="sked is not configured. Copy scheduler/config/sked_template.yaml to sked.yaml "
+                   "(in the physician config folder) and fill it in.",
+        )
+    try:
+        surveys = sked_client.list_surveys(sked_config)
+    except sked_client.SkedApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return SurveysResponse(surveys=[
+        SurveyInfo(id=s["id"], label=s["label"], opens_at=s["opens_at"], closes_at=s["closes_at"])
+        for s in surveys
+    ])
+
+
+@app.get("/api/sked/survey-completion", response_model=SurveyCompletionResponse)
+def sked_survey_completion(survey_id: str) -> SurveyCompletionResponse:
+    sked_config = sked_client.load_sked_config()
+    if sked_config is None or not sked_client.is_fully_configured(sked_config):
+        raise HTTPException(
+            status_code=400,
+            detail="sked is not configured. Copy scheduler/config/sked_template.yaml to sked.yaml "
+                   "(in the physician config folder) and fill it in.",
+        )
+
+    roster: dict = _state.get("roster") or {}
+    if not roster:
+        try:
+            roster = load_roster()
+            _state["roster"] = roster
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Could not load physician roster: {exc}")
+
+    try:
+        surveys = sked_client.list_surveys(sked_config)
+        responses = sked_client.get_survey_responses(sked_config, survey_id)
+    except sked_client.SkedApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    survey = next((s for s in surveys if s["id"] == survey_id), None)
+    if survey is None:
+        raise HTTPException(status_code=404, detail=f"Unknown survey: {survey_id!r}")
+
+    by_physician = {r["physicianId"]: r for r in responses}
+    rows: list[SurveyCompletionRow] = []
+    for cfg in sorted(roster.values(), key=lambda c: c.last_name or c.name):
+        if not cfg.active:
+            continue
+        r = by_physician.get(cfg.id)
+        rows.append(SurveyCompletionRow(
+            physician_id=cfg.id,
+            physician_name=_display_name(cfg),
+            active=cfg.active,
+            status=r["status"] if r else "not_started",
+            updated_at=r["updatedAt"] if r else None,
+            data=r["data"] if r else None,
+        ))
+
+    return SurveyCompletionResponse(
+        survey=SurveyInfo(id=survey["id"], label=survey["label"], opens_at=survey["opens_at"], closes_at=survey["closes_at"]),
+        rows=rows,
+        submitted_count=sum(1 for row in rows if row.status == "submitted"),
+        total_active=len(rows),
+    )
+
+
+@app.post("/api/sked/survey/resend", response_model=ResendSurveyLinkResponse)
+def resend_survey_link(body: ResendSurveyLinkRequest) -> ResendSurveyLinkResponse:
+    """Regenerate one physician's survey link and email it. Only ever runs from an explicit click."""
+    sked_config = sked_client.load_sked_config()
+    if sked_config is None or not sked_client.is_fully_configured(sked_config):
+        raise HTTPException(
+            status_code=400,
+            detail="sked is not configured. Copy scheduler/config/sked_template.yaml to sked.yaml "
+                   "(in the physician config folder) and fill it in.",
+        )
+    email_config = email_sender.load_email_config()
+    if email_config is None or not email_sender.is_fully_configured(email_config):
+        raise HTTPException(
+            status_code=400,
+            detail="Email sending is not configured. Copy scheduler/config/email_template.yaml "
+                   "to email.yaml (in the physician config folder) and fill it in.",
+        )
+
+    roster: dict = _state.get("roster") or {}
+    if not roster:
+        try:
+            roster = load_roster()
+            _state["roster"] = roster
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Could not load physician roster: {exc}")
+
+    cfg = roster.get(body.physician_id)
+    if cfg is None:
+        raise HTTPException(status_code=404, detail=f"Unknown physician: {body.physician_id!r}")
+    if not cfg.email:
+        raise HTTPException(
+            status_code=400,
+            detail="No email on file for this physician — add one in the Physician Roster editor.",
+        )
+
+    try:
+        surveys = sked_client.list_surveys(sked_config)
+    except sked_client.SkedApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    survey = next((s for s in surveys if s["id"] == body.survey_id), None)
+    if survey is None:
+        raise HTTPException(status_code=404, detail=f"Unknown survey: {body.survey_id!r}")
+
+    name = _display_name(cfg)
+    try:
+        links = sked_client.generate_period_links(
+            sked_config,
+            body.survey_id,
+            [{"id": cfg.id, "name": name, "email": cfg.email}],
+            base_url_override=sked_config.survey_base_url or None,
+        )
+    except sked_client.SkedApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    url = links[0]["url"]
+
+    subject = f"{survey['label']} — Reminder"
+    body_text = (
+        f"Hi {name},\n\n"
+        f"Here is your link to complete the {survey['label']}:\n\n"
+        f"{url}\n\n"
+        f"This link is unique to you — please don't forward it. It saves your progress "
+        f"automatically, so you can close the window and come back to this same link any "
+        f"time to review or update your answers, even after submitting.\n"
+    )
+    try:
+        email_sender.send_email(cfg.email, subject, body_text, email_config)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return ResendSurveyLinkResponse(ok=True, status="sent", detail=f"Sent to {cfg.email}.")
 
 
 # ---------------------------------------------------------------------------

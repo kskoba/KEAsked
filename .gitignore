@@ -56,6 +56,7 @@ scheduler/config/bytebloc.yaml
 # Sensitive config — has the sending mailbox's app password;
 # only email_template.yaml is committed
 scheduler/config/email.yaml
+scheduler/config/sked.yaml
 
 # Real physician names, aliases, and personal scheduling restrictions —
 # only physicians_template.yaml is committed. (This was tracked in git

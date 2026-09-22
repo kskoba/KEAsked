@@ -101,6 +101,82 @@ class SendReminderEmailResponse(BaseModel):
     status: str = ""
 
 
+# ---------------------------------------------------------------------------
+# Monthly shift requests — roster sync + magic links (sked) + email
+# ---------------------------------------------------------------------------
+
+class SkedStatusResponse(BaseModel):
+    configured: bool
+
+
+class SendMonthlyRequestsRequest(BaseModel):
+    period_id: str
+    label: str
+    opens_at: str  # ISO 8601
+    closes_at: str  # ISO 8601
+    template_path: str  # local filesystem path to that month's master schedule .xlsx
+    extra_message: str = ""  # free text from the scheduler, included in the email body
+    physician_ids: list[str] | None = None  # None = every active physician; otherwise just these
+
+
+class SendMonthlyRequestsResult(BaseModel):
+    physician_id: str
+    physician_name: str
+    email: str = ""
+    status: str  # "sent" | "no_email" | "send_failed"
+    detail: str = ""
+
+
+class SendMonthlyRequestsResponse(BaseModel):
+    ok: bool
+    sent_count: int
+    results: list[SendMonthlyRequestsResult]
+    needs_attention: list[SendMonthlyRequestsResult]
+
+
+# ---------------------------------------------------------------------------
+# Annual preference survey — completion tracking (viewer only; encoding
+# free-text requests into solver rules is done by hand, not by this app)
+# ---------------------------------------------------------------------------
+
+class SurveyInfo(BaseModel):
+    id: str
+    label: str
+    opens_at: str
+    closes_at: str
+
+
+class SurveysResponse(BaseModel):
+    surveys: list[SurveyInfo]
+
+
+class SurveyCompletionRow(BaseModel):
+    physician_id: str
+    physician_name: str
+    active: bool
+    status: str  # "not_started" | "draft" | "submitted"
+    updated_at: str | None = None
+    data: dict | None = None  # full response payload, present when status != "not_started"
+
+
+class SurveyCompletionResponse(BaseModel):
+    survey: SurveyInfo
+    rows: list[SurveyCompletionRow]
+    submitted_count: int
+    total_active: int
+
+
+class ResendSurveyLinkRequest(BaseModel):
+    survey_id: str
+    physician_id: str
+
+
+class ResendSurveyLinkResponse(BaseModel):
+    ok: bool
+    status: str  # "sent"
+    detail: str = ""
+
+
 class OverrideLogItem(BaseModel):
     physician_name: str
     rule: str

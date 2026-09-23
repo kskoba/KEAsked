@@ -767,8 +767,27 @@ class CpsatScheduleGenerator:
                 return "0600h"
             return None
 
-        # anchor_fill_vars_flat: every fill_2400/fill_0600 IntVar, unweighted —
-        # the objective for the anchor-floor lexicographic tier below.
+        # anchor_fill_vars_flat: (fill_2400/fill_0600 IntVar, scarcity_weight)
+        # pairs — the objective for stage B (depth) of the anchor-floor
+        # lexicographic tier below. scarcity_weight ranks physicians by how
+        # little slack they have: requested / available_days, scaled to an
+        # integer. Someone needing 5 of their only 6 available nights has
+        # far fewer alternate combinations that could satisfy them than
+        # someone needing 2 of 20 — weighting depth-stage priority by this
+        # ratio means capacity that's genuinely contested goes to whoever's
+        # actually at risk of ending up short, not split evenly by request
+        # size alone. Stage A (breadth, below) deliberately stays
+        # UNWEIGHTED — its job is a universal "everyone's first unit
+        # matters equally" floor; scarcity only matters once that's secured
+        # and depth is being allocated among what's left. Note this can
+        # only rank general capacity contention — it says nothing about
+        # structural infeasibility (e.g. a physician whose sole anchor-type
+        # availability is one site, deadlocked against HC-13b's "every
+        # night needs an adjacent night" by HC-10's "never the same site on
+        # adjacent days") — those need prefer_singleton_nights fixed in the
+        # roster data itself; see the RScheirer/Dickey fixes this was found
+        # from.
+        #
         # anchor_requests_by_pid: pid -> [("2400h", requested), ...] for
         # whichever type(s) the physician actually stated a positive request
         # for. The solution callback only tracks `shifts` vars (not these
@@ -778,7 +797,20 @@ class CpsatScheduleGenerator:
         # recompute and lock, per physician rather than just the roster-wide
         # sum (see that tier's own comment for why the per-physician part
         # matters).
-        anchor_fill_vars_flat: list = []
+        _SCARCITY_SCALE = 100
+        _ANCHOR_BLOCK_IDX = {"2400h": 4, "0600h": 0}  # see importer.py's block layout
+
+        def _anchor_available_days(sub, time_str: str) -> int:
+            block_idx = _ANCHOR_BLOCK_IDX.get(time_str)
+            count = 0
+            for day in sub.days:
+                if any(code.startswith(time_str) for code in day.requested_shifts):
+                    count += 1
+                elif block_idx is not None and block_idx in day.available_blocks:
+                    count += 1
+            return count
+
+        anchor_fill_vars_flat: list[tuple] = []
         anchor_requests_by_pid: dict[str, list[tuple[str, int]]] = {}
 
         for pid in pids:
@@ -810,13 +842,17 @@ class CpsatScheduleGenerator:
                     fill_2400 = model.new_int_var(0, sub.shifts_2400h_requested, f"anchorfill_2400_{pid}")
                     model.add(fill_2400 <= sum(vars_2400))
                     anchor_fulfillment_bonus_terms.append(_ANCHOR_FULFILLMENT_BONUS * fill_2400)
-                    anchor_fill_vars_flat.append(fill_2400)
+                    available = _anchor_available_days(sub, "2400h")
+                    weight = max(1, round(_SCARCITY_SCALE * sub.shifts_2400h_requested / max(available, 1)))
+                    anchor_fill_vars_flat.append((fill_2400, weight))
                     anchor_requests_by_pid.setdefault(pid, []).append(("2400h", sub.shifts_2400h_requested))
                 if sub.shifts_0600h_stated and sub.shifts_0600h_requested > 0 and vars_0600:
                     fill_0600 = model.new_int_var(0, sub.shifts_0600h_requested, f"anchorfill_0600_{pid}")
                     model.add(fill_0600 <= sum(vars_0600))
                     anchor_fulfillment_bonus_terms.append(_ANCHOR_FULFILLMENT_BONUS * fill_0600)
-                    anchor_fill_vars_flat.append(fill_0600)
+                    available = _anchor_available_days(sub, "0600h")
+                    weight = max(1, round(_SCARCITY_SCALE * sub.shifts_0600h_requested / max(available, 1)))
+                    anchor_fill_vars_flat.append((fill_0600, weight))
                     anchor_requests_by_pid.setdefault(pid, []).append(("0600h", sub.shifts_0600h_requested))
 
                 # Per-physician 2400h cap. Checked via shifts_2400h_stated,
@@ -1724,7 +1760,7 @@ class CpsatScheduleGenerator:
 
             # Stage B — depth: maximize total units on top of stage A's floor.
             logger.info("CP-SAT lexicographic: anchor-fulfillment floor, stage B (depth)")
-            stageB_expr = sum(anchor_fill_vars_flat)
+            stageB_expr = sum(weight * fill_var for fill_var, weight in anchor_fill_vars_flat)
             model.maximize(stageB_expr)
             stageB_solver = _cp_model.CpSolver()
             stageB_solver.parameters.max_time_in_seconds = anchor_tier_time_limit

@@ -422,15 +422,60 @@ export default function RosterEditor() {
               </Section>
 
               <Section title="Preferences">
-                <CheckboxField label="Only 2400h shifts" checked={form.only_2400h} onChange={(v) => setField('only_2400h', v)} />
-                <CheckboxField label="Only 0600h shifts" checked={form.only_0600h} onChange={(v) => setField('only_0600h', v)} />
-                <CheckboxField label="Prefer weekends" checked={form.prefer_weekends} onChange={(v) => setField('prefer_weekends', v)} />
-                <CheckboxField label="Honor all requests" checked={form.honor_all_requests} onChange={(v) => setField('honor_all_requests', v)} />
-                <CheckboxField label="Prefer singleton nights" checked={form.prefer_singleton_nights} onChange={(v) => setField('prefer_singleton_nights', v)} />
-                <CheckboxField label="No call (DOC/NOC)" checked={form.no_call} onChange={(v) => setField('no_call', v)} />
-                <CheckboxField label="Avoid Mondays" checked={form.avoid_mondays} onChange={(v) => setField('avoid_mondays', v)} />
-                <CheckboxField label="Rest after late shift" checked={form.rest_after_late_shift} onChange={(v) => setField('rest_after_late_shift', v)} />
-                <CheckboxField label="Cap at requested shifts" checked={form.cap_at_requested} onChange={(v) => setField('cap_at_requested', v)} />
+                <CheckboxField
+                  label="Only 2400h shifts"
+                  checked={form.only_2400h}
+                  onChange={(v) => setField('only_2400h', v)}
+                  hint="Hard restriction — the solver will never assign this physician any shift except 2400h."
+                />
+                <CheckboxField
+                  label="Only 0600h shifts"
+                  checked={form.only_0600h}
+                  onChange={(v) => setField('only_0600h', v)}
+                  hint="Hard restriction — the solver will never assign this physician any shift except 0600h."
+                />
+                <CheckboxField
+                  label="Prefer weekends"
+                  checked={form.prefer_weekends}
+                  onChange={(v) => setField('prefer_weekends', v)}
+                  hint="Soft bonus — the solver favors giving them weekend (Fri/Sat/Sun) shifts over weekday ones."
+                />
+                <CheckboxField
+                  label="Honor all requests"
+                  checked={form.honor_all_requests}
+                  onChange={(v) => setField('honor_all_requests', v)}
+                  hint="Soft, high priority — the solver strongly prefers the exact days/shifts they marked on their submission, not just hitting their requested total."
+                />
+                <CheckboxField
+                  label="Prefer singleton nights"
+                  checked={form.prefer_singleton_nights}
+                  onChange={(v) => setField('prefer_singleton_nights', v)}
+                  hint="Relaxes a hard rule — normally every 2400h night must be part of a 2+ day run; this lets a single isolated night stand alone for them."
+                />
+                <CheckboxField
+                  label="No call (DOC/NOC)"
+                  checked={form.no_call}
+                  onChange={(v) => setField('no_call', v)}
+                  hint="Hard exclusion — the solver never assigns them any on-call (DOC/NOC) shift."
+                />
+                <CheckboxField
+                  label="Avoid Mondays"
+                  checked={form.avoid_mondays}
+                  onChange={(v) => setField('avoid_mondays', v)}
+                  hint="Soft penalty — the solver avoids giving them Monday shifts when possible (e.g. a protected admin day)."
+                />
+                <CheckboxField
+                  label="Rest after late shift"
+                  checked={form.rest_after_late_shift}
+                  onChange={(v) => setField('rest_after_late_shift', v)}
+                  hint="Hard rule — guarantees a day off immediately after any 1600h/1800h/2000h shift, and blocks a late shift the day before an already-scheduled one."
+                />
+                <CheckboxField
+                  label="Cap at requested shifts"
+                  checked={form.cap_at_requested}
+                  onChange={(v) => setField('cap_at_requested', v)}
+                  hint="Hard cap — the solver will never assign them more than their requested shift count, even to fill otherwise-open slots."
+                />
               </Section>
 
               <Section title="Preference sheet">
@@ -767,11 +812,14 @@ function SelectField({ label, value, options, onChange }) {
   )
 }
 
-function CheckboxField({ label, checked, onChange }) {
+function CheckboxField({ label, checked, onChange, hint }) {
   return (
     <label className="flex items-center gap-2 text-sm text-slate-700">
       <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
-      {label}
+      <span>
+        {label}
+        {hint && <em className="ml-1 text-xs text-slate-400">{hint}</em>}
+      </span>
     </label>
   )
 }

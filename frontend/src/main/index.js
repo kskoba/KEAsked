@@ -510,6 +510,43 @@ async function createSurveyResponsesWindow() {
   return surveyResponsesWindow
 }
 
+// Same pattern again — preview and (on explicit human confirmation, typed
+// in this window, not pre-filled) send physician unavailability to ByteBloc
+// as Off/NeedOff requests. See scheduler/backend/bytebloc.py's hard safety
+// rule: nothing is sent without that confirmation.
+let byteBlocWindow = null
+
+async function createByteBlocWindow() {
+  if (byteBlocWindow && !byteBlocWindow.isDestroyed()) {
+    byteBlocWindow.focus()
+    return byteBlocWindow
+  }
+
+  byteBlocWindow = new BrowserWindow({
+    width: 900,
+    height: 750,
+    backgroundColor: '#f8fafc',
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
+    }
+  })
+
+  byteBlocWindow.on('closed', () => {
+    byteBlocWindow = null
+  })
+
+  if (isDev && process.env['ELECTRON_RENDERER_URL']) {
+    byteBlocWindow.loadURL(`${process.env['ELECTRON_RENDERER_URL']}#bytebloc`)
+  } else {
+    byteBlocWindow.loadFile(join(__dirname, '../renderer/index.html'), { hash: 'bytebloc' })
+  }
+
+  return byteBlocWindow
+}
+
 // IPC: open native directory picker
 ipcMain.handle('dialog:openDirectory', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
@@ -560,6 +597,11 @@ ipcMain.handle('window:openMonthlyRequests', () => {
 // IPC: open (or focus) the "Survey Responses" window
 ipcMain.handle('window:openSurveyResponses', () => {
   createSurveyResponsesWindow()
+})
+
+// IPC: open (or focus) the ByteBloc window
+ipcMain.handle('window:openByteBloc', () => {
+  createByteBlocWindow()
 })
 
 // IPC: force-close whichever window sent this, bypassing its own

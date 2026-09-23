@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openScheduleViewerWindow: () => ipcRenderer.invoke('window:openScheduleViewer'),
   openMonthlyRequestsWindow: () => ipcRenderer.invoke('window:openMonthlyRequests'),
   openSurveyResponsesWindow: () => ipcRenderer.invoke('window:openSurveyResponses'),
+  openByteBlocWindow: () => ipcRenderer.invoke('window:openByteBloc'),
   forceCloseSelf: () => ipcRenderer.send('window:forceClose'),
   platform: process.platform
 })

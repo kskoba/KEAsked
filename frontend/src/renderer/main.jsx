@@ -5,12 +5,14 @@ import RosterEditor from './RosterEditor'
 import PhysicianScheduleViewer from './PhysicianScheduleViewer'
 import MonthlyRequestsPanel from './MonthlyRequestsPanel'
 import SurveyResponsesViewer from './SurveyResponsesViewer'
+import ByteBlocPanel from './ByteBlocPanel'
 import './styles/index.css'
 
 const isRosterWindow = window.location.hash === '#roster'
 const isScheduleViewerWindow = window.location.hash === '#schedule-viewer'
 const isMonthlyRequestsWindow = window.location.hash === '#monthly-requests'
 const isSurveyResponsesWindow = window.location.hash === '#survey-responses'
+const isByteBlocWindow = window.location.hash === '#bytebloc'
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
@@ -22,6 +24,8 @@ ReactDOM.createRoot(document.getElementById('root')).render(
       <MonthlyRequestsPanel />
     ) : isSurveyResponsesWindow ? (
       <SurveyResponsesViewer />
+    ) : isByteBlocWindow ? (
+      <ByteBlocPanel />
     ) : (
       <App />
     )}

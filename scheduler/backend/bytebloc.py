@@ -355,6 +355,16 @@ def send_shift_requests(payload: dict, config: ByteBlocConfig, confirmation_text
     do not call this function speculatively, in a retry loop without a
     fresh human confirmation, or from anything other than the one
     explicit "send" action the user triggered.
+
+    Confirmed with ByteBloc support (2026-09-23): no limit on the number of
+    ShiftRequest objects in a single call, and the same 10-minutes-per-endpoint
+    rate limit as the read-only GET services (section 2 of the API doc)
+    applies here too. build_shift_requests_payload already batches every
+    physician into one ProviderRequests array per call (matches the API
+    doc's own recommendation, section 10: "Calling the service for each
+    request per provider is inadvisable"), so a full-roster send is a single
+    call and stays well within that limit -- don't add per-physician retry
+    loops or split large sends into multiple calls, both would risk tripping it.
     """
     if confirmation_text != CONFIRMATION_PHRASE:
         raise PermissionError(

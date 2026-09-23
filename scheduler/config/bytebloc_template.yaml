@@ -20,16 +20,25 @@
 connection:
   # Almost never needs to change.
   base_url: https://www.bytebloc.com/sk/Svc
-  api_version: V1
+  # No api_version here -- ByteBloc versions each service independently
+  # (confirmed: getMainSchedule=V6, getUserDetails=V2, getShiftDetails=V1,
+  # createShiftRequests=V1). Each function in bytebloc.py defaults to its
+  # own confirmed version.
 
   # The group/location abbreviation for this clinic, from ByteBloc support
   # or a getLocationDetails call.
   group_code: ""
   location_code: ""
 
-  # Security token for this location, issued by ByteBloc support.
-  # Treat this like a password.
-  security_token: ""
+  # ByteBloc issues SEPARATE tokens per permission level. Treat both like
+  # passwords, but especially write_security_token -- it's the one that lets
+  # this app actually create shift requests in ByteBloc. It's fine (and safe)
+  # to fill in only read_security_token for a while, e.g. while exploring
+  # getMainSchedule/getShiftDetails/getUserDetails before ever wiring up
+  # sending -- the write endpoint always uses write_security_token
+  # specifically and will just refuse if that one's blank.
+  read_security_token: ""
+  write_security_token: ""
 
   # The ByteBloc UserId of the account submitting requests on physicians'
   # behalf. This user must have "Edit All" or "location administrator"

@@ -2,12 +2,16 @@
 ByteBloc REST API integration.
 
 Reference: ByteBloc Application Programming Interface (PDF), section 10
-"CREATE SHIFT REQUESTS" — the only write endpoint ByteBloc exposes.
-Everything else in that document (getMainSchedule, getHoursReport, etc.)
-is read-only and is intentionally NOT implemented here; this module has
-exactly one job: turn validated physician preferences into ByteBloc
-"OnRequest" shift-assignment requests, and — only on explicit human
-confirmation — POST them.
+"CREATE SHIFT REQUESTS" — the only write endpoint ByteBloc exposes; every
+other function here (getMainSchedule, getUserDetails, getShiftDetails)
+is one of ByteBloc's read-only GET services, safe to call any time using
+only read_security_token. This module's real job is turning validated
+physician submissions into ByteBloc "OffRequest"/"NeedOff" entries (one
+per shift a physician marked unavailable for), and — only on explicit
+human confirmation — POSTing them; the read-only helpers exist to
+build/verify the shift_map and provider_map config values that job
+depends on. See build_shift_requests_payload's own docstring for why
+this sends Off requests rather than On requests for now.
 
 ================================================================
 HARD SAFETY RULE — DO NOT REMOVE OR WEAKEN THIS
@@ -26,7 +30,9 @@ its own UI cannot accidentally push data to ByteBloc.
 
 from __future__ import annotations
 
+import csv
 import datetime
+import io
 import json
 import os
 import sys
@@ -66,11 +72,23 @@ class ByteBlocConfig:
     bytebloc_template.yaml is committed.
     """
 
+    # ByteBloc versions each service independently -- there is no single
+    # "API version" for the connection as a whole. Confirmed per-service:
+    # getMainSchedule=V6, getUserDetails=V2, getShiftDetails=V1,
+    # createShiftRequests=V1. Each function below defaults to its own
+    # confirmed version rather than reading one from here.
     base_url: str = "https://www.bytebloc.com/sk/Svc"
-    api_version: str = "V1"
     group_code: str = ""
     location_code: str = ""
-    security_token: str = ""
+    # ByteBloc issues separate tokens per permission level -- read_security_token
+    # only authorizes the read-only GET services (getMainSchedule, getUserDetails,
+    # getShiftDetails, etc.); write_security_token is required by the one write
+    # endpoint (createShiftRequests) and is deliberately a distinct field so a
+    # read-only exploration call can never accidentally carry write credentials.
+    # Either may be blank independently -- e.g. only read_security_token set
+    # while write access is being held back on purpose.
+    read_security_token: str = ""
+    write_security_token: str = ""
     # ByteBloc user ID of the requester. Per the API doc, this user must
     # have "Edit All" or "location administrator" privilege for the
     # location — obtained from a getUserDetails call (read-only, done
@@ -101,10 +119,10 @@ def load_bytebloc_config(path: str | Path | None = None) -> ByteBlocConfig | Non
     connection = data.get("connection") or {}
     return ByteBlocConfig(
         base_url=str(connection.get("base_url") or "https://www.bytebloc.com/sk/Svc").rstrip("/"),
-        api_version=str(connection.get("api_version") or "V1"),
         group_code=str(connection.get("group_code") or ""),
         location_code=str(connection.get("location_code") or ""),
-        security_token=str(connection.get("security_token") or ""),
+        read_security_token=str(connection.get("read_security_token") or ""),
+        write_security_token=str(connection.get("write_security_token") or ""),
         requester_id=str(connection.get("requester_id") or ""),
         shift_map={
             str(code): {"site_id": str(v.get("site_id") or ""), "shift_id": str(v.get("shift_id") or "")}
@@ -115,9 +133,112 @@ def load_bytebloc_config(path: str | Path | None = None) -> ByteBlocConfig | Non
 
 
 def is_fully_configured(config: ByteBlocConfig) -> bool:
+    """Write access -- required before build_shift_requests_payload/send_shift_requests."""
     return bool(
-        config.group_code and config.location_code and config.security_token and config.requester_id
+        config.group_code and config.location_code and config.write_security_token and config.requester_id
     )
+
+
+def is_read_configured(config: ByteBlocConfig) -> bool:
+    """Read-only access -- required before get_main_schedule or similar GET calls."""
+    return bool(config.group_code and config.location_code and config.read_security_token)
+
+
+def _http_get(url: str) -> str:
+    """Shared GET + error handling for the read-only helpers below. Returns the raw response body."""
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"ByteBloc returned HTTP {e.code}: {raw}") from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Could not reach ByteBloc: {e.reason}") from e
+
+
+def _parse_csv(raw: str) -> list[dict]:
+    # CSV services still report errors (e.g. the 10-minutes-per-endpoint rate
+    # limit) as a JSON {"Status": "..."} body instead of CSV -- without this
+    # check that gets silently mis-parsed as garbage CSV rows.
+    stripped = raw.lstrip()
+    if stripped.startswith("{"):
+        try:
+            err = json.loads(stripped)
+            raise RuntimeError(f"ByteBloc error: {err.get('Status', stripped[:300])}")
+        except json.JSONDecodeError:
+            pass  # not actually JSON -- fall through and try as CSV
+    return list(csv.DictReader(io.StringIO(raw)))
+
+
+# Confirmed per-service API versions (2026-09-23, from ByteBloc support's own
+# sample URLs and follow-up) -- do not assume these are interchangeable or
+# that a newer service shares an older one's version.
+_GET_MAIN_SCHEDULE_VERSION = "V6"
+_GET_USER_DETAILS_VERSION = "V2"
+_GET_SHIFT_DETAILS_VERSION = "V1"
+
+
+def get_main_schedule(config: ByteBlocConfig, sked_date: str | None = None, api_version: str | None = None) -> dict:
+    """
+    Fetch the published main schedule (API doc section 3) as JSON -- read-only,
+    uses read_security_token only. sked_date selects which schedule period to
+    return (any of "dd-MMM-yyyy", "yyyyMMdd", or "yyyy-MM-dd" -- omit for the
+    period containing today).
+    """
+    if not is_read_configured(config):
+        raise RuntimeError("ByteBloc read access is not configured (missing group/location/read token).")
+
+    path = f"{config.group_code}/{config.location_code}/{config.read_security_token}"
+    if sked_date:
+        path += f"/{sked_date}"
+    version = api_version or _GET_MAIN_SCHEDULE_VERSION
+    url = f"{config.base_url}/getMainSchedule/{version}/{path}?format=JSON"
+
+    raw = _http_get(url)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"ByteBloc returned non-JSON response: {raw[:500]}") from e
+
+
+def get_user_details(
+    config: ByteBlocConfig, providers_only: bool = True, api_version: str | None = None
+) -> list[dict]:
+    """
+    Fetch all users/providers for this location (API doc section 8) -- read-only,
+    uses read_security_token only. Returns one dict per CSV row (UserGroupId,
+    LocationId, UserId, ProviderId, FirstName, LastName, Email, ... -- see the
+    API doc for the full column list). providers_only=False includes non-provider
+    users too (e.g. location administrators), useful for finding a requester_id.
+    """
+    if not is_read_configured(config):
+        raise RuntimeError("ByteBloc read access is not configured (missing group/location/read token).")
+
+    version = api_version or _GET_USER_DETAILS_VERSION
+    flag = "Y" if providers_only else "F"
+    url = (
+        f"{config.base_url}/getUserDetails/{version}/{config.group_code}/{config.location_code}/"
+        f"{config.read_security_token}?providersonly={flag}"
+    )
+    return _parse_csv(_http_get(url))
+
+
+def get_shift_details(config: ByteBlocConfig, api_version: str | None = None) -> list[dict]:
+    """
+    Fetch all sites and shifts for this location (API doc section 9) -- read-only,
+    uses read_security_token only. Returns one dict per CSV row (SiteId,
+    SiteAbbreviation, ShiftId, ShiftShortName, ShiftStartTime, ShiftEndTime, ...).
+    """
+    if not is_read_configured(config):
+        raise RuntimeError("ByteBloc read access is not configured (missing group/location/read token).")
+
+    version = api_version or _GET_SHIFT_DETAILS_VERSION
+    url = (
+        f"{config.base_url}/getShiftDetails/{version}/"
+        f"{config.group_code}/{config.location_code}/{config.read_security_token}"
+    )
+    return _parse_csv(_http_get(url))
 
 
 @dataclass
@@ -139,14 +260,22 @@ def build_shift_requests_payload(
     Build the createShiftRequests JSON payload (section 10 of the API doc)
     from validated physician submissions. Does NOT contact ByteBloc.
 
-    Only explicit shift preferences (a physician's `requested_shifts` for a
-    day they marked as wanting to work) become "OnRequest" assignment
-    requests. Days a physician did not mark as wanted are NOT sent as
-    ByteBloc "OffRequest"s: an OffRequest requires a reason (Cme, Vacation,
-    Admin, Personal, Custom1-4 per the API schema) that KEAsked's
-    submission data does not capture, and inventing one would put words in
-    the physician's mouth. If off-request submission is wanted later, the
-    submission format needs to capture a reason first.
+    Sends "OffRequest"/"NeedOff" for every (day, shift) a physician's
+    submission does NOT list in that day's requested_shifts -- i.e. every
+    shift slot they marked unavailable, one request per slot (not a
+    blanket day-level off) so a physician available for only part of a
+    day is represented correctly. OffReason is left blank: a spot-check of
+    ByteBloc's current setup (2026-09-23) found no existing Off requests
+    there have one set despite the API doc listing it as part of the
+    required schema shape, so this matches how the org already uses the
+    system -- revisit if a real send ever comes back with an
+    OffReason-related error status.
+
+    Explicit "OnRequest" assignment requests (a physician's *preferred*
+    shifts, sked's grid "preferred"/starred state) are NOT sent yet --
+    nothing currently reads that state out of a submission. Wiring it in
+    is a deliberate follow-up once that data is actually captured/used
+    somewhere, not done here.
 
     Returns (payload, warnings, preview_items):
       - payload: the JSON body, ready for send_shift_requests(). May have
@@ -161,6 +290,18 @@ def build_shift_requests_payload(
     provider_requests: list[dict] = []
     preview_items: list[RequestPreviewItem] = []
 
+    # Warn once per unmapped shift code, not once per (physician, day) it's
+    # hit on -- off-requests are checked against every shift code for every
+    # day, so a single missing mapping would otherwise flood warnings.
+    unmapped_codes = sorted(
+        code for code, mapping in config.shift_map.items() if not mapping.get("shift_id")
+    )
+    for code in unmapped_codes:
+        warnings.append(f"Shift {code!r} has no ByteBloc shift_id in bytebloc.yaml — skipped for everyone.")
+    mapped_shift_codes = sorted(
+        code for code, mapping in config.shift_map.items() if mapping.get("shift_id")
+    )
+
     for sub in submissions:
         name = display_names.get(sub.physician_id, sub.physician_name)
         provider_id = config.provider_map.get(sub.physician_id)
@@ -172,22 +313,16 @@ def build_shift_requests_payload(
 
         shift_requests: list[dict] = []
         for day in sub.days:
-            if not day.wants_to_work or not day.requested_shifts:
-                continue
-            for shift_code in sorted(day.requested_shifts):
-                mapping = config.shift_map.get(shift_code)
-                if not mapping or not mapping.get("shift_id"):
-                    warnings.append(
-                        f"{name}: shift {shift_code!r} on {day.date.isoformat()} has no "
-                        f"ByteBloc shift mapping in bytebloc.yaml — skipped."
-                    )
-                    continue
+            for shift_code in mapped_shift_codes:
+                if shift_code in day.requested_shifts:
+                    continue  # marked available -- nothing to request off
+                shift_id = config.shift_map[shift_code]["shift_id"]
                 shift_requests.append({
                     "Day": day.date.strftime("%Y%m%d"),
-                    "SiteId": "",       # must be blank/null for an assignment request
-                    "ShiftId": mapping["shift_id"],
-                    "RequestType": "OnRequest",
-                    "OffType": "",
+                    "SiteId": "",
+                    "ShiftId": shift_id,
+                    "RequestType": "OffRequest",
+                    "OffType": "NeedOff",
                     "OffReason": "",
                 })
                 preview_items.append(RequestPreviewItem(
@@ -229,8 +364,8 @@ def send_shift_requests(payload: dict, config: ByteBlocConfig, confirmation_text
         raise RuntimeError("ByteBloc is not fully configured (missing group/location/token/requester).")
 
     url = (
-        f"{config.base_url}/createShiftRequests/{config.api_version}/"
-        f"{config.group_code}/{config.location_code}/{config.security_token}"
+        f"{config.base_url}/createShiftRequests/V1/"
+        f"{config.group_code}/{config.location_code}/{config.write_security_token}"
     )
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(

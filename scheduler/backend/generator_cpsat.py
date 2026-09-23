@@ -767,6 +767,20 @@ class CpsatScheduleGenerator:
                 return "0600h"
             return None
 
+        # anchor_fill_vars_flat: every fill_2400/fill_0600 IntVar, unweighted —
+        # the objective for the anchor-floor lexicographic tier below.
+        # anchor_requests_by_pid: pid -> [("2400h", requested), ...] for
+        # whichever type(s) the physician actually stated a positive request
+        # for. The solution callback only tracks `shifts` vars (not these
+        # derived IntVars), so the tier's lock-in step recomputes each
+        # physician's achieved count straight from the shift assignments —
+        # this list is what tells it which (type, requested-cap) pairs to
+        # recompute and lock, per physician rather than just the roster-wide
+        # sum (see that tier's own comment for why the per-physician part
+        # matters).
+        anchor_fill_vars_flat: list = []
+        anchor_requests_by_pid: dict[str, list[tuple[str, int]]] = {}
+
         for pid in pids:
             sub = self.submissions[pid]
             anchor_vars = []
@@ -796,10 +810,14 @@ class CpsatScheduleGenerator:
                     fill_2400 = model.new_int_var(0, sub.shifts_2400h_requested, f"anchorfill_2400_{pid}")
                     model.add(fill_2400 <= sum(vars_2400))
                     anchor_fulfillment_bonus_terms.append(_ANCHOR_FULFILLMENT_BONUS * fill_2400)
+                    anchor_fill_vars_flat.append(fill_2400)
+                    anchor_requests_by_pid.setdefault(pid, []).append(("2400h", sub.shifts_2400h_requested))
                 if sub.shifts_0600h_stated and sub.shifts_0600h_requested > 0 and vars_0600:
                     fill_0600 = model.new_int_var(0, sub.shifts_0600h_requested, f"anchorfill_0600_{pid}")
                     model.add(fill_0600 <= sum(vars_0600))
                     anchor_fulfillment_bonus_terms.append(_ANCHOR_FULFILLMENT_BONUS * fill_0600)
+                    anchor_fill_vars_flat.append(fill_0600)
+                    anchor_requests_by_pid.setdefault(pid, []).append(("0600h", sub.shifts_0600h_requested))
 
                 # Per-physician 2400h cap. Checked via shifts_2400h_stated,
                 # not `> 0` — a physician who explicitly typed "0" (a real
@@ -1597,6 +1615,130 @@ class CpsatScheduleGenerator:
             # tiers 1/2 ate most of their (small) allocations.
             remaining_time_limit = max(30.0, remaining_time_limit)
             logger.info("CP-SAT lexicographic: tier 3/3 — full objective (normal physicians up to max)")
+
+        # ----------------------------------------------------------------
+        # Anchor-fulfillment floor (2400h/0600h requests). Runs
+        # unconditionally — unlike tiers 1/2 above, not gated on casual
+        # physicians existing — since the problem it fixes has nothing to
+        # do with casual staffing. Confirmed on real October 2026 data: a
+        # 20-minute solve at 1.1% optimality gap (so not a search-depth
+        # problem) gave one physician 0 of 6 explicitly requested 2400h
+        # shifts, with genuine availability, while shifts went to others
+        # who never asked for any.
+        #
+        # First implementation here was a single tier maximizing the SUM
+        # of anchor-fulfillment across everyone — re-tested against the
+        # same real data and it did NOT fix the problem (RScheirer stayed
+        # at 0/6). Root cause: a pure sum is fairness-blind — it's exactly
+        # as "optimal" whether the total is spread across many physicians
+        # or concentrated on a few, since nothing in a flat sum objective
+        # prefers breadth over depth. So this is genuinely two stages, not
+        # one:
+        #   Stage A (breadth): maximize the COUNT of (physician, anchor
+        #     type) pairs that get AT LEAST ONE shift of their requested
+        #     type — a boolean "got_var" per pair, reified off the same
+        #     sum-of-type-vars each fill_2400/fill_0600 already uses.
+        #     This is what actually stops anyone being left at a hard
+        #     zero when giving them even one is feasible.
+        #   Stage B (depth): THEN maximize total units (the original sum),
+        #     on top of stage A's breadth guarantee, to use up whatever
+        #     capacity remains as efficiently as possible.
+        #
+        # Runs after tiers 1/2 (if they ran) deliberately — reaching a
+        # physician's own requested TOTAL shift count should take priority
+        # over the TYPE mix within that count; you can't fulfill an anchor
+        # request with a shift you were never assigned in the first place.
+        #
+        # Soft throughout, never a hard model.add(>= requested) constraint:
+        # a physician whose roster-level only_0600h/only_2400h flag
+        # conflicts with a stale monthly request for the type they can't
+        # work must degrade gracefully (HC-5 already forces their
+        # vars_2400/vars_0600 for that type to 0, so their achievable
+        # ceiling here is naturally 0) rather than make the whole model
+        # infeasible over one inconsistent data row.
+        #
+        # Both stages lock each individual physician's achieved count per
+        # anchor type, not just the stage-wide sum/count — a sum-only lock
+        # would let a later stage (or the final tier) trade one
+        # physician's fulfillment for another's of equal weight, which is
+        # exactly the failure mode this exists to close (same reasoning as
+        # tier 1's own per-physician lock above). Recomputed from the
+        # shift assignments directly rather than read off the
+        # fill_2400/fill_0600/got_* variables themselves, since the
+        # solution callback only tracks `shifts` vars.
+        # ----------------------------------------------------------------
+        def _lock_anchor_floors(best_values: dict) -> None:
+            for pid, requests in anchor_requests_by_pid.items():
+                for time_str, requested in requests:
+                    achieved_count = sum(
+                        best_values.get((pid, d_idx, shift.code), 0)
+                        for d_idx in range(len(all_dates))
+                        for block in BLOCKS
+                        for shift in block
+                        if shift.time == time_str
+                    )
+                    floor = min(achieved_count, requested)
+                    if floor > 0:
+                        type_vars = [
+                            shifts[(pid, d_idx, shift.code)]
+                            for d_idx in range(len(all_dates))
+                            for block in BLOCKS
+                            for shift in block
+                            if shift.time == time_str
+                        ]
+                        model.add(sum(type_vars) >= floor)
+
+        if anchor_fill_vars_flat:
+            anchor_tier_time_limit = min(60.0, max(5.0, time_limit * 0.1))
+
+            # Stage A — breadth: nobody with a real request gets left at zero.
+            logger.info("CP-SAT lexicographic: anchor-fulfillment floor, stage A (breadth)")
+            got_vars_flat = []
+            for pid, requests in anchor_requests_by_pid.items():
+                for time_str, _requested in requests:
+                    type_vars = [
+                        shifts[(pid, d_idx, shift.code)]
+                        for d_idx in range(len(all_dates))
+                        for block in BLOCKS
+                        for shift in block
+                        if shift.time == time_str
+                    ]
+                    got = model.new_bool_var(f"anchorgot_{time_str}_{pid}")
+                    model.add(got <= sum(type_vars))
+                    got_vars_flat.append(got)
+
+            stageA_expr = sum(got_vars_flat)
+            model.maximize(stageA_expr)
+            stageA_solver = _cp_model.CpSolver()
+            stageA_solver.parameters.max_time_in_seconds = anchor_tier_time_limit
+            stageA_solver.parameters.num_search_workers = num_workers
+            stageA_cb = _SolutionCallback(shifts, should_stop=cancel_check)
+            stageA_status = stageA_solver.solve(model, stageA_cb)
+            if stageA_status in (_cp_model.OPTIMAL, _cp_model.FEASIBLE) and stageA_cb.best_values:
+                model.add(stageA_expr >= int(stageA_cb.best_objective))
+                _lock_anchor_floors(stageA_cb.best_values)
+                _apply_hint(stageA_cb)
+            remaining_time_limit -= stageA_solver.wall_time
+            if progress_callback:
+                progress_callback(80, 100, stageA_cb.best_objective if stageA_cb.best_values else 0.0)
+
+            # Stage B — depth: maximize total units on top of stage A's floor.
+            logger.info("CP-SAT lexicographic: anchor-fulfillment floor, stage B (depth)")
+            stageB_expr = sum(anchor_fill_vars_flat)
+            model.maximize(stageB_expr)
+            stageB_solver = _cp_model.CpSolver()
+            stageB_solver.parameters.max_time_in_seconds = anchor_tier_time_limit
+            stageB_solver.parameters.num_search_workers = num_workers
+            stageB_cb = _SolutionCallback(shifts, should_stop=cancel_check)
+            stageB_status = stageB_solver.solve(model, stageB_cb)
+            if stageB_status in (_cp_model.OPTIMAL, _cp_model.FEASIBLE) and stageB_cb.best_values:
+                model.add(stageB_expr >= int(stageB_cb.best_objective))
+                _lock_anchor_floors(stageB_cb.best_values)
+                _apply_hint(stageB_cb)
+            remaining_time_limit -= stageB_solver.wall_time
+            remaining_time_limit = max(30.0, remaining_time_limit)
+            if progress_callback:
+                progress_callback(85, 100, stageB_cb.best_objective if stageB_cb.best_values else 0.0)
 
         model.maximize(sum(objective_terms))
 

@@ -787,6 +787,16 @@ class ScheduleGenerator:
                 ),
             ))
 
+        # 2b2. Symmetric counterpart: only_0600h physicians may only work 0600h shifts.
+        if cfg and cfg.only_0600h and shift.time != "0600h":
+            v.append(ViolationReason(
+                rule="shift_type_restriction",
+                description=(
+                    f"{cfg.name} is restricted to 0600h shifts only "
+                    f"(requested: {shift.time})"
+                ),
+            ))
+
         # 2c. Forbidden shift times (e.g. no 0600h or 2400h)
         if cfg and shift.time in cfg.forbidden_shift_times:
             v.append(ViolationReason(

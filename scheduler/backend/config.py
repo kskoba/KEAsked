@@ -130,6 +130,12 @@ class PhysicianConfig:
     # Shift-type restriction: if True, physician may only be assigned 2400h shifts.
     only_2400h: bool = False
 
+    # Symmetric counterpart to only_2400h: if True, physician may only be
+    # assigned 0600h shifts. Added from the Sept 2026 preferences survey --
+    # only_2400h existed but nothing let a 0600h-only physician (e.g. Deol,
+    # Mrochuk) express the same restriction.
+    only_0600h: bool = False
+
     # Soft scheduling preferences.
     prefer_weekends: bool = False
 
@@ -376,6 +382,7 @@ def _parse_physician(raw: dict) -> PhysicianConfig:
         forbidden_sites=forbidden_sites,
         rule_overrides=overrides,
         only_2400h=bool(sched.get("only_2400h", False)),
+        only_0600h=bool(sched.get("only_0600h", False)),
         prefer_weekends=bool(sched.get("prefer_weekends", False)),
         max_weekends=parsed_max_weekends,
         honor_all_requests=bool(sched.get("honor_all_requests", False)),
@@ -468,6 +475,8 @@ def physician_config_to_raw(cfg: PhysicianConfig) -> dict:
         sched["group_b_site_preference"] = cfg.group_b_site_preference
     if cfg.only_2400h:
         sched["only_2400h"] = True
+    if cfg.only_0600h:
+        sched["only_0600h"] = True
     if cfg.prefer_weekends:
         sched["prefer_weekends"] = True
     if cfg.max_weekends is not None:

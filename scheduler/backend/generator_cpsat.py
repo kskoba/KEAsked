@@ -357,13 +357,14 @@ class CpsatScheduleGenerator:
         # ----------------------------------------------------------------
         # HC-3: Availability — block-level
         # HC-4: Forbidden sites
-        # HC-5: only_2400h restriction
+        # HC-5: only_2400h / only_0600h restriction
         # HC-6: Flat-file specific shift availability
         # ----------------------------------------------------------------
         for pid in pids:
             cfg = _get_cfg(pid)
             forbidden = _forbidden_sites(pid)
             only_nights = cfg.only_2400h if cfg else False
+            only_mornings = cfg.only_0600h if cfg else False
 
             for d_idx, d in enumerate(all_dates):
                 day_specific_shifts = self._shift_avail.get((pid, d))
@@ -394,8 +395,11 @@ class CpsatScheduleGenerator:
                             model.add(var == 0)
                             continue
 
-                        # only_2400h restriction
+                        # only_2400h / only_0600h restriction
                         if only_nights and shift.time != "2400h":
+                            model.add(var == 0)
+                            continue
+                        if only_mornings and shift.time != "0600h":
                             model.add(var == 0)
                             continue
 
@@ -1921,6 +1925,9 @@ class CpsatScheduleGenerator:
 
         if cfg and cfg.only_2400h and shift.time != "2400h":
             v.append(ViolationReason(rule="shift_type_restriction", description=f"Restricted to 2400h shifts only"))
+
+        if cfg and cfg.only_0600h and shift.time != "0600h":
+            v.append(ViolationReason(rule="shift_type_restriction", description=f"Restricted to 0600h shifts only"))
 
         if cfg and shift.time in cfg.forbidden_shift_times:
             v.append(ViolationReason(rule="shift_type_restriction", description=f"{cfg.name} cannot work {shift.time} shifts"))

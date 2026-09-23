@@ -139,7 +139,10 @@ class PhysicianConfig:
     # Soft scheduling preferences.
     prefer_weekends: bool = False
 
-    # Per-physician weekend cap; overrides the global max_weekends if set.
+    # Per-physician weekend cap; if set, overrides the proportional
+    # max_weekends_per_month calculation entirely (see generator.py's
+    # _eff_max_weekends). Use for a standing exception like someone who
+    # works every weekend regardless of shift count.
     max_weekends: Optional[int] = None
 
     # If True, requested dates+shifts are treated as near-mandatory (high score bonus).

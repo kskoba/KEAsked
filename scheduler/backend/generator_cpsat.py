@@ -19,6 +19,7 @@ from __future__ import annotations
 import calendar
 import datetime
 import logging
+import math
 import os
 import sys
 from collections import defaultdict
@@ -35,6 +36,7 @@ from scheduler.backend.generator import (
     ScheduleStats,
     UnfilledSlot,
     ViolationReason,
+    _DEFAULT_FULL_TIME_SHIFTS,
     _DEFAULT_MAX_CONSEC,
     _DEFAULT_MAX_WEEKENDS,
     _HARD_VIOLATION_RULES,
@@ -152,6 +154,9 @@ class CpsatScheduleGenerator:
         self._default_2400h_cap_unstated: int = anchor_cfg.get("default_2400h_cap_unstated", 4)
         self._max_weekends: int = (
             config.get("weekends", {}).get("max_weekends_per_month", _DEFAULT_MAX_WEEKENDS)
+        )
+        self._full_time_shifts: int = (
+            config.get("weekends", {}).get("full_time_shifts_per_month", _DEFAULT_FULL_TIME_SHIFTS)
         )
         self._max_consec_default: int = (
             config.get("consecutive", {}).get("max_consecutive_shifts", _DEFAULT_MAX_CONSEC)
@@ -326,10 +331,20 @@ class CpsatScheduleGenerator:
             return cfg.max_consecutive_shifts if cfg else self._max_consec_default
 
         def _eff_max_weekends(pid: str) -> int:
+            # Explicit per-physician override always wins (e.g. KLam/MRico
+            # are set to 5 -- "works every weekend"). Otherwise scale
+            # max_weekends_per_month by this physician's requested shifts
+            # relative to a full-time month, so a low-volume physician
+            # isn't held to the same weekend ceiling as a high-volume one.
             cfg = _get_cfg(pid)
             if cfg and cfg.max_weekends is not None:
                 return cfg.max_weekends
-            return self._max_weekends
+            if self._full_time_shifts <= 0:
+                return self._max_weekends
+            sub = self.submissions.get(pid)
+            requested = sub.shifts_requested if sub else 0
+            scaled = math.floor(requested / self._full_time_shifts * self._max_weekends + 0.5)
+            return max(1, scaled)
 
         # ----------------------------------------------------------------
         # HC-1: At most one physician per slot per day
@@ -914,10 +929,16 @@ class CpsatScheduleGenerator:
                             anchor_overage_penalty_terms.append(-weight_0600 * over_0600)
 
         # ----------------------------------------------------------------
-        # HC-12: Weekend limit
+        # Soft: Weekend limit
         # For each physician, for each distinct weekend cluster (Fri/Sat/Sun),
         # create a BoolVar that is 1 iff the physician works any shift in that
-        # cluster.  Then cap the total weekend BoolVars.
+        # cluster. Strongly discouraged (not a hard cap) to exceed their
+        # weekend cap (_eff_max_weekends -- proportional to requested shift
+        # count) -- but weaker than exceeding their own requested shift
+        # total (deficit_penalty_terms' bonus_high/bonus_low, 100/50 above)
+        # so the solver will push someone over their weekend cap before
+        # ever leaving a shift-count deficit unfilled or overscheduling
+        # someone past what they asked for.
         # ----------------------------------------------------------------
         # Group date indices by weekend key
         weekend_clusters: dict[tuple, list[int]] = defaultdict(list)
@@ -928,7 +949,9 @@ class CpsatScheduleGenerator:
         # Captured per-pid so the weekend-clumping soft term (below) can
         # reuse these same "worked this weekend" BoolVars instead of
         # rebuilding them.
+        _WEEKEND_OVERAGE_PENALTY = 35
         weekend_worked_vars_by_pid: dict[str, list] = {}
+        weekend_overage_penalty_terms = []
         for pid in pids:
             max_we = _eff_max_weekends(pid)
             if not weekend_clusters:
@@ -956,8 +979,10 @@ class CpsatScheduleGenerator:
                     weekend_worked_vars.append(wv)
 
             if weekend_worked_vars:
-                model.add(sum(weekend_worked_vars) <= max_we)
                 weekend_worked_vars_by_pid[pid] = weekend_worked_vars
+                over_we = model.new_int_var(0, len(weekend_clusters), f"wknd_over_{pid}")
+                model.add(over_we >= sum(weekend_worked_vars) - max_we)
+                weekend_overage_penalty_terms.append(-_WEEKEND_OVERAGE_PENALTY * over_we)
 
         # Soft: weekend-clumping penalty (prefer_weekend_clumping). Penalizes
         # each distinct weekend touched, so — for a similar total number of
@@ -1537,6 +1562,7 @@ class CpsatScheduleGenerator:
         objective_terms.extend(anchor_overage_penalty_terms)
         objective_terms.extend(anchor_fulfillment_bonus_terms)
         objective_terms.extend(weekend_clump_penalty_terms)
+        objective_terms.extend(weekend_overage_penalty_terms)
 
         # ----------------------------------------------------------------
         # Lexicographic casual-priority tiers (only when casual physicians

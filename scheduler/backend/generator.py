@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import calendar
 import datetime
+import math
 import random
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -127,6 +128,12 @@ class ScheduleResult:
 
 _DEFAULT_ANCHOR_MAX = 4
 _DEFAULT_MAX_WEEKENDS = 2
+# Monthly shift count a "full-time" physician is assumed to request --
+# max_weekends_per_month is the weekend cap AT this shift count; physicians
+# requesting fewer shifts get a proportionally lower cap (see
+# _eff_max_weekends), so a low-volume physician isn't held to the same
+# weekend ceiling as someone working 3x as many shifts that month.
+_DEFAULT_FULL_TIME_SHIFTS = 12
 _DEFAULT_MAX_CONSEC = 3
 _WEEKEND_WEEKDAYS = frozenset({4, 5, 6})   # Friday=4, Saturday=5, Sunday=6
 
@@ -161,6 +168,9 @@ class ScheduleGenerator:
         self._anchor_tol: int = anchor_cfg.get("anchor_target_tolerance", 1)
         self._max_weekends: int = (
             config.get("weekends", {}).get("max_weekends_per_month", _DEFAULT_MAX_WEEKENDS)
+        )
+        self._full_time_shifts: int = (
+            config.get("weekends", {}).get("full_time_shifts_per_month", _DEFAULT_FULL_TIME_SHIFTS)
         )
         self._max_consec_default: int = (
             config.get("consecutive", {}).get("max_consecutive_shifts", _DEFAULT_MAX_CONSEC)
@@ -920,11 +930,7 @@ class ScheduleGenerator:
         # 9. Weekend limit (hard block — frontend may override with confirmation)
         if d.weekday() in _WEEKEND_WEEKDAYS:
             wk = _weekend_key(d)
-            eff_max_weekends = (
-                cfg.max_weekends
-                if cfg and cfg.max_weekends is not None
-                else self._max_weekends
-            )
+            eff_max_weekends = self._eff_max_weekends(pid, sub)
             if (
                 len(self._weekend_keys[pid]) >= eff_max_weekends
                 and wk not in self._weekend_keys[pid]
@@ -1417,6 +1423,26 @@ class ScheduleGenerator:
         if shift.time == "0600h" and sub.shifts_0600h_requested > 0:
             return sub.shifts_0600h_requested + self._anchor_tol
         return self._anchor_max
+
+    def _eff_max_weekends(self, pid: str, sub: PhysicianSubmission) -> int:
+        """
+        Weekend cap for *pid* this month: an explicit per-physician
+        `max_weekends` override always wins (e.g. KLam/MRico are set to 5 --
+        "works every weekend"). Otherwise, scale max_weekends_per_month by
+        how many shifts this physician actually requested relative to a
+        full-time month (full_time_shifts_per_month), so a physician
+        requesting 4 shifts isn't held to the same weekend ceiling as one
+        requesting 12 -- previously both got the flat global default
+        regardless of volume, which could land a low-volume physician on
+        MORE distinct weekends than a high-volume one.
+        """
+        cfg = self.roster.get(pid) or self._roster_lower.get(pid.lower()) or self._roster_by_name.get(pid.lower())
+        if cfg and cfg.max_weekends is not None:
+            return cfg.max_weekends
+        if self._full_time_shifts <= 0:
+            return self._max_weekends
+        scaled = math.floor(sub.shifts_requested / self._full_time_shifts * self._max_weekends + 0.5)
+        return max(1, scaled)
 
     # -------------------------------------------------------------------
     # Post-solve repair pass

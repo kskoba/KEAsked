@@ -10,6 +10,8 @@ jobs:
   # ─── Windows x64 ────────────────────────────────────────────────────────────
   build-windows:
     runs-on: windows-latest
+    permissions:
+      actions: write   # needed to prune older artifacts below
     steps:
       - uses: actions/checkout@v4
 
@@ -53,6 +55,23 @@ jobs:
           path: release/*.exe
           if-no-files-found: error
 
+      # Keep only this build's artifact -- installers are large (~150MB+
+      # each) and time-based retention alone let 106 of them pile up and
+      # blow the storage quota (silently failing every upload after). No
+      # fixed day limit either, since the newest one needs to survive
+      # however long until the next successful build replaces it.
+      - name: Prune older Windows artifacts
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ids=$(gh api "repos/${{ github.repository }}/actions/artifacts?per_page=100&name=windows-installer" \
+            --jq '.artifacts | sort_by(.created_at) | reverse | .[1:] | .[].id')
+          for id in $ids; do
+            gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$id" || true
+          done
+
   # ─── macOS ARM64 (Apple Silicon — M1/M2/M3/M4) ──────────────────────────────
   # Intel Mac users: install Rosetta 2 — the ARM64 binary runs via Rosetta.
   # Requires GitHub secrets:
@@ -63,6 +82,8 @@ jobs:
   #   APPLE_TEAM_ID                  — 10-character Team ID (developer.apple.com)
   build-mac:
     runs-on: macos-latest
+    permissions:
+      actions: write   # needed to prune older artifacts below
     steps:
       - uses: actions/checkout@v4
 
@@ -146,6 +167,18 @@ jobs:
           name: macos-dmg
           path: release/*.dmg
           if-no-files-found: error
+
+      # See "Prune older Windows artifacts" in build-windows for why.
+      - name: Prune older macOS artifacts
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ids=$(gh api "repos/${{ github.repository }}/actions/artifacts?per_page=100&name=macos-dmg" \
+            --jq '.artifacts | sort_by(.created_at) | reverse | .[1:] | .[].id')
+          for id in $ids; do
+            gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$id" || true
+          done
 
   # ─── GitHub Release (tag pushes only) ───────────────────────────────────────
   release:

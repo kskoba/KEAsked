@@ -103,6 +103,12 @@ def _shift_by_code() -> dict[str, Shift]:
     return {shift.code: shift for block in BLOCKS for shift in block}
 
 
+# Every distinct site string that appears in BLOCKS — used by
+# max_consecutive_same_site (HC-12c) so it never hardcodes the site list
+# separately from shifts.py's own definitions.
+_ALL_SITES: list[str] = sorted({shift.site for block in BLOCKS for shift in block})
+
+
 # ---------------------------------------------------------------------------
 # CP-SAT solver
 # ---------------------------------------------------------------------------
@@ -861,6 +867,10 @@ class CpsatScheduleGenerator:
             if d.weekday() in _WEEKEND_WEEKDAYS:
                 weekend_clusters[_weekend_key(d)].append(d_idx)
 
+        # Captured per-pid so the weekend-clumping soft term (below) can
+        # reuse these same "worked this weekend" BoolVars instead of
+        # rebuilding them.
+        weekend_worked_vars_by_pid: dict[str, list] = {}
         for pid in pids:
             max_we = _eff_max_weekends(pid)
             if not weekend_clusters:
@@ -889,6 +899,21 @@ class CpsatScheduleGenerator:
 
             if weekend_worked_vars:
                 model.add(sum(weekend_worked_vars) <= max_we)
+                weekend_worked_vars_by_pid[pid] = weekend_worked_vars
+
+        # Soft: weekend-clumping penalty (prefer_weekend_clumping). Penalizes
+        # each distinct weekend touched, so — for a similar total number of
+        # weekend shifts — the solver prefers concentrating them onto fewer
+        # weekends (e.g. one Fri/Sat/Sun stretch) over spreading them thin.
+        # Distinct from max_weekends above, which only caps the count.
+        _WEEKEND_CLUMP_PENALTY = 15
+        weekend_clump_penalty_terms = []
+        for pid in pids:
+            cfg = _get_cfg(pid)
+            if not (cfg and cfg.prefer_weekend_clumping):
+                continue
+            for wv in weekend_worked_vars_by_pid.get(pid, []):
+                weekend_clump_penalty_terms.append(-_WEEKEND_CLUMP_PENALTY * wv)
 
         # ----------------------------------------------------------------
         # HC-13: Max consecutive nights (NIAR)
@@ -1326,6 +1351,71 @@ class CpsatScheduleGenerator:
                 if window_vars:
                     model.add(sum(window_vars) <= mc1800)
 
+        # ----------------------------------------------------------------
+        # HC-12b: Post-block cool-down (post_block_rest_days)
+        # If a physician works a stretch of >= post_block_min_length
+        # consecutive days that is immediately followed by a day off (i.e.
+        # this is genuinely where the stretch ends, not a sub-window of a
+        # longer one), the following post_block_rest_days days must be
+        # entirely off too. Triggered on the true end of a run — not on
+        # every min_length sub-window of a longer run — by requiring the
+        # day right after the window to already be off as part of the same
+        # AND condition, so a 3-day block with post_block_min_length=2
+        # can't have its own middle day contradictorily forced off by an
+        # earlier sub-window firing prematurely.
+        # ----------------------------------------------------------------
+        for pid in pids:
+            cfg = _get_cfg(pid)
+            rest_days = cfg.post_block_rest_days if cfg else 0
+            if not rest_days:
+                continue
+            min_len = cfg.post_block_min_length if cfg else 2
+            if min_len < 1 or min_len > len(all_dates):
+                continue
+            for end in range(min_len - 1, len(all_dates)):
+                next_idx = end + 1
+                if next_idx >= len(all_dates):
+                    break  # no next day within this month to check/require off
+                window = [worked_bool[(pid, d_idx)] for d_idx in range(end - min_len + 1, end + 1)]
+                literals = window + [worked_bool[(pid, next_idx)].negated()]
+                run_end = model.new_bool_var(f"blockend_{pid}_{end}")
+                # Forces run_end=1 only when every literal is true (full
+                # min_len window worked AND the day right after is off) —
+                # solver has no incentive to set it spuriously since doing
+                # so only adds constraints below, never helps the objective.
+                model.add(sum(literals) <= len(literals) - 1 + run_end)
+                for k in range(rest_days):
+                    rest_idx = next_idx + k
+                    if rest_idx >= len(all_dates):
+                        break
+                    model.add_implication(run_end, worked_bool[(pid, rest_idx)].negated())
+
+        # ----------------------------------------------------------------
+        # HC-12c: No more than N consecutive days at the same site
+        # (max_consecutive_same_site) — "no 2 Intake/NEHC shifts in a row".
+        # Mirrors HC-12's 1800h-cap sliding-window pattern, filtered by
+        # site instead of shift time.
+        # ----------------------------------------------------------------
+        for pid in pids:
+            cfg = _get_cfg(pid)
+            max_same_site = cfg.max_consecutive_same_site if cfg else None
+            if not max_same_site:
+                continue
+            window = max_same_site + 1
+            if window > len(all_dates):
+                continue
+            for site_name in _ALL_SITES:
+                for start in range(len(all_dates) - max_same_site):
+                    window_vars = [
+                        shifts[(pid, d_idx, shift.code)]
+                        for d_idx in range(start, start + window)
+                        for block in BLOCKS
+                        for shift in block
+                        if shift.site == site_name
+                    ]
+                    if window_vars:
+                        model.add(sum(window_vars) <= max_same_site)
+
         # Soft penalty for 4-consecutive-day runs.
         # Physicians with max_consecutive_shifts >= 4 are ALLOWED to work 4 days in a
         # row (hard constraint), but we discourage it as a last resort.
@@ -1349,14 +1439,25 @@ class CpsatScheduleGenerator:
                 model.add(w0 + w1 + w2 + w3 <= 3 + run4)
                 run_penalty_terms.append(-35 * run4)
 
-        # Soft: Monday avoidance penalty (-20 per Monday shift)
+        # Soft: avoid-weekday penalty (-5 per shift on the physician's
+        # avoided weekday, e.g. a protected admin day). Generalizes the
+        # legacy avoid_mondays flag (still honoured as shorthand for
+        # avoid_weekday="MON" when avoid_weekday itself is unset — see
+        # PhysicianConfig.avoid_weekday) to any single weekday.
+        _WEEKDAY_NUM = {"MON": 0, "TUE": 1, "WED": 2, "THU": 3, "FRI": 4, "SAT": 5, "SUN": 6}
         monday_penalty_terms = []
         for pid in pids:
             cfg = _get_cfg(pid)
-            if not (cfg and cfg.avoid_mondays):
+            target_day = None
+            if cfg:
+                if cfg.avoid_weekday:
+                    target_day = _WEEKDAY_NUM.get(cfg.avoid_weekday)
+                elif cfg.avoid_mondays:
+                    target_day = 0
+            if target_day is None:
                 continue
             for d_idx, d in enumerate(all_dates):
-                if d.weekday() != 0:  # 0 = Monday
+                if d.weekday() != target_day:
                     continue
                 for block in BLOCKS:
                     for shift in block:
@@ -1377,6 +1478,7 @@ class CpsatScheduleGenerator:
         objective_terms.extend(swing_penalty_terms)
         objective_terms.extend(anchor_overage_penalty_terms)
         objective_terms.extend(anchor_fulfillment_bonus_terms)
+        objective_terms.extend(weekend_clump_penalty_terms)
 
         # ----------------------------------------------------------------
         # Lexicographic casual-priority tiers (only when casual physicians

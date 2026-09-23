@@ -27,6 +27,12 @@ from scheduler.backend.shifts import (
     is_spacing_ok,
 )
 
+# Shift start times treated as "evening" for call_linkage="doc_before_evening"
+# (see PhysicianConfig.call_linkage / CALL_LINKAGE_VALUES) — same set used
+# elsewhere in this codebase (generator_cpsat.py's rest_after_late_shift) for
+# a "late/evening" shift.
+_EVENING_SHIFT_TIMES = {"1600h", "1800h", "2000h"}
+
 
 # ---------------------------------------------------------------------------
 # Output data models
@@ -1535,6 +1541,18 @@ class ScheduleGenerator:
           - Full-time physicians should ideally each receive 1 call.
           - Unfilled calls are noted but do not block schedule release.
           - Does NOT modify regular assignments — purely additive.
+          - call_linkage preference (see PhysicianConfig.call_linkage):
+            candidate days are additionally ranked so a physician's stated
+            preference — end_of_block, doc_before_evening, or independent —
+            is tried before the normal weekday/date ordering. Everyone else
+            (call_linkage=None) is unaffected.
+          - The blanket "day after a call must be free of regular shifts"
+            rule has exactly one exception: a physician with
+            call_linkage="doc_before_evening" may have a DOC call the day
+            immediately before a regular shift that starts in the evening
+            (_EVENING_SHIFT_TIMES) — the one case confirmed safe regardless
+            of exactly when within the DOC window an activation happens.
+            NOC is never exempted, for anyone, at either end.
         """
         # Build shift index directly from result — no state restoration needed.
         shift_dates: dict[datetime.date, set[str]] = defaultdict(set)
@@ -1547,6 +1565,30 @@ class ScheduleGenerator:
         # double-book the same call slot (one DOC and one NOC per day max).
         filled_call_slots: set[tuple[datetime.date, str]] = set()
         on_calls: list[OnCallAssignment] = []
+
+        def _linkage_rank(pid: str, call_date: datetime.date, call_type: str) -> int:
+            """
+            0 = matches this physician's call_linkage preference, 1 = no
+            preference set (or an unrecognized value), 2 = doesn't match
+            (still eligible — just tried after every 0/1 candidate).
+            """
+            cfg_l = (self.roster.get(pid)
+                      or self._roster_lower.get(pid.lower())
+                      or self._roster_by_name.get(pid.lower()))
+            linkage = cfg_l.call_linkage if cfg_l else None
+            if not linkage:
+                return 1
+            prev_shift = shift_by_pid_date.get((pid, call_date - datetime.timedelta(days=1)))
+            next_shift = shift_by_pid_date.get((pid, call_date + datetime.timedelta(days=1)))
+            if linkage == "end_of_block":
+                return 0 if prev_shift is not None else 2
+            if linkage == "doc_before_evening":
+                if call_type != "DOC":
+                    return 2
+                return 0 if (next_shift is not None and next_shift.time in _EVENING_SHIFT_TIMES) else 2
+            if linkage == "independent":
+                return 0 if (prev_shift is None and next_shift is None) else 2
+            return 1
 
         # Build per-physician on-call availability:
         # pid -> [(date, call_type)] sorted weekdays first, then by date
@@ -1565,7 +1607,9 @@ class ScheduleGenerator:
                 if day.noc_available:
                     days_list.append((day.date, "NOC"))
             if days_list:
-                days_list.sort(key=lambda x: (x[0].weekday() >= 5, x[0]))
+                days_list.sort(
+                    key=lambda x: (_linkage_rank(pid, x[0], x[1]), x[0].weekday() >= 5, x[0])
+                )
                 avail[pid] = days_list
 
         # Greedy assignment: each physician gets at most 1 call.
@@ -1578,10 +1622,23 @@ class ScheduleGenerator:
                 # Must not have a regular shift on the call day
                 if pid in shift_dates.get(call_date, set()):
                     continue
-                # Next-day rest: no regular shift the day after the call
+                # Next-day rest: no regular shift the day after the call —
+                # except call_linkage="doc_before_evening"'s one confirmed-
+                # safe case (DOC immediately before an evening-start shift;
+                # see _linkage_rank's docstring and this method's own).
                 next_day = call_date + datetime.timedelta(days=1)
-                if pid in shift_dates.get(next_day, set()):
-                    continue
+                next_day_shift = shift_by_pid_date.get((pid, next_day))
+                if next_day_shift is not None:
+                    cfg_l = (self.roster.get(pid)
+                              or self._roster_lower.get(pid.lower())
+                              or self._roster_by_name.get(pid.lower()))
+                    exempt = (
+                        cfg_l and cfg_l.call_linkage == "doc_before_evening"
+                        and call_type == "DOC"
+                        and next_day_shift.time in _EVENING_SHIFT_TIMES
+                    )
+                    if not exempt:
+                        continue
                 # Previous-day rest: the shift worked the day before (if
                 # any) must be properly spaced from this on-call's start
                 # time — this is what catches e.g. a 2400h shift followed

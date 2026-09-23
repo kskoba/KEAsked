@@ -45,6 +45,22 @@ _DEFAULT_ROSTER_PATH = _resolve_config_dir() / "physicians.yaml"
 # Valid values for group_b_site_preference (Group B = RAH I, NEHC, RAH F)
 GROUP_B_PREFS = frozenset({"nehc", "rah", "rah_f"})
 
+# Valid values for call_linkage (see PhysicianConfig.call_linkage below).
+# Deliberately does NOT include a generic "before" option — a call shift's
+# own start time can't be relied on, since an activation partway through
+# the call window means the physician doesn't know until it happens how
+# long they'll actually be working. "doc_before_evening" is the one
+# narrow exception confirmed safe: DOC (0500h-1600h) immediately before a
+# shift that starts in the evening (1600h/1800h/2000h) the next day always
+# leaves enough of a gap even in the worst case (activated right at the
+# end of the DOC window). NOC (1600h-0500h) is never offered before a
+# block at all — an activation could run right up to the next shift's
+# start with no predictable rest gap.
+CALL_LINKAGE_VALUES = frozenset({"end_of_block", "doc_before_evening", "independent"})
+
+# Valid values for avoid_weekday (generalizes the legacy avoid_mondays flag).
+WEEKDAY_VALUES = frozenset({"MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"})
+
 # Canonical site names — must match shifts.py _SITE_TO_GROUP keys
 VALID_SITES = frozenset({
     "NEHC",
@@ -195,6 +211,51 @@ class PhysicianConfig:
     # in their own separate, strictly-lower priority tier (see `casual`).
     priority_weight: float = 1.0
 
+    # Post-block cool-down: if this physician works a stretch of at least
+    # post_block_min_length consecutive days, they must have the following
+    # post_block_rest_days entirely off before working again. 0 (default)
+    # disables the rule regardless of post_block_min_length. Generalizes
+    # rest_after_late_shift (which only triggers on specific shift TIMES)
+    # to trigger on block LENGTH instead — from the Sept 2026 preferences
+    # survey, where this was the single most-requested new rule (~14
+    # respondents, e.g. "48 hours off after nights is essential").
+    post_block_rest_days: int = 0
+    post_block_min_length: int = 2
+
+    # On-call (DOC/NOC) placement preference relative to this physician's
+    # own regular-shift blocks. One of CALL_LINKAGE_VALUES, or None (no
+    # preference — current default greedy behaviour, unchanged).
+    #   "end_of_block"      — prefer the call day immediately after their
+    #                          last regular shift in a stretch.
+    #   "doc_before_evening" — the one safe "before a block" case: a DOC
+    #                          call the day immediately before a shift
+    #                          starting in the evening. See
+    #                          CALL_LINKAGE_VALUES above for why this is
+    #                          the only "before" option offered.
+    #   "independent"        — prefer a call day untouched by any of their
+    #                          own regular shifts on either side.
+    call_linkage: Optional[str] = None
+
+    # Hard cap: no more than N consecutive days at the same site (e.g.
+    # "no 2 Intake shifts in a row"). None (default) = no constraint.
+    max_consecutive_same_site: Optional[int] = None
+
+    # Weekday this physician wants avoided (e.g. a protected admin day) —
+    # one of WEEKDAY_VALUES, or None. Soft preference (same -5/shift
+    # objective penalty as the legacy avoid_mondays below). Generalizes
+    # avoid_mondays to any single weekday; avoid_mondays still works as
+    # shorthand for avoid_weekday="MON" when avoid_weekday itself is unset
+    # — kept for backward compatibility rather than migrating every
+    # existing avoid_mondays entry.
+    avoid_weekday: Optional[str] = None
+
+    # Soft preference: concentrate this physician's weekend shifts onto as
+    # few distinct weekends as possible (e.g. one Fri/Sat/Sun stretch)
+    # rather than spreading them thin across many weekends — distinct from
+    # max_weekends, which caps the *count* of weekends touched but doesn't
+    # otherwise prefer fewer of them when the count is already under cap.
+    prefer_weekend_clumping: bool = False
+
     # Manual override for which anchor shift type (2400h or 0600h) this
     # physician prefers, when they should have to absorb an anchor-shift
     # overage (see generator_cpsat.py's anchor_overage_penalty_terms).
@@ -275,6 +336,29 @@ def _parse_physician(raw: dict) -> PhysicianConfig:
     raw_aliases: list = raw.get("aliases") or []
     aliases = [str(a).strip() for a in raw_aliases if str(a).strip()]
 
+    raw_call_linkage = sched.get("call_linkage")
+    if raw_call_linkage is not None:
+        raw_call_linkage = str(raw_call_linkage).strip()
+        if raw_call_linkage not in CALL_LINKAGE_VALUES:
+            raise ValueError(
+                f"Physician {raw.get('id')!r}: invalid call_linkage {raw_call_linkage!r}. "
+                f"Valid values: {sorted(CALL_LINKAGE_VALUES)}"
+            )
+
+    raw_avoid_weekday = sched.get("avoid_weekday")
+    if raw_avoid_weekday is not None:
+        raw_avoid_weekday = str(raw_avoid_weekday).strip().upper()
+        if raw_avoid_weekday not in WEEKDAY_VALUES:
+            raise ValueError(
+                f"Physician {raw.get('id')!r}: invalid avoid_weekday {raw_avoid_weekday!r}. "
+                f"Valid values: {sorted(WEEKDAY_VALUES)}"
+            )
+
+    raw_max_same_site = sched.get("max_consecutive_same_site")
+    parsed_max_same_site: Optional[int] = (
+        int(raw_max_same_site) if raw_max_same_site is not None else None
+    )
+
     return PhysicianConfig(
         id=str(raw["id"]),
         name=str(raw["name"]),
@@ -316,6 +400,12 @@ def _parse_physician(raw: dict) -> PhysicianConfig:
             if sched.get("anchor_preference") in ("2400h", "0600h")
             else None
         ),
+        post_block_rest_days=int(sched.get("post_block_rest_days", 0)),
+        post_block_min_length=int(sched.get("post_block_min_length", 2)),
+        call_linkage=raw_call_linkage,
+        max_consecutive_same_site=parsed_max_same_site,
+        avoid_weekday=raw_avoid_weekday,
+        prefer_weekend_clumping=bool(sched.get("prefer_weekend_clumping", False)),
     )
 
 
@@ -410,6 +500,18 @@ def physician_config_to_raw(cfg: PhysicianConfig) -> dict:
         sched["priority_weight"] = cfg.priority_weight
     if cfg.anchor_preference in ("2400h", "0600h"):
         sched["anchor_preference"] = cfg.anchor_preference
+    if cfg.post_block_rest_days:
+        sched["post_block_rest_days"] = cfg.post_block_rest_days
+        if cfg.post_block_min_length != 2:
+            sched["post_block_min_length"] = cfg.post_block_min_length
+    if cfg.call_linkage:
+        sched["call_linkage"] = cfg.call_linkage
+    if cfg.max_consecutive_same_site is not None:
+        sched["max_consecutive_same_site"] = cfg.max_consecutive_same_site
+    if cfg.avoid_weekday:
+        sched["avoid_weekday"] = cfg.avoid_weekday
+    if cfg.prefer_weekend_clumping:
+        sched["prefer_weekend_clumping"] = True
     raw["scheduling"] = sched
 
     if cfg.forbidden_sites:

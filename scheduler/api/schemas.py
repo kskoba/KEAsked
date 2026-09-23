@@ -109,6 +109,26 @@ class SkedStatusResponse(BaseModel):
     configured: bool
 
 
+class PeriodInfo(BaseModel):
+    id: str
+    label: str
+    opens_at: str
+    closes_at: str
+
+
+class PeriodsResponse(BaseModel):
+    periods: list[PeriodInfo]
+
+
+class PhysicianLinkRequest(BaseModel):
+    physician_id: str
+    period_id: str
+
+
+class PhysicianLinkResponse(BaseModel):
+    url: str
+
+
 class SendMonthlyRequestsRequest(BaseModel):
     period_id: str
     label: str

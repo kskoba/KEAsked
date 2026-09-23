@@ -210,6 +210,28 @@ export async function resendSurveyLink(surveyId, physicianId) {
 }
 
 /**
+ * List existing sked periods, newest first -- for the "view a physician's
+ * preference sheet" period picker (RosterEditor's Preferences section).
+ * @param {string} [kind='shift_request'] 'shift_request' | 'survey'
+ * @returns {{ periods: { id: string, label: string, opens_at: string, closes_at: string }[] }}
+ */
+export async function getSkedPeriods(kind = 'shift_request') {
+  return request('GET', `/api/sked/periods?kind=${encodeURIComponent(kind)}`)
+}
+
+/**
+ * Generate (or regenerate) one physician's sked magic link for an existing
+ * period, to open directly -- never emailed, unlike sendMonthlyRequests /
+ * resendSurveyLink. Safe to call repeatedly.
+ * @param {string} physicianId
+ * @param {string} periodId
+ * @returns {{ url: string }}
+ */
+export async function getPhysicianLink(physicianId, periodId) {
+  return request('POST', '/api/sked/physician-link', { physician_id: physicianId, period_id: periodId })
+}
+
+/**
  * What's been overridden this session and why — for deciding whether any
  * should become a permanent rule_override in physicians.yaml.
  * @returns {{ items: { physician_name: string, rule: string, message: string }[] }}

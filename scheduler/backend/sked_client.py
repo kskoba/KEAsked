@@ -120,17 +120,28 @@ def generate_period_links(
     return res.json()
 
 
-def list_surveys(config: SkedConfig) -> list[dict]:
-    """Returns [{"id", "label", "opens_at", "closes_at", "kind"}, ...] for kind='survey' periods."""
+def list_periods(config: SkedConfig, kind: str | None = None) -> list[dict]:
+    """
+    Returns [{"id", "label", "opens_at", "closes_at", "kind"}, ...].
+
+    kind: "shift_request" | "survey" | None (all periods, either kind).
+    Newest first (matches sked's own /api/admin/periods ordering).
+    """
+    params = {"kind": kind} if kind else {}
     with httpx.Client(timeout=30) as client:
         res = client.get(
             f"{config.base_url}/api/admin/periods",
             headers=_headers(config),
-            params={"kind": "survey"},
+            params=params,
         )
     if res.status_code != 200:
-        raise SkedApiError(f"Could not list surveys: {res.text}")
+        raise SkedApiError(f"Could not list periods (kind={kind!r}): {res.text}")
     return res.json()
+
+
+def list_surveys(config: SkedConfig) -> list[dict]:
+    """Returns [{"id", "label", "opens_at", "closes_at", "kind"}, ...] for kind='survey' periods."""
+    return list_periods(config, kind="survey")
 
 
 def get_survey_responses(config: SkedConfig, survey_id: str) -> list[dict]:

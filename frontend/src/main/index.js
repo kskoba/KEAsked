@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, session } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, session, shell } from 'electron'
 import { join } from 'path'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { spawn } from 'child_process'
@@ -529,6 +529,17 @@ ipcMain.handle('dialog:openFile', async (_event, filters) => {
   })
   if (result.canceled || result.filePaths.length === 0) return null
   return result.filePaths[0]
+})
+
+// IPC: open a URL in the system's default browser -- used for e.g. opening
+// a physician's sked magic link from the Roster Editor. Restricted to
+// http(s) so a renderer bug or bad backend response can never make this
+// hand a file:// or custom-protocol string to the OS.
+ipcMain.handle('shell:openExternal', (_event, url) => {
+  if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+    throw new Error(`Refusing to open non-http(s) URL: ${url}`)
+  }
+  return shell.openExternal(url)
 })
 
 // IPC: open (or focus) the physician roster editor window

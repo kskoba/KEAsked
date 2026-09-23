@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
-import { getPhysiciansFull, updatePhysician, createPhysician, removePhysician, setApiBaseUrl } from './api'
+import { getPhysiciansFull, updatePhysician, createPhysician, removePhysician, setApiBaseUrl, getSkedPeriods, getPhysicianLink } from './api'
 
 // Mirrors scheduler/backend/config.py's VALID_SITES / GROUP_B_PREFS /
 // VALID_RULE_OVERRIDES, and the non-call shift start times from
@@ -48,6 +48,14 @@ export default function RosterEditor() {
   const [removeModalOpen, setRemoveModalOpen] = useState(false)
   const [apiBaseResolved, setApiBaseResolved] = useState(false)
 
+  // "View preference sheet" (sked magic link) -- period list is roster-wide,
+  // not per-physician, so it's loaded once here rather than as part of `form`.
+  const [periods, setPeriods] = useState(null)      // null while loading, [] if sked isn't configured
+  const [periodsError, setPeriodsError] = useState(null)
+  const [selectedPeriodId, setSelectedPeriodId] = useState('')
+  const [linkBusy, setLinkBusy] = useState(false)
+  const [linkError, setLinkError] = useState(null)
+
   const loadPhysicians = useCallback(() => {
     setLoadError(null)
     getPhysiciansFull()
@@ -76,6 +84,26 @@ export default function RosterEditor() {
     if (!apiBaseResolved) return
     loadPhysicians()
   }, [apiBaseResolved, loadPhysicians])
+
+  useEffect(() => {
+    if (!apiBaseResolved) return
+    getSkedPeriods('shift_request')
+      .then(data => {
+        setPeriods(data.periods)
+        setSelectedPeriodId(prev => prev || (data.periods[0] && data.periods[0].id) || '')
+      })
+      .catch(err => { setPeriods([]); setPeriodsError(err.message) })
+  }, [apiBaseResolved])
+
+  const handleViewPreferences = useCallback(() => {
+    if (!form || !selectedPeriodId) return
+    setLinkBusy(true)
+    setLinkError(null)
+    getPhysicianLink(form.id, selectedPeriodId)
+      .then(({ url }) => window.electronAPI.openExternal(url))
+      .catch(err => setLinkError(err.message))
+      .finally(() => setLinkBusy(false))
+  }, [form, selectedPeriodId])
 
   const selected = useMemo(
     () => (physicians || []).find(p => p.id === selectedId) || null,
@@ -403,6 +431,37 @@ export default function RosterEditor() {
                 <CheckboxField label="Avoid Mondays" checked={form.avoid_mondays} onChange={(v) => setField('avoid_mondays', v)} />
                 <CheckboxField label="Rest after late shift" checked={form.rest_after_late_shift} onChange={(v) => setField('rest_after_late_shift', v)} />
                 <CheckboxField label="Cap at requested shifts" checked={form.cap_at_requested} onChange={(v) => setField('cap_at_requested', v)} />
+              </Section>
+
+              <Section title="Preference sheet">
+                {periods === null ? (
+                  <p className="text-sm text-slate-400">Loading periods…</p>
+                ) : periods.length === 0 ? (
+                  <p className="text-sm text-slate-500">
+                    {periodsError
+                      ? `Couldn't load periods: ${periodsError}`
+                      : 'No shift-request periods on sked yet — use "Send Monthly Shift Requests" first.'}
+                  </p>
+                ) : (
+                  <div className="flex items-end gap-2">
+                    <div className="flex-1">
+                      <SelectField
+                        label="Period"
+                        value={selectedPeriodId}
+                        onChange={setSelectedPeriodId}
+                        options={periods.map(p => ({ value: p.id, label: p.label }))}
+                      />
+                    </div>
+                    <button
+                      onClick={handleViewPreferences}
+                      disabled={linkBusy || !selectedPeriodId}
+                      className="px-3 py-1.5 text-sm font-medium text-white bg-sky-600 rounded-md hover:bg-sky-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+                    >
+                      {linkBusy ? 'Opening…' : 'View in browser'}
+                    </button>
+                  </div>
+                )}
+                {linkError && <p className="text-xs text-red-600 mt-1">{linkError}</p>}
               </Section>
 
               <Section title="Validation rule overrides">

@@ -74,6 +74,10 @@ from scheduler.api.schemas import (
     SendReminderEmailRequest,
     SendReminderEmailResponse,
     SkedStatusResponse,
+    PeriodInfo,
+    PeriodsResponse,
+    PhysicianLinkRequest,
+    PhysicianLinkResponse,
     SendMonthlyRequestsRequest,
     SendMonthlyRequestsResult,
     SendMonthlyRequestsResponse,
@@ -1220,6 +1224,74 @@ def sked_status() -> SkedStatusResponse:
     config = sked_client.load_sked_config()
     configured = config is not None and sked_client.is_fully_configured(config)
     return SkedStatusResponse(configured=configured)
+
+
+@app.get("/api/sked/periods", response_model=PeriodsResponse)
+def sked_periods(kind: str = "shift_request") -> PeriodsResponse:
+    """
+    List existing sked periods, newest first — for the "view a physician's
+    preference sheet" picker (RosterEditor's Preferences section), so the
+    scheduler picks a real period instead of guessing an id format. Default
+    kind="shift_request" (the monthly grid); pass kind=survey for the annual
+    survey's periods (already separately listed via /api/sked/surveys, but
+    exposed here too since this endpoint is more general).
+    """
+    sked_config = sked_client.load_sked_config()
+    if sked_config is None or not sked_client.is_fully_configured(sked_config):
+        raise HTTPException(
+            status_code=400,
+            detail="sked is not configured. Copy scheduler/config/sked_template.yaml to sked.yaml "
+                   "(in the physician config folder) and fill it in.",
+        )
+    try:
+        periods = sked_client.list_periods(sked_config, kind=kind)
+    except sked_client.SkedApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return PeriodsResponse(periods=[
+        PeriodInfo(id=p["id"], label=p["label"], opens_at=p["opens_at"], closes_at=p["closes_at"])
+        for p in periods
+    ])
+
+
+@app.post("/api/sked/physician-link", response_model=PhysicianLinkResponse)
+def sked_physician_link(body: PhysicianLinkRequest) -> PhysicianLinkResponse:
+    """
+    Generate (or regenerate) one physician's magic link for an existing sked
+    period, for the scheduler to open and view directly — never emailed,
+    unlike /api/monthly-requests/send and /api/sked/survey/resend. Safe to
+    call repeatedly: sked signs a fresh token against the physician's
+    already-saved submission each time, nothing about their data changes.
+    """
+    sked_config = sked_client.load_sked_config()
+    if sked_config is None or not sked_client.is_fully_configured(sked_config):
+        raise HTTPException(
+            status_code=400,
+            detail="sked is not configured. Copy scheduler/config/sked_template.yaml to sked.yaml "
+                   "(in the physician config folder) and fill it in.",
+        )
+    roster: dict = _state.get("roster") or {}
+    if not roster:
+        try:
+            roster = load_roster()
+            _state["roster"] = roster
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Could not load physician roster: {exc}")
+
+    cfg = roster.get(body.physician_id)
+    if cfg is None:
+        raise HTTPException(status_code=404, detail=f"Unknown physician: {body.physician_id!r}")
+
+    try:
+        links = sked_client.generate_period_links(
+            sked_config,
+            body.period_id,
+            [{"id": cfg.id, "name": _display_name(cfg), "email": cfg.email}],
+        )
+    except sked_client.SkedApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    if not links:
+        raise HTTPException(status_code=502, detail="sked returned no link for this physician.")
+    return PhysicianLinkResponse(url=links[0]["url"])
 
 
 @app.post("/api/monthly-requests/send", response_model=SendMonthlyRequestsResponse)

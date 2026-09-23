@@ -22,22 +22,46 @@ Things identified during real work on the scheduler that are deliberately **not*
 
 ---
 
-## 2. Anchor-fulfillment floor (2400h/0600h requests)
+## Learner Schedule Creation and Viewing
 
-**Status**: agreed in principle 2026-09-22, not yet implemented. Blocked on nothing — could be built independently of item 1 above, though the two compound well together (item 1 gives the solver day-level steering, item 2 guarantees the aggregate count actually lands).
-
-**Problem**: `generator_cpsat.py`'s anchor-fulfillment bonus is a flat sum term (+90 per 2400h/0600h shift, up to the physician's own requested count) with no per-physician floor. It's a real incentive but nothing stops the solver's global optimum from fully satisfying some physicians' anchor requests while zeroing out others, if the aggregate objective nets out similarly either way. Confirmed on real October 2026 data: RScheirer requested 6 2400h shifts (explicit, well-formed, genuine availability across 12+ days) and the actual CP-SAT solve — a 20-minute run, 1.1% optimality gap, so not a search-depth issue — gave him zero.
-
-**Decided design direction**: a soft, heavily-weighted **lexicographic tier** (same pattern already used for the casual-priority tiers in `generator_cpsat.py`), not a hard `model.add(sum >= floor)` constraint. A true hard floor risks infeasibility if a physician's roster-level `only_0600h`/`only_2400h` flag ever conflicts with a stale/inconsistent monthly request for the type they can't work — see the conversation this was raised in. The lexicographic-tier approach can't deadlock: a physician whose hard constraints make their own floor unreachable just naturally contributes 0 to that tier, exactly like existing tiers already degrade gracefully today.
-
-**Scope this needs when picked up**:
-- New tier (or extend the existing casual-priority tier machinery) that maximizes total achieved anchor-fulfillment (or minimizes aggregate shortfall) across all physicians, run at high priority before the general fill-to-max tier.
-- Needs its own weight/priority tuning pass against real data (same iterative process the existing anchor-overage-penalty comments describe — e.g. "250 wasn't enough, raised to 500").
-- Decide whether the floor applies to 2400h and 0600h independently per physician (yes, per this conversation) or needs any interaction with `anchor_preference`.
-- Re-run the corrected requested-vs-delivered analysis (see `2026-09-survey-analysis-plan.md`'s sibling notes, or redo fresh) against a build with this tier to confirm it actually closes the RScheirer-style gaps before considering it done.
+Not started.
 
 ---
 
-## Analysis note (not a roadmap item, just context)
+## View a physician's submitted monthly preferences (button → opens their sked magic link)
 
-While investigating the above, found and fixed a real bug in the *analysis tooling* (not the production scheduler): a script excluding files matching `"Master Preferences"` in the October submissions folder silently dropped 3 physicians (Mason, Deol, Johnston) who only have that naming pattern, with no short-name duplicate. Corrected total 2400h demand for October 2026 is 126 (not 120), and the "went to non-requesters" figure is 7 shifts (Bly + EChang), not the originally-reported 32 — most of the physicians in that first bad list were real requesters wrongly zeroed out by the filter, not genuine anomalies. RScheirer's 0-of-6 finding is unaffected by this correction and remains real.
+**Status**: backend + frontend built and wired end-to-end, 2026-09-23. **Not yet committed/pushed** (sitting as local changes in this checkout) — do that first if picking this up elsewhere. **Not yet visually verified** — no click-simulation tool was available in the session that built this, so the actual rendered UI in the Roster Editor window has not been looked at by a human yet. Everything *except* that has been checked.
+
+**What it does**: in the Physician Roster editor, select a physician, then in a new "Preference sheet" section (right after "Preferences", before "Validation rule overrides") pick an existing sked period from a dropdown and click "View in browser" — opens that physician's sked magic link (their real, already-saved shift-preference grid for that period) in the system's default browser. Read-only from the app's side — never emails anything, unlike the existing "Send Monthly Shift Requests" / survey-resend actions; sked just re-signs a fresh token against their already-stored submission each time, so it's safe to click repeatedly.
+
+**Files touched**:
+- `scheduler/backend/sked_client.py` — generalized `list_surveys()` into `list_periods(config, kind=None)` (kind: `"shift_request"` | `"survey"` | `None` for both); `list_surveys` is now a thin wrapper over it for backward compat.
+- `scheduler/api/schemas.py` — new `PeriodInfo`, `PeriodsResponse`, `PhysicianLinkRequest`, `PhysicianLinkResponse`.
+- `scheduler/api/server.py` — two new endpoints, both live-tested against the real deployed sked (`sked.keatools.org`), not just imported/compiled:
+  - `GET /api/sked/periods?kind=shift_request` — list of real existing periods `[{id, label, opens_at, closes_at}]`. **Confirmed working**: returned `test-period`, `2026-12`, `2027-01` (×2, one stray duplicate-looking id `2027-01-01` — probably worth a quick look, not investigated), `2026-11`. Note **October 2026 is not in this list** — that month's real physician submissions predate sked's existence (built 2026-09-22) and came in via the old individual-xlsx-file process, not through sked at all. This feature will only work for periods actually sent out *through* sked going forward.
+  - `POST /api/sked/physician-link` (`{physician_id, period_id}` → `{url}`) — generates a link via the same `sked_client.generate_period_links()` call the existing send/resend flows use, just returns the URL instead of emailing it. **Confirmed working**: tested live with `{"physician_id":"RScheirer","period_id":"test-period"}`, got back a real signed `https://sked.keatools.org/?token=...` URL.
+- `frontend/src/main/index.js` — new `shell:openExternal` IPC handler (didn't exist before this — no prior "open URL in browser" capability anywhere in the app). Deliberately restricted to `http(s)://` only (throws otherwise), so a renderer bug or bad backend response can never hand the OS a `file://` or custom-protocol string.
+- `frontend/src/preload/index.js` — exposes it as `window.electronAPI.openExternal(url)`.
+- `frontend/src/renderer/api.js` — `getSkedPeriods(kind)`, `getPhysicianLink(physicianId, periodId)`.
+- `frontend/src/renderer/RosterEditor.jsx` — the new "Preference sheet" section: period list loaded once on mount (roster-wide, not per-physician, so it's separate from the `form` state), a `SelectField` + button, busy/error states. Full `npm run build` (production, via electron-vite/esbuild) succeeds clean with this in place.
+
+**What's verified**: backend imports cleanly, all 3 new/changed backend files compile, the 2 new routes are registered (`GET /api/sked/periods`, `POST /api/sked/physician-link`), both hit live and returned real data from the actual Cloudflare-deployed sked site. Frontend: full production build succeeds, main app window launches and renders without crashing post-change.
+
+**What's NOT verified** (do this first when resuming):
+1. Actually open the Roster Editor window in the running app, select a physician, confirm the "Preference sheet" section renders correctly and the dropdown is populated.
+2. Click "View in browser" for a real physician + the `test-period` id (safe — it's clearly a test period, not a real submission window) and confirm a browser tab actually opens with a working sked page.
+3. Check the `2027-01` vs `2027-01-01` duplicate-looking period id noticed above — may be nothing, may be a stray test artifact from earlier session work, may indicate an id-format inconsistency worth understanding before relying on the picker.
+4. Decide whether this should also offer `kind=survey` periods (annual survey) from the same UI, or if that's intentionally left to the existing separate Survey Responses viewer (leaning toward "leave separate," but wasn't a deliberate decision, more a default).
+
+**To commit when ready** (from `~/Dropbox/KEAclaude/KEAsked`, or wherever this checkout lives on the other computer):
+```bash
+git add scheduler/backend/sked_client.py scheduler/api/schemas.py scheduler/api/server.py \
+        frontend/src/main/index.js frontend/src/preload/index.js \
+        frontend/src/renderer/api.js frontend/src/renderer/RosterEditor.jsx docs/feature-roadmap.md
+git commit -m "feat: view a physician's sked preference sheet from the Roster Editor"
+git push origin master
+```
+Then the Unraid box needs its usual `git pull` + rebuild (see the `update-unraid-backend` skill) if the remote backend will be used to test this.
+
+## on the individual schedule tab in app, when viewing someone's finalized schedule underneath it should show: requested number of shifts, max shifts, number of nights, number of 0600h and any specific rules for that person. also the individual schedules should show actually what shift they have on that day, not just the time 
+

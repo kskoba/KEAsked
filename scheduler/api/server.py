@@ -1316,9 +1316,11 @@ def send_monthly_requests(body: SendMonthlyRequestsRequest) -> SendMonthlyReques
                    "to email.yaml (in the physician config folder) and fill it in.",
         )
 
-    template_path = Path(body.template_path)
-    if not template_path.is_file():
-        raise HTTPException(status_code=400, detail=f"Template file not found: {body.template_path}")
+    template_path: Path | None = None
+    if body.template_path:
+        template_path = Path(body.template_path)
+        if not template_path.is_file():
+            raise HTTPException(status_code=400, detail=f"Template file not found: {body.template_path}")
 
     roster: dict = _state.get("roster") or {}
     if not roster:
@@ -1342,7 +1344,10 @@ def send_monthly_requests(body: SendMonthlyRequestsRequest) -> SendMonthlyReques
 
     try:
         sked_client.upsert_period(sked_config, body.period_id, body.label, body.opens_at, body.closes_at)
-        sked_client.upload_period_template(sked_config, body.period_id, template_path)
+        if template_path is not None:
+            sked_client.upload_period_template(sked_config, body.period_id, template_path)
+        # else: reuse whatever's already uploaded to this period on sked --
+        # the "resend / target specific people on an existing period" path.
         links = sked_client.generate_period_links(
             sked_config,
             body.period_id,

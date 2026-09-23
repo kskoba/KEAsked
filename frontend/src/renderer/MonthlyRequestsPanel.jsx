@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
-import { getSkedStatus, getEmailStatus, getPhysiciansFull, sendMonthlyRequests, setApiBaseUrl } from './api'
+import { getSkedStatus, getEmailStatus, getPhysiciansFull, getSkedPeriods, sendMonthlyRequests, setApiBaseUrl } from './api'
 
 function displayName(p) {
   const full = `${p.first_name || ''} ${p.last_name || ''}`.trim()
@@ -44,6 +44,9 @@ export default function MonthlyRequestsPanel() {
   const [physicianFilter, setPhysicianFilter] = useState('')
   const [perSend, setPerSend] = useState({}) // physicianId -> 'sending' | 'sent' | error message
 
+  const [existingPeriods, setExistingPeriods] = useState(null)
+  const [selectedExistingPeriodId, setSelectedExistingPeriodId] = useState('') // '' = new period
+
   // Separate BrowserWindow, separate renderer module state -- must
   // re-resolve the backend location here too (see RosterEditor.jsx).
   useEffect(() => {
@@ -59,7 +62,28 @@ export default function MonthlyRequestsPanel() {
     getSkedStatus().then((r) => setSkedConfigured(r.configured)).catch(() => setSkedConfigured(false))
     getEmailStatus().then((r) => setEmailConfigured(r.configured)).catch(() => setEmailConfigured(false))
     getPhysiciansFull().then((r) => setPhysicians(r.physicians)).catch(() => setPhysicians([]))
+    getSkedPeriods('shift_request').then((r) => setExistingPeriods(r.periods)).catch(() => setExistingPeriods([]))
   }, [apiBaseResolved])
+
+  const handleLoadExistingPeriod = useCallback((id) => {
+    setSelectedExistingPeriodId(id)
+    if (!id) {
+      const fresh = defaultPeriod()
+      setPeriodId(fresh.periodId)
+      setLabel(fresh.label)
+      setOpensAt(fresh.opensAt)
+      setClosesAt(fresh.closesAt)
+      setTemplatePath('')
+      return
+    }
+    const period = (existingPeriods || []).find((p) => p.id === id)
+    if (!period) return
+    setPeriodId(period.id)
+    setLabel(period.label)
+    setOpensAt(period.opens_at.slice(0, 10))
+    setClosesAt(period.closes_at.slice(0, 10))
+    setTemplatePath('') // reuse whatever's already uploaded to this period on sked
+  }, [existingPeriods])
 
   const activePhysicians = useMemo(() => {
     const list = (physicians || []).filter((p) => p.active)
@@ -76,8 +100,11 @@ export default function MonthlyRequestsPanel() {
 
   const handleCloseClick = () => window.electronAPI.forceCloseSelf()
 
+  // Template is only required for a brand-new period -- loading an existing
+  // one (selectedExistingPeriodId set) reuses whatever's already uploaded
+  // there unless the scheduler explicitly picks a new file to replace it.
   const formReady = skedConfigured && emailConfigured && periodId.trim() && label.trim() &&
-    opensAt && closesAt && templatePath
+    opensAt && closesAt && (templatePath || selectedExistingPeriodId)
   const canSend = formReady && !sending
 
   const handleSend = useCallback(async () => {
@@ -167,6 +194,28 @@ export default function MonthlyRequestsPanel() {
         )}
 
         <div className="bg-white rounded-lg shadow-sm border border-slate-200 p-5 space-y-4">
+          <label className="block text-sm">
+            <span className="text-slate-600 font-medium">Load existing period</span>
+            <select
+              value={selectedExistingPeriodId}
+              onChange={(e) => handleLoadExistingPeriod(e.target.value)}
+              disabled={sending || !existingPeriods}
+              className="mt-1 w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400"
+            >
+              <option value="">New period…</option>
+              {existingPeriods?.map((p) => (
+                <option key={p.id} value={p.id}>{p.label} ({p.id})</option>
+              ))}
+            </select>
+            <span className="mt-1 block text-xs text-slate-400">
+              {existingPeriods === null
+                ? 'Loading periods from sked…'
+                : selectedExistingPeriodId
+                  ? 'Reusing this period\'s existing template — pick a new file below only to replace it.'
+                  : 'Pick a period already sent to sked to resend it or target specific people, without re-choosing the template file.'}
+            </span>
+          </label>
+
           <div className="grid grid-cols-2 gap-4">
             <label className="block text-sm">
               <span className="text-slate-600 font-medium">Period ID</span>
@@ -174,7 +223,9 @@ export default function MonthlyRequestsPanel() {
                 type="text"
                 value={periodId}
                 onChange={(e) => setPeriodId(e.target.value)}
-                className="mt-1 w-full rounded border border-slate-300 px-3 py-1.5 text-sm"
+                readOnly={!!selectedExistingPeriodId}
+                title={selectedExistingPeriodId ? 'Locked while reusing an existing period — pick "New period…" above to change it' : undefined}
+                className={`mt-1 w-full rounded border border-slate-300 px-3 py-1.5 text-sm ${selectedExistingPeriodId ? 'bg-slate-50 text-slate-500 cursor-default' : ''}`}
                 placeholder="e.g. 2027-02"
               />
             </label>
@@ -209,20 +260,23 @@ export default function MonthlyRequestsPanel() {
           </div>
 
           <label className="block text-sm">
-            <span className="text-slate-600 font-medium">Master schedule template (.xlsx)</span>
+            <span className="text-slate-600 font-medium">
+              Master schedule template (.xlsx)
+              {selectedExistingPeriodId && <span className="text-slate-400 font-normal"> — optional, reusing what's already on sked</span>}
+            </span>
             <div className="mt-1 flex items-center gap-2">
               <input
                 type="text"
                 readOnly
                 value={templatePath}
-                placeholder="No file selected"
+                placeholder={selectedExistingPeriodId ? 'Using the template already uploaded for this period' : 'No file selected'}
                 className="flex-1 rounded border border-slate-300 px-3 py-1.5 text-sm bg-slate-50 text-slate-600"
               />
               <button
                 onClick={handleChooseTemplate}
                 className="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600 text-white text-sm transition-colors flex-shrink-0"
               >
-                Choose file…
+                {selectedExistingPeriodId ? 'Replace file…' : 'Choose file…'}
               </button>
             </div>
           </label>
@@ -264,7 +318,7 @@ export default function MonthlyRequestsPanel() {
             className="w-full rounded border border-slate-300 px-3 py-1.5 text-sm"
           />
           {!formReady && (
-            <p className="text-xs text-amber-700">Fill in the period details and choose a template above to enable sending.</p>
+            <p className="text-xs text-amber-700">Fill in the period details above to enable sending (a template is only required for a new period).</p>
           )}
           <div className="border border-slate-200 rounded-md divide-y divide-slate-100 max-h-80 overflow-auto">
             {activePhysicians.length === 0 && (

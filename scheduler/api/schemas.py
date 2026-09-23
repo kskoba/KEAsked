@@ -146,7 +146,11 @@ class SendMonthlyRequestsRequest(BaseModel):
     label: str
     opens_at: str  # ISO 8601
     closes_at: str  # ISO 8601
-    template_path: str  # local filesystem path to that month's master schedule .xlsx
+    # Local filesystem path to that month's master schedule .xlsx. Optional
+    # when re-sending/targeting an already-existing period on sked (it
+    # already has a template) -- omit to reuse whatever's already uploaded
+    # there instead of re-uploading.
+    template_path: str | None = None
     extra_message: str = ""  # free text from the scheduler, included in the email body
     physician_ids: list[str] | None = None  # None = every active physician; otherwise just these
 

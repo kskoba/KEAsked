@@ -1,5 +1,13 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
-import { getSkedStatus, getEmailStatus, getPhysiciansFull, getSkedPeriods, sendMonthlyRequests, setApiBaseUrl } from './api'
+import { getSkedStatus, getEmailStatus, getPhysiciansFull, getSkedPeriods, sendMonthlyRequests, setApiBaseUrl, getApiBaseUrl } from './api'
+
+// The native file picker only browses this computer's filesystem, so on a
+// remote backend (e.g. the Unraid container) the template path field needs
+// to accept a typed path instead -- one that exists on the *backend's* side
+// (e.g. inside its mounted /config volume). Same pattern as DirectoryPicker.jsx.
+function isRemoteBackend() {
+  return !/^https?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/.test(getApiBaseUrl())
+}
 
 function displayName(p) {
   const full = `${p.first_name || ''} ${p.last_name || ''}`.trim()
@@ -46,6 +54,8 @@ export default function MonthlyRequestsPanel() {
 
   const [existingPeriods, setExistingPeriods] = useState(null)
   const [selectedExistingPeriodId, setSelectedExistingPeriodId] = useState('') // '' = new period
+
+  const remote = isRemoteBackend()
 
   // Separate BrowserWindow, separate renderer module state -- must
   // re-resolve the backend location here too (see RosterEditor.jsx).
@@ -267,18 +277,29 @@ export default function MonthlyRequestsPanel() {
             <div className="mt-1 flex items-center gap-2">
               <input
                 type="text"
-                readOnly
+                readOnly={!remote}
                 value={templatePath}
-                placeholder={selectedExistingPeriodId ? 'Using the template already uploaded for this period' : 'No file selected'}
-                className="flex-1 rounded border border-slate-300 px-3 py-1.5 text-sm bg-slate-50 text-slate-600"
+                onChange={remote ? (e) => setTemplatePath(e.target.value) : undefined}
+                placeholder={
+                  remote ? 'Type the path as it exists on the remote backend, e.g. /config/february_2027.xlsx' :
+                  selectedExistingPeriodId ? 'Using the template already uploaded for this period' :
+                  'No file selected'
+                }
+                className={`flex-1 rounded border border-slate-300 px-3 py-1.5 text-sm ${remote ? 'bg-white focus:outline-none focus:ring-2 focus:ring-sky-400' : 'bg-slate-50 text-slate-600'}`}
               />
               <button
                 onClick={handleChooseTemplate}
+                title={remote ? 'Browses this computer, not the remote backend — usually you want to type the path instead' : undefined}
                 className="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600 text-white text-sm transition-colors flex-shrink-0"
               >
                 {selectedExistingPeriodId ? 'Replace file…' : 'Choose file…'}
               </button>
             </div>
+            {remote && (
+              <p className="mt-1.5 text-xs text-amber-600">
+                Backend is remote — paths are resolved on the backend's filesystem, not this computer.
+              </p>
+            )}
           </label>
 
           <label className="block text-sm">

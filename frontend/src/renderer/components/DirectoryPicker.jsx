@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { importSubmissions, importFlatFile, generateSchedule, cancelGenerate, detectFlatMonth, getGenerateProgress, loadScheduleFromFile, getApiBaseUrl } from '../api'
+import { importSubmissions, importFlatFile, importFromSked, resendMonthlyRequest, getSkedPeriods, generateSchedule, cancelGenerate, detectFlatMonth, getGenerateProgress, loadScheduleFromFile, getApiBaseUrl } from '../api'
 
 // Whether the active backend is this machine or a remote one (e.g. a Docker
 // container on Unraid). The native file/folder picker only browses this
@@ -18,8 +18,12 @@ const MONTHS = [
 const currentDate = new Date()
 
 export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onScheduleLoaded, importResult }) {
-  const [mode, setMode] = useState('flat')        // 'flat' | 'directory' | 'load'
+  const [mode, setMode] = useState('flat')        // 'flat' | 'directory' | 'sked' | 'load'
   const [path, setPath] = useState('')
+  const [skedPeriods, setSkedPeriods] = useState(null)
+  const [skedPeriodId, setSkedPeriodId] = useState('')
+  const [skedPeriodsError, setSkedPeriodsError] = useState(null)
+  const [resendState, setResendState] = useState({}) // physicianId -> 'sending' | 'sent' | error message
   const [month, setMonth] = useState(currentDate.getMonth() + 1)   // 1-based
   const [year, setYear] = useState(currentDate.getFullYear())
   const [importing, setImporting] = useState(false)
@@ -39,6 +43,16 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
   const countdownRef = useRef(null)
   const countdownStartedRef = useRef(false)
   const remote = isRemoteBackend()
+
+  useEffect(() => {
+    if (mode !== 'sked' || skedPeriods !== null) return
+    getSkedPeriods('shift_request')
+      .then((r) => {
+        setSkedPeriods(r.periods)
+        if (r.periods.length > 0 && !skedPeriodId) setSkedPeriodId(r.periods[0].id)
+      })
+      .catch((err) => setSkedPeriodsError(err.message))
+  }, [mode, skedPeriods, skedPeriodId])
 
   async function handleBrowse() {
     let selected = null
@@ -103,18 +117,32 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
   }
 
   async function handleImport() {
-    if (!path) return
+    if (mode === 'sked' ? !skedPeriodId : !path) return
     setImporting(true)
     setImportError(null)
     try {
-      const result = mode === 'flat'
-        ? await importFlatFile(path, year, month)
-        : await importSubmissions(path, year, month)
+      const result = mode === 'sked'
+        ? await importFromSked(skedPeriodId, year, month)
+        : mode === 'flat'
+          ? await importFlatFile(path, year, month)
+          : await importSubmissions(path, year, month)
       onImportDone(result)
     } catch (err) {
       setImportError(err.message)
     } finally {
       setImporting(false)
+    }
+  }
+
+  async function handleResend(physicianId) {
+    if (!skedPeriodId || resendState[physicianId] === 'sending') return
+    setResendState((s) => ({ ...s, [physicianId]: 'sending' }))
+    try {
+      await resendMonthlyRequest(skedPeriodId, physicianId)
+      setResendState((s) => ({ ...s, [physicianId]: 'sent' }))
+      setTimeout(() => setResendState((s) => ({ ...s, [physicianId]: undefined })), 2500)
+    } catch (err) {
+      setResendState((s) => ({ ...s, [physicianId]: err.message }))
     }
   }
 
@@ -186,7 +214,7 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
     if (countdownRef.current) clearInterval(countdownRef.current)
   }, [])
 
-  const canImport = path.trim().length > 0 && !importing && !generating
+  const canImport = (mode === 'sked' ? skedPeriodId.trim().length > 0 : path.trim().length > 0) && !importing && !generating
   const canGenerate = importResult !== null && !generating && !importing
 
   // Count valid physicians for status badge
@@ -208,7 +236,7 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
 
         {/* Mode toggle */}
         <div className="flex gap-1 mb-5 p-1 bg-slate-100 rounded-lg w-fit">
-          {[['flat', 'Single flat file'], ['directory', 'Directory'], ['load', 'Load Saved Schedule']].map(([val, label]) => (
+          {[['flat', 'Single flat file'], ['directory', 'Directory'], ['sked', 'From Web (sked)'], ['load', 'Load Saved Schedule']].map(([val, label]) => (
             <button
               key={val}
               onClick={() => { setMode(val); setPath(''); setPrefPath(''); setImportError(null); setGenerateError(null); setLoadError(null) }}
@@ -224,40 +252,61 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
           ))}
         </div>
 
-        {/* Path row */}
-        <div className="mb-5">
-          <label className="block text-sm font-medium text-slate-700 mb-1">
-            {mode === 'flat' ? 'Preferences File (.xlsx)' : mode === 'directory' ? 'Submissions Directory' : 'Schedule File (.xlsx)'}
-          </label>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              readOnly={!remote}
-              value={path}
-              onChange={remote ? (e) => setPath(e.target.value) : undefined}
-              placeholder={
-                remote ? 'Type the path as it exists on the remote backend, e.g. /config/request-imports/october' :
-                mode === 'flat' ? 'Select the flat preferences Excel file…' :
-                mode === 'directory' ? 'Select the folder containing per-physician request files…' :
-                'Select a previously exported schedule .xlsx…'
-              }
-              className={`flex-1 px-3 py-2 rounded-md border border-slate-300 text-slate-700 text-sm focus:outline-none ${remote ? 'bg-white focus:ring-2 focus:ring-sky-400' : 'bg-slate-50 cursor-default'}`}
-            />
-            <button
-              onClick={handleBrowse}
-              disabled={importing || generating || loading}
-              title={remote ? 'Browses this computer, not the remote backend — usually you want to type the path instead' : undefined}
-              className="px-4 py-2 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-400 text-white text-sm font-medium rounded-md transition-colors"
+        {/* Path row (sked mode: period picker instead) */}
+        {mode === 'sked' ? (
+          <div className="mb-5">
+            <label className="block text-sm font-medium text-slate-700 mb-1">Sked Period</label>
+            {skedPeriodsError && (
+              <p className="mb-1.5 text-xs text-red-600">{skedPeriodsError}</p>
+            )}
+            <select
+              value={skedPeriodId}
+              onChange={(e) => setSkedPeriodId(e.target.value)}
+              disabled={importing || !skedPeriods || skedPeriods.length === 0}
+              className="w-full px-3 py-2 rounded-md border border-slate-300 bg-white text-slate-700 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400"
             >
-              Browse…
-            </button>
+              {skedPeriods === null && <option>Loading periods…</option>}
+              {skedPeriods && skedPeriods.length === 0 && <option>No periods found on sked</option>}
+              {skedPeriods?.map((p) => (
+                <option key={p.id} value={p.id}>{p.label}</option>
+              ))}
+            </select>
           </div>
-          {remote && (
-            <p className="mt-1.5 text-xs text-amber-600">
-              Backend is remote — paths are resolved on the backend's filesystem, not this computer.
-            </p>
-          )}
-        </div>
+        ) : (
+          <div className="mb-5">
+            <label className="block text-sm font-medium text-slate-700 mb-1">
+              {mode === 'flat' ? 'Preferences File (.xlsx)' : mode === 'directory' ? 'Submissions Directory' : 'Schedule File (.xlsx)'}
+            </label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                readOnly={!remote}
+                value={path}
+                onChange={remote ? (e) => setPath(e.target.value) : undefined}
+                placeholder={
+                  remote ? 'Type the path as it exists on the remote backend, e.g. /config/request-imports/october' :
+                  mode === 'flat' ? 'Select the flat preferences Excel file…' :
+                  mode === 'directory' ? 'Select the folder containing per-physician request files…' :
+                  'Select a previously exported schedule .xlsx…'
+                }
+                className={`flex-1 px-3 py-2 rounded-md border border-slate-300 text-slate-700 text-sm focus:outline-none ${remote ? 'bg-white focus:ring-2 focus:ring-sky-400' : 'bg-slate-50 cursor-default'}`}
+              />
+              <button
+                onClick={handleBrowse}
+                disabled={importing || generating || loading}
+                title={remote ? 'Browses this computer, not the remote backend — usually you want to type the path instead' : undefined}
+                className="px-4 py-2 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-400 text-white text-sm font-medium rounded-md transition-colors"
+              >
+                Browse…
+              </button>
+            </div>
+            {remote && (
+              <p className="mt-1.5 text-xs text-amber-600">
+                Backend is remote — paths are resolved on the backend's filesystem, not this computer.
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Month / Year row */}
         {mode !== 'load' && (
@@ -426,14 +475,14 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
                 {importing ? (
                   <>
                     <Spinner />
-                    Importing…
+                    {mode === 'sked' ? 'Pulling in…' : 'Importing…'}
                   </>
                 ) : (
                   <>
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
                       <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3" />
                     </svg>
-                    Import & Validate
+                    {mode === 'sked' ? 'Pull In Requests' : 'Import & Validate'}
                   </>
                 )}
               </button>
@@ -446,6 +495,49 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
             </>
           )}
         </div>
+
+        {/* Not-submitted highlight (sked mode only) */}
+        {mode === 'sked' && importResult?.not_submitted?.length > 0 && (
+          <div className="mt-5 pt-5 border-t border-slate-200">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-sm font-medium text-slate-700">
+                Not submitted yet <span className="text-slate-400 font-normal">({importResult.not_submitted.length})</span>
+              </h3>
+            </div>
+            <div className="border border-amber-200 bg-amber-50 rounded-md divide-y divide-amber-100 max-h-72 overflow-auto">
+              {importResult.not_submitted.map((row) => {
+                const state = resendState[row.physician_id]
+                const isSending = state === 'sending'
+                const isSent = state === 'sent'
+                const isError = state && !isSending && !isSent
+                return (
+                  <div key={row.physician_id} className="px-3 py-2 flex items-center justify-between gap-3 text-sm">
+                    <div className="min-w-0">
+                      <div className="font-medium text-slate-800 truncate">{row.physician_name}</div>
+                      <div className="text-xs text-slate-500">
+                        {row.status === 'draft' ? 'Draft — not yet submitted' : 'Not started'}
+                        {!row.email && ' · no email on file'}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => handleResend(row.physician_id)}
+                      disabled={!row.email || isSending}
+                      title={isError ? state : undefined}
+                      className={
+                        'flex-shrink-0 text-xs px-2.5 py-1 rounded-md border font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors ' +
+                        (isError
+                          ? 'border-red-300 bg-red-50 text-red-700 hover:bg-red-100'
+                          : 'border-amber-300 bg-white text-amber-800 hover:bg-amber-100')
+                      }
+                    >
+                      {isSending ? 'Sending…' : isSent ? 'Sent!' : isError ? 'Failed — retry' : 'Send reminder'}
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* CP-SAT solver card */}

@@ -56,6 +56,13 @@ class PhysicianImportResult(BaseModel):
     is_valid: bool
 
 
+class NotSubmittedRow(BaseModel):
+    physician_id: str
+    physician_name: str
+    status: str  # "not_started" | "draft"
+    email: str = ""
+
+
 class ImportDirectoryResponse(BaseModel):
     year: int
     month: int
@@ -63,6 +70,11 @@ class ImportDirectoryResponse(BaseModel):
     physicians: list[PhysicianImportResult]
     total_physicians: int
     valid_physicians: int
+    # Only populated by /api/sked/import -- active roster physicians who
+    # haven't submitted yet (no response at all, or still "draft"), for the
+    # "highlight + send reminder" UI. Empty for the directory/flat-file
+    # import routes, which have no way to know who hasn't submitted.
+    not_submitted: list[NotSubmittedRow] = []
 
 
 class OverrideRequest(BaseModel):
@@ -192,6 +204,23 @@ class ResendSurveyLinkRequest(BaseModel):
 
 
 class ResendSurveyLinkResponse(BaseModel):
+    ok: bool
+    status: str  # "sent"
+    detail: str = ""
+
+
+class SkedImportRequest(BaseModel):
+    period_id: str
+    year: int
+    month: int
+
+
+class ResendMonthlyRequestRequest(BaseModel):
+    period_id: str
+    physician_id: str
+
+
+class ResendMonthlyRequestResponse(BaseModel):
     ok: bool
     status: str  # "sent"
     detail: str = ""

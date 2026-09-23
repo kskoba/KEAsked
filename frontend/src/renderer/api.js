@@ -232,6 +232,34 @@ export async function getPhysicianLink(physicianId, periodId) {
 }
 
 /**
+ * Pull in shift-preference submissions directly from sked for one period,
+ * instead of a directory/flat file of xlsx exports. Returns the same shape
+ * as importSubmissions/importFlatFile, plus a not_submitted list (active
+ * roster physicians with no submission yet, or still "draft") for a
+ * highlight + reminder UI.
+ * @param {string} periodId
+ * @param {number} year
+ * @param {number} month
+ * @returns {{ year, month, directory, physicians, total_physicians, valid_physicians,
+ *   not_submitted: { physician_id: string, physician_name: string, status: string, email: string }[] }}
+ */
+export async function importFromSked(periodId, year, month) {
+  return request('POST', '/api/sked/import', { period_id: periodId, year, month })
+}
+
+/**
+ * Regenerate one physician's shift-request link and email it. Only for the
+ * "not submitted yet" highlight list -- backend looks up their address from
+ * physicians.yaml.
+ * @param {string} periodId
+ * @param {string} physicianId
+ * @returns {{ ok: boolean, status: string, detail: string }}
+ */
+export async function resendMonthlyRequest(periodId, physicianId) {
+  return request('POST', '/api/monthly-requests/resend', { period_id: periodId, physician_id: physicianId })
+}
+
+/**
  * What's been overridden this session and why — for deciding whether any
  * should become a permanent rule_override in physicians.yaml.
  * @returns {{ items: { physician_name: string, rule: string, message: string }[] }}

@@ -155,3 +155,34 @@ def get_survey_responses(config: SkedConfig, survey_id: str) -> list[dict]:
     if res.status_code != 200:
         raise SkedApiError(f"Could not fetch responses for survey {survey_id!r}: {res.text}")
     return res.json()
+
+
+def list_period_submissions(config: SkedConfig, period_id: str) -> list[dict]:
+    """Returns [{"physicianId", "physicianName", "status", "updatedAt"}, ...] for a shift-request period."""
+    with httpx.Client(timeout=30) as client:
+        res = client.get(
+            f"{config.base_url}/api/admin/submissions",
+            headers=_headers(config),
+            params={"periodId": period_id},
+        )
+    if res.status_code != 200:
+        raise SkedApiError(f"Could not list submissions for period {period_id!r}: {res.text}")
+    return res.json()
+
+
+def fetch_physician_export(config: SkedConfig, physician_id: str, period_id: str) -> bytes:
+    """
+    Rebuild and download one physician's filled-preferences .xlsx for a period,
+    from their currently saved grid+answers -- in the same layout KEAsked's own
+    importer.py already parses. Raises SkedApiError if there's no template
+    uploaded for the period or no submission for this physician yet.
+    """
+    with httpx.Client(timeout=60) as client:
+        res = client.get(
+            f"{config.base_url}/api/admin/physician-export",
+            headers=_headers(config),
+            params={"physicianId": physician_id, "periodId": period_id},
+        )
+    if res.status_code != 200:
+        raise SkedApiError(f"Could not export {physician_id!r} for period {period_id!r}: {res.text}")
+    return res.content

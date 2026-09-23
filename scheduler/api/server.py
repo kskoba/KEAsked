@@ -16,6 +16,7 @@ import datetime
 import io
 import math
 import re
+import tempfile
 import traceback
 from pathlib import Path
 from typing import Any
@@ -87,6 +88,10 @@ from scheduler.api.schemas import (
     SurveyCompletionResponse,
     ResendSurveyLinkRequest,
     ResendSurveyLinkResponse,
+    NotSubmittedRow,
+    SkedImportRequest,
+    ResendMonthlyRequestRequest,
+    ResendMonthlyRequestResponse,
 )
 import os
 
@@ -1394,6 +1399,157 @@ def send_monthly_requests(body: SendMonthlyRequestsRequest) -> SendMonthlyReques
     needs_attention = [r for r in results if r.status != "sent"]
     return SendMonthlyRequestsResponse(
         ok=True, sent_count=sent_count, results=results, needs_attention=needs_attention,
+    )
+
+
+@app.post("/api/monthly-requests/resend", response_model=ResendMonthlyRequestResponse)
+def resend_monthly_request(body: ResendMonthlyRequestRequest) -> ResendMonthlyRequestResponse:
+    """Regenerate one physician's shift-request link and email it. Only ever runs from an explicit click."""
+    sked_config = sked_client.load_sked_config()
+    if sked_config is None or not sked_client.is_fully_configured(sked_config):
+        raise HTTPException(
+            status_code=400,
+            detail="sked is not configured. Copy scheduler/config/sked_template.yaml to sked.yaml "
+                   "(in the physician config folder) and fill it in.",
+        )
+    email_config = email_sender.load_email_config()
+    if email_config is None or not email_sender.is_fully_configured(email_config):
+        raise HTTPException(
+            status_code=400,
+            detail="Email sending is not configured. Copy scheduler/config/email_template.yaml "
+                   "to email.yaml (in the physician config folder) and fill it in.",
+        )
+
+    roster: dict = _state.get("roster") or {}
+    if not roster:
+        try:
+            roster = load_roster()
+            _state["roster"] = roster
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Could not load physician roster: {exc}")
+
+    cfg = roster.get(body.physician_id)
+    if cfg is None:
+        raise HTTPException(status_code=404, detail=f"Unknown physician: {body.physician_id!r}")
+    if not cfg.email:
+        raise HTTPException(
+            status_code=400,
+            detail="No email on file for this physician — add one in the Physician Roster editor.",
+        )
+
+    try:
+        periods = sked_client.list_periods(sked_config, kind="shift_request")
+    except sked_client.SkedApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    period = next((p for p in periods if p["id"] == body.period_id), None)
+    if period is None:
+        raise HTTPException(status_code=404, detail=f"Unknown period: {body.period_id!r}")
+
+    name = _display_name(cfg)
+    try:
+        links = sked_client.generate_period_links(
+            sked_config, body.period_id, [{"id": cfg.id, "name": name, "email": cfg.email}],
+        )
+    except sked_client.SkedApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    url = links[0]["url"]
+
+    subject = f"{period['label']} — Reminder"
+    body_text = (
+        f"Hi {name},\n\n"
+        f"Here is your link to enter your shift preferences for {period['label']}:\n\n"
+        f"{url}\n\n"
+        f"This link is unique to you — please don't forward it. It saves your progress "
+        f"automatically, so you can close the window and come back to this same link any "
+        f"time to review or update your answers.\n"
+    )
+    try:
+        email_sender.send_email(cfg.email, subject, body_text, email_config)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return ResendMonthlyRequestResponse(ok=True, status="sent", detail=f"Sent to {cfg.email}.")
+
+
+@app.post("/api/sked/import", response_model=ImportDirectoryResponse)
+def sked_import(body: SkedImportRequest) -> ImportDirectoryResponse:
+    """
+    Pull in shift-preference submissions directly from sked for one period,
+    instead of a directory/flat file of xlsx exports. For each active roster
+    physician with a submission (draft or submitted), sked rebuilds their
+    filled-preferences xlsx server-side and this reuses the exact same
+    parsing path as /api/import (importer.import_single_file) — nothing
+    downstream (validation, generation) needs to know the source differs.
+    Physicians with no submission yet, or still in "draft", come back in
+    not_submitted instead of being silently skipped.
+    """
+    sked_config = sked_client.load_sked_config()
+    if sked_config is None or not sked_client.is_fully_configured(sked_config):
+        raise HTTPException(
+            status_code=400,
+            detail="sked is not configured. Copy scheduler/config/sked_template.yaml to sked.yaml "
+                   "(in the physician config folder) and fill it in.",
+        )
+
+    roster = load_roster()
+    scheduler_cfg = _load_scheduler_config()
+    active_physicians = {cfg.id: cfg for cfg in roster.values() if cfg.active}
+
+    try:
+        rows = sked_client.list_period_submissions(sked_config, body.period_id)
+    except sked_client.SkedApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    by_physician = {r["physicianId"]: r for r in rows}
+
+    not_submitted: list[NotSubmittedRow] = []
+    submissions: list[PhysicianSubmission] = []
+    fetch_errors: list[str] = []
+
+    with tempfile.TemporaryDirectory(prefix="sked-import-") as tmpdir:
+        for physician_id, cfg in active_physicians.items():
+            row = by_physician.get(physician_id)
+            if row is None:
+                not_submitted.append(NotSubmittedRow(
+                    physician_id=physician_id, physician_name=_display_name(cfg),
+                    status="not_started", email=cfg.email,
+                ))
+                continue
+            if row["status"] != "submitted":
+                not_submitted.append(NotSubmittedRow(
+                    physician_id=physician_id, physician_name=_display_name(cfg),
+                    status="draft", email=cfg.email,
+                ))
+                continue
+            try:
+                xlsx_bytes = sked_client.fetch_physician_export(sked_config, physician_id, body.period_id)
+            except sked_client.SkedApiError as exc:
+                fetch_errors.append(f"{_display_name(cfg)}: could not fetch from sked ({exc})")
+                continue
+            file_path = Path(tmpdir) / f"{physician_id}.xlsx"
+            file_path.write_bytes(xlsx_bytes)
+            try:
+                sub = import_single_file(file_path, body.year, body.month, physician_id_override=physician_id)
+                submissions.append(sub)
+            except Exception as exc:
+                fetch_errors.append(f"{_display_name(cfg)}: could not parse submission ({exc})")
+
+        _state["overrides"] = {}
+        unresolved = _apply_roster(submissions, roster)
+        _auto_override_flagged_physicians(submissions, roster)
+        _apply_shift_count_overrides(submissions, roster)
+        _apply_casual_availability_default(submissions, roster)
+        results = _build_import_results(submissions, unresolved, roster)
+        _state.update(submissions=submissions, roster=roster, scheduler_config=scheduler_cfg,
+                      year=body.year, month=body.month, directory=f"sked:{body.period_id}", source_file=None)
+
+    for err in fetch_errors:
+        print(f"[sked_import] WARNING: {err}")
+
+    valid_count = sum(1 for r in results if r.is_valid)
+    return ImportDirectoryResponse(
+        year=body.year, month=body.month, directory=f"sked:{body.period_id}",
+        physicians=results, total_physicians=len(results), valid_physicians=valid_count,
+        not_submitted=not_submitted,
     )
 
 

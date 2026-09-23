@@ -336,6 +336,13 @@ class PhysicianDetail(BaseModel):
     group_b_site_preference: Optional[str] = None
     forbidden_sites: list[str] = []
     only_2400h: bool = False
+    only_0600h: bool = False
+    post_block_rest_days: int = 0
+    post_block_min_length: int = 2
+    call_linkage: Optional[str] = None
+    max_consecutive_same_site: Optional[int] = None
+    avoid_weekday: Optional[str] = None
+    prefer_weekend_clumping: bool = False
     prefer_weekends: bool = False
     max_weekends: Optional[int] = None
     honor_all_requests: bool = False

@@ -395,6 +395,7 @@ export default function RosterEditor() {
 
               <Section title="Preferences">
                 <CheckboxField label="Only 2400h shifts" checked={form.only_2400h} onChange={(v) => setField('only_2400h', v)} />
+                <CheckboxField label="Only 0600h shifts" checked={form.only_0600h} onChange={(v) => setField('only_0600h', v)} />
                 <CheckboxField label="Prefer weekends" checked={form.prefer_weekends} onChange={(v) => setField('prefer_weekends', v)} />
                 <CheckboxField label="Honor all requests" checked={form.honor_all_requests} onChange={(v) => setField('honor_all_requests', v)} />
                 <CheckboxField label="Prefer singleton nights" checked={form.prefer_singleton_nights} onChange={(v) => setField('prefer_singleton_nights', v)} />

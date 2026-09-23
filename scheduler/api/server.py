@@ -90,9 +90,11 @@ from scheduler.backend import bytebloc as bytebloc_mod
 from scheduler.backend import email_sender
 from scheduler.backend import sked_client
 from scheduler.backend.config import (
+    CALL_LINKAGE_VALUES,
     GROUP_B_PREFS,
     VALID_RULE_OVERRIDES,
     VALID_SITES,
+    WEEKDAY_VALUES,
     PhysicianConfig,
     add_physician,
     load_roster,
@@ -681,6 +683,13 @@ def _physician_to_detail(cfg: PhysicianConfig) -> PhysicianDetail:
         group_b_site_preference=cfg.group_b_site_preference,
         forbidden_sites=list(cfg.forbidden_sites),
         only_2400h=cfg.only_2400h,
+        only_0600h=cfg.only_0600h,
+        post_block_rest_days=cfg.post_block_rest_days,
+        post_block_min_length=cfg.post_block_min_length,
+        call_linkage=cfg.call_linkage,
+        max_consecutive_same_site=cfg.max_consecutive_same_site,
+        avoid_weekday=cfg.avoid_weekday,
+        prefer_weekend_clumping=cfg.prefer_weekend_clumping,
         prefer_weekends=cfg.prefer_weekends,
         max_weekends=cfg.max_weekends,
         honor_all_requests=cfg.honor_all_requests,
@@ -744,6 +753,16 @@ def update_physician(physician_id: str, body: PhysicianUpdateRequest) -> Physici
             detail=f"Unknown rule_overrides key(s): {sorted(unknown_rules)}. "
                    f"Valid keys: {sorted(VALID_RULE_OVERRIDES)}",
         )
+    if body.call_linkage and body.call_linkage not in CALL_LINKAGE_VALUES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid call_linkage {body.call_linkage!r}. Valid values: {sorted(CALL_LINKAGE_VALUES)}",
+        )
+    if body.avoid_weekday and body.avoid_weekday not in WEEKDAY_VALUES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid avoid_weekday {body.avoid_weekday!r}. Valid values: {sorted(WEEKDAY_VALUES)}",
+        )
 
     # default_shifts_requested / combined_headcount / priority_weight aren't
     # exposed in the roster editor's form, so they must be carried forward
@@ -766,6 +785,13 @@ def update_physician(physician_id: str, body: PhysicianUpdateRequest) -> Physici
         group_b_site_preference=body.group_b_site_preference,
         forbidden_sites=list(body.forbidden_sites),
         only_2400h=body.only_2400h,
+        only_0600h=body.only_0600h,
+        post_block_rest_days=body.post_block_rest_days,
+        post_block_min_length=body.post_block_min_length,
+        call_linkage=body.call_linkage,
+        max_consecutive_same_site=body.max_consecutive_same_site,
+        avoid_weekday=body.avoid_weekday,
+        prefer_weekend_clumping=body.prefer_weekend_clumping,
         prefer_weekends=body.prefer_weekends,
         max_weekends=body.max_weekends,
         honor_all_requests=body.honor_all_requests,

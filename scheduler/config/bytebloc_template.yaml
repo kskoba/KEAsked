@@ -81,6 +81,16 @@ shift_map:
   "2400h RAH B side":  { site_id: "", shift_id: "" }
   "2400h RAH I side":  { site_id: "", shift_id: "" }
 
+  # On-call. Look for CallShift=Y in a getShiftDetails call to find these --
+  # they don't follow the "{time}h {site}" naming of the regular shifts
+  # above. Availability for these two comes from a physician's separate
+  # doc_available/noc_available submission fields, not the regular shift
+  # grid -- if this pair is left unmapped, on-call silently drops out of
+  # every ByteBloc upload with no warning shown (a missing key here
+  # produces no warning; only a present key with a blank shift_id does).
+  "DOC": { site_id: "", shift_id: "" }  # Day On Call
+  "NOC": { site_id: "", shift_id: "" }  # Night On Call
+
 # ------------------------------------------------------------------
 # Provider mapping: KEAsked physician_id -> ByteBloc ProviderId
 # ------------------------------------------------------------------

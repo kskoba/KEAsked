@@ -261,10 +261,14 @@ def build_shift_requests_payload(
     from validated physician submissions. Does NOT contact ByteBloc.
 
     Sends "OffRequest"/"NeedOff" for every (day, shift) a physician's
-    submission does NOT list in that day's requested_shifts -- i.e. every
-    shift slot they marked unavailable, one request per slot (not a
-    blanket day-level off) so a physician available for only part of a
-    day is represented correctly. OffReason is left blank: a spot-check of
+    submission marks unavailable -- one request per slot (not a blanket
+    day-level off) so a physician available for only part of a day is
+    represented correctly. Checked against day.requested_shifts for every
+    regular shift code; DOC/NOC are handled separately, against
+    day.doc_available/day.noc_available -- those two live in their own
+    submission fields, not the regular per-shift-row grid, so they can't
+    be read off requested_shifts the way every other code can. OffReason
+    is left blank: a spot-check of
     ByteBloc's current setup (2026-09-23) found no existing Off requests
     there have one set despite the API doc listing it as part of the
     required schema shape, so this matches how the org already uses the
@@ -314,7 +318,17 @@ def build_shift_requests_payload(
         shift_requests: list[dict] = []
         for day in sub.days:
             for shift_code in mapped_shift_codes:
-                if shift_code in day.requested_shifts:
+                # DOC/NOC availability lives in its own dedicated submission
+                # fields, not the regular per-shift-row grid -- requested_shifts
+                # never contains "DOC"/"NOC" regardless of what the physician
+                # actually marked, so those two codes need their own check.
+                if shift_code == "DOC":
+                    available = day.doc_available
+                elif shift_code == "NOC":
+                    available = day.noc_available
+                else:
+                    available = shift_code in day.requested_shifts
+                if available:
                     continue  # marked available -- nothing to request off
                 shift_id = config.shift_map[shift_code]["shift_id"]
                 shift_requests.append({

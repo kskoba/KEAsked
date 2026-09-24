@@ -327,6 +327,13 @@ class OnCallAssignmentSchema(BaseModel):
     physician_name: str
 
 
+class PhysicianRequestedSchema(BaseModel):
+    shifts_requested: int
+    shifts_max: int
+    shifts_2400h_requested: int
+    shifts_0600h_requested: int
+
+
 class ScheduleResponse(BaseModel):
     year: int
     month: int
@@ -335,6 +342,11 @@ class ScheduleResponse(BaseModel):
     issues: list[str]
     stats: Optional[ScheduleStatsSchema]
     on_calls: list[OnCallAssignmentSchema] = []
+    # Keyed by physician_id -- what each physician actually asked for that
+    # month (from their submission), for the Individual Schedules viewer to
+    # show alongside what they were actually scheduled. Empty if submissions
+    # aren't in memory (e.g. schedule loaded from a saved file post-restart).
+    requested: dict[str, PhysicianRequestedSchema] = {}
 
 
 # ---------------------------------------------------------------------------

@@ -59,13 +59,25 @@ export default function PhysicianScheduleViewer() {
       const day = dayOfMonth(a.date)
       const entry = ensure(a.physician_id, a.physician_name)
       if (!entry.byDay[day]) entry.byDay[day] = []
-      entry.byDay[day].push({ kind: 'shift', label: a.shift.time })
+      // Site (e.g. "RAH A side" -> "RAH A") is the actual shift being
+      // worked; time alone ("0600h") doesn't say which one.
+      entry.byDay[day].push({
+        kind: 'shift',
+        site: a.shift.site.replace(/ side$/, ''),
+        time: a.shift.time,
+        is2400: a.shift.time === '2400h',
+        is0600: a.shift.time === '0600h',
+      })
     }
     for (const c of schedule.on_calls || []) {
       const day = dayOfMonth(c.date)
       const entry = ensure(c.physician_id, c.physician_name)
       if (!entry.byDay[day]) entry.byDay[day] = []
       entry.byDay[day].push({ kind: 'call', label: c.call_type })
+    }
+    for (const [pid, req] of Object.entries(schedule.requested || {})) {
+      const entry = map[pid]
+      if (entry) entry.requested = req
     }
     return map
   }, [schedule])
@@ -188,6 +200,13 @@ function MonthGrid({ year, month, physician }) {
   for (let d = 1; d <= numDays; d++) cells.push(d)
   while (cells.length % 7 !== 0) cells.push(null)
 
+  // Actual scheduled counts, for comparing against what they requested below.
+  const allEntries = Object.values(physician.byDay).flat()
+  const scheduled2400 = allEntries.filter(e => e.kind === 'shift' && e.is2400).length
+  const scheduled0600 = allEntries.filter(e => e.kind === 'shift' && e.is0600).length
+  const scheduledTotal = allEntries.filter(e => e.kind === 'shift').length
+  const req = physician.requested
+
   return (
     <div className="max-w-3xl mx-auto">
       <h2 className="text-lg font-semibold text-slate-800 mb-1">{physician.name}</h2>
@@ -215,13 +234,19 @@ function MonthGrid({ year, month, physician }) {
                 {entries.map((e, i) => (
                   <span
                     key={i}
-                    className={`text-[10px] leading-tight font-semibold rounded px-1 ${
+                    className={`text-[10px] leading-tight font-semibold rounded px-1 text-center ${
                       e.kind === 'call'
                         ? 'text-amber-700 bg-amber-100 border border-amber-300'
                         : 'text-sky-700 bg-sky-100'
                     }`}
                   >
-                    {e.label}
+                    {e.kind === 'call' ? e.label : (
+                      <>
+                        {e.site}
+                        <br />
+                        <span className="font-normal opacity-70">{e.time}</span>
+                      </>
+                    )}
                   </span>
                 ))}
               </div>
@@ -232,12 +257,45 @@ function MonthGrid({ year, month, physician }) {
 
       <div className="flex items-center gap-4 mt-4 text-xs text-slate-500">
         <span className="flex items-center gap-1.5">
-          <span className="w-3 h-3 rounded bg-sky-100 border border-sky-300 inline-block" /> Working (shift time shown)
+          <span className="w-3 h-3 rounded bg-sky-100 border border-sky-300 inline-block" /> Working (site + time shown)
         </span>
         <span className="flex items-center gap-1.5">
           <span className="w-3 h-3 rounded bg-amber-100 border border-amber-300 inline-block" /> On-call (backup)
         </span>
       </div>
+
+      <div className="mt-5 pt-4 border-t border-slate-200">
+        <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Requested vs. scheduled</h3>
+        {req ? (
+          <div className="grid grid-cols-3 gap-3">
+            <StatPair label="Shifts" requested={req.shifts_requested} actual={scheduledTotal} sub={`max ${req.shifts_max}`} />
+            <StatPair label="2400h" requested={req.shifts_2400h_requested} actual={scheduled2400} />
+            <StatPair label="0600h" requested={req.shifts_0600h_requested} actual={scheduled0600} />
+          </div>
+        ) : (
+          <p className="text-xs text-slate-400">No submission on file for this physician this month.</p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function StatPair({ label, requested, actual, sub }) {
+  const mismatch = actual !== null && actual !== requested
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-2.5">
+      <div className="text-[10px] text-slate-400 uppercase tracking-wide mb-1">{label}</div>
+      <div className="flex items-baseline gap-1.5">
+        <span className="text-sm font-semibold text-slate-700">{requested}</span>
+        <span className="text-[10px] text-slate-400">requested</span>
+      </div>
+      {actual !== null && (
+        <div className={`flex items-baseline gap-1.5 ${mismatch ? 'text-amber-600' : 'text-slate-400'}`}>
+          <span className="text-sm font-semibold">{actual}</span>
+          <span className="text-[10px]">scheduled</span>
+        </div>
+      )}
+      {sub && <div className="text-[10px] text-slate-400 mt-0.5">{sub}</div>}
     </div>
   )
 }

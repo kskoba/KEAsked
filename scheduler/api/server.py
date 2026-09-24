@@ -59,6 +59,7 @@ from scheduler.api.schemas import (
     OverrideLogItem,
     OverrideLogResponse,
     OverrideRequest,
+    PhysicianRequestedSchema,
     ScheduleResponse,
     ScheduleStatsSchema,
     ShiftSchema,
@@ -534,6 +535,16 @@ def _shift_to_schema(shift: Shift) -> ShiftSchema:
 
 
 def _result_to_response(result: ScheduleResult) -> ScheduleResponse:
+    submissions: list[PhysicianSubmission] = _state.get("submissions") or []
+    requested = {
+        sub.physician_id: PhysicianRequestedSchema(
+            shifts_requested=sub.shifts_requested,
+            shifts_max=sub.shifts_max,
+            shifts_2400h_requested=sub.shifts_2400h_requested,
+            shifts_0600h_requested=sub.shifts_0600h_requested,
+        )
+        for sub in submissions
+    }
     return ScheduleResponse(
         year=result.year,
         month=result.month,
@@ -577,6 +588,7 @@ def _result_to_response(result: ScheduleResult) -> ScheduleResponse:
             )
             for oc in result.on_calls
         ],
+        requested=requested,
     )
 
 
@@ -1286,11 +1298,36 @@ def sked_physician_link(body: PhysicianLinkRequest) -> PhysicianLinkResponse:
     if cfg is None:
         raise HTTPException(status_code=404, detail=f"Unknown physician: {body.physician_id!r}")
 
+    # A survey period lives on a different Custom Domain (survey.keatools.org,
+    # rewritten to /survey.html by sked's Worker) than a shift-request period
+    # (sked.keatools.org root) -- without checking kind, every link generated
+    # here pointed at the shift-request grid regardless of which kind of
+    # period was actually asked for, silently producing a broken link for any
+    # survey period.
+    try:
+        periods = sked_client.list_periods(sked_config)
+    except sked_client.SkedApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    period = next((p for p in periods if p["id"] == body.period_id), None)
+    if period is None:
+        raise HTTPException(status_code=404, detail=f"Unknown period: {body.period_id!r}")
+    is_survey = period.get("kind") == "survey"
+
     try:
         links = sked_client.generate_period_links(
             sked_config,
             body.period_id,
-            [{"id": cfg.id, "name": _display_name(cfg), "email": cfg.email}],
+            [
+                {
+                    "id": cfg.id,
+                    "name": _display_name(cfg),
+                    "email": cfg.email,
+                    "maxConsecutiveShifts": cfg.max_consecutive_shifts,
+                    "maxConsecutiveNights": cfg.max_consecutive_nights,
+                    "nonAcuteSitePreference": cfg.group_b_site_preference or "",
+                }
+            ],
+            base_url_override=(sked_config.survey_base_url or None) if is_survey else None,
         )
     except sked_client.SkedApiError as exc:
         raise HTTPException(status_code=502, detail=str(exc))

@@ -949,13 +949,17 @@ class CpsatScheduleGenerator:
         # Captured per-pid so the weekend-clumping soft term (below) can
         # reuse these same "worked this weekend" BoolVars instead of
         # rebuilding them.
-        # Raised from 35 -- at that level this was getting swamped by
-        # fill-rate bonuses in the 1000s (confirmed against real Oct 2026
-        # solves: someone at their proportional cap of 2 still ended up
-        # touching 4 distinct weekends). Still soft, not a hard cap -- the
-        # solver can still exceed it under genuine infeasibility pressure,
-        # just no longer for an ordinary fill-rate nudge.
-        _WEEKEND_OVERAGE_PENALTY = 250
+        # Raised 35->250->500. At 35 this was getting swamped outright by
+        # fill-rate bonuses in the 1000s. At 250, re-tested against real Oct
+        # 2026 data, the roster-wide over-cap rate dropped from 50% to 37%,
+        # but two physicians (Breton, Sachs) still landed on 4 weekends
+        # despite a cap of 2 -- traced to real weekday-slot contention from
+        # other physicians (both had nearly 1:1 weekday/weekend
+        # availability, so it wasn't a hard infeasibility on their end, just
+        # the penalty still losing often enough). Still soft, not a hard
+        # cap -- the solver can still exceed it under genuine infeasibility
+        # pressure, just needs a much stronger reason to than before.
+        _WEEKEND_OVERAGE_PENALTY = 500
         weekend_worked_vars_by_pid: dict[str, list] = {}
         weekend_overage_penalty_terms = []
         for pid in pids:

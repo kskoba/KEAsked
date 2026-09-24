@@ -1593,9 +1593,18 @@ class ScheduleGenerator:
         # Build shift index directly from result — no state restoration needed.
         shift_dates: dict[datetime.date, set[str]] = defaultdict(set)
         shift_by_pid_date: dict[tuple[str, datetime.date], Shift] = {}
+        # Which Fri/Sat/Sun clusters each physician already has a regular
+        # shift in -- used below to never hand a weekend call to someone
+        # who is otherwise entirely off that weekend (see the check in the
+        # greedy loop). Built from all assignments regardless of weekday,
+        # since a physician's Friday shift still counts toward "already
+        # working this weekend" for a Saturday/Sunday call, and vice versa.
+        weekend_worked_by_pid: dict[str, set[tuple]] = defaultdict(set)
         for a in result.assignments:
             shift_dates[a.date].add(a.physician_id)
             shift_by_pid_date[(a.physician_id, a.date)] = a.shift
+            if a.date.weekday() in _WEEKEND_WEEKDAYS:
+                weekend_worked_by_pid[a.physician_id].add(_weekend_key(a.date))
 
         # Track which (date, call_type) slots are already filled so we never
         # double-book the same call slot (one DOC and one NOC per day max).
@@ -1630,11 +1639,14 @@ class ScheduleGenerator:
         # pid -> [(date, call_type)] sorted weekdays first, then by date
         avail: dict[str, list[tuple[datetime.date, str]]] = {}
         for pid, sub in self.submissions.items():
-            # Skip physicians who cannot do call shifts
+            # Skip physicians who cannot do call shifts -- casual staff are
+            # never given DOC/NOC (they're a lower-priority staffing tier
+            # for regular shifts, and on-call carries its own responsibility
+            # that shouldn't fall to someone in that tier either).
             cfg_oc = (self.roster.get(pid)
                       or self._roster_lower.get(pid.lower())
                       or self._roster_by_name.get(pid.lower()))
-            if cfg_oc and cfg_oc.no_call:
+            if cfg_oc and (cfg_oc.no_call or cfg_oc.casual):
                 continue
             days_list: list[tuple[datetime.date, str]] = []
             for day in sub.days:
@@ -1658,6 +1670,14 @@ class ScheduleGenerator:
                 # Must not have a regular shift on the call day
                 if pid in shift_dates.get(call_date, set()):
                     continue
+                # Never an isolated weekend call: if this call falls in a
+                # Fri/Sat/Sun cluster, the physician must already have at
+                # least one regular shift somewhere in that same cluster.
+                # Leaving the call unfilled is preferred over handing it to
+                # someone who is otherwise off entirely that weekend.
+                if call_date.weekday() in _WEEKEND_WEEKDAYS:
+                    if _weekend_key(call_date) not in weekend_worked_by_pid.get(pid, set()):
+                        continue
                 # Next-day rest: no regular shift the day after the call —
                 # except call_linkage="doc_before_evening"'s one confirmed-
                 # safe case (DOC immediately before an evening-start shift;

@@ -949,7 +949,13 @@ class CpsatScheduleGenerator:
         # Captured per-pid so the weekend-clumping soft term (below) can
         # reuse these same "worked this weekend" BoolVars instead of
         # rebuilding them.
-        _WEEKEND_OVERAGE_PENALTY = 35
+        # Raised from 35 -- at that level this was getting swamped by
+        # fill-rate bonuses in the 1000s (confirmed against real Oct 2026
+        # solves: someone at their proportional cap of 2 still ended up
+        # touching 4 distinct weekends). Still soft, not a hard cap -- the
+        # solver can still exceed it under genuine infeasibility pressure,
+        # just no longer for an ordinary fill-rate nudge.
+        _WEEKEND_OVERAGE_PENALTY = 250
         weekend_worked_vars_by_pid: dict[str, list] = {}
         weekend_overage_penalty_terms = []
         for pid in pids:
@@ -984,17 +990,24 @@ class CpsatScheduleGenerator:
                 model.add(over_we >= sum(weekend_worked_vars) - max_we)
                 weekend_overage_penalty_terms.append(-_WEEKEND_OVERAGE_PENALTY * over_we)
 
-        # Soft: weekend-clumping penalty (prefer_weekend_clumping). Penalizes
-        # each distinct weekend touched, so — for a similar total number of
-        # weekend shifts — the solver prefers concentrating them onto fewer
-        # weekends (e.g. one Fri/Sat/Sun stretch) over spreading them thin.
-        # Distinct from max_weekends above, which only caps the count.
+        # Soft: weekend-clumping penalty. Penalizes each distinct weekend
+        # touched, so — for a similar total number of weekend shifts — the
+        # solver prefers concentrating them onto fewer weekends (e.g. one
+        # Fri/Sat/Sun stretch) over spreading them thin. Distinct from
+        # max_weekends above, which only caps the count, not how spread out
+        # it is.
+        #
+        # Applies to everyone now, not just physicians with
+        # prefer_weekend_clumping set -- that was originally an opt-in flag,
+        # but only 5 of ~80 physicians had it set, so it did essentially
+        # nothing for the other 75 (confirmed flat weekend-concentration
+        # across real Oct 2026 solves regardless of this term's presence).
+        # The flag is no longer read here; a physician who explicitly wants
+        # the opposite (spread thin) has no mechanism for that today and
+        # would need a new negative-weight field if that ever comes up.
         _WEEKEND_CLUMP_PENALTY = 15
         weekend_clump_penalty_terms = []
         for pid in pids:
-            cfg = _get_cfg(pid)
-            if not (cfg and cfg.prefer_weekend_clumping):
-                continue
             for wv in weekend_worked_vars_by_pid.get(pid, []):
                 weekend_clump_penalty_terms.append(-_WEEKEND_CLUMP_PENALTY * wv)
 
@@ -1298,6 +1311,63 @@ class CpsatScheduleGenerator:
                     model.add(sum(night_vars_for_day) == nb)
                     night_bool[(pid, d_idx)] = nb
 
+        # Soft: shift-time variety. 2400h is deliberately excluded — night
+        # shifts already have their own clustering/anti-clustering logic
+        # above (per-physician, via prefer_singleton_nights) and this would
+        # fight it. For every other time code, two mechanisms discourage a
+        # physician's month from settling on one start-time with no
+        # variation (confirmed on real Oct 2026 data: Farfus got 3
+        # consecutive noons, Lung got the same 1800h slot 9 of 10 shifts):
+        #   (a) a same-time-two-days-running penalty (catches Farfus's case)
+        #   (b) a proportional per-time overage penalty across the whole
+        #       month (catches Lung's case: scattered, not consecutive, but
+        #       still almost entirely one time)
+        _VARIETY_REPEAT_PENALTY = 40
+        _VARIETY_OVERAGE_PENALTY = 60
+        _all_shift_times = sorted({shift.time for block in BLOCKS for shift in block} - {"2400h"})
+        variety_penalty_terms = []
+        time_bool: dict[tuple, object] = {}
+        for pid in pids:
+            for t in _all_shift_times:
+                for d_idx in range(len(all_dates)):
+                    time_vars_for_day = [
+                        shifts[(pid, d_idx, shift.code)]
+                        for block in BLOCKS
+                        for shift in block
+                        if shift.time == t
+                    ]
+                    if not time_vars_for_day:
+                        continue
+                    tb = model.new_bool_var(f"tb_{pid}_{t}_{d_idx}")
+                    # HC-2 guarantees at most one shift per physician per day.
+                    model.add(sum(time_vars_for_day) == tb)
+                    time_bool[(pid, t, d_idx)] = tb
+
+            sub = self.submissions.get(pid)
+            requested = sub.shifts_requested if sub else 0
+            # Same rationale as _eff_max_weekends: a low-volume physician
+            # shouldn't be held to the same variety bar as a full-time one.
+            per_time_allowance = max(2, math.ceil(requested / 4))
+
+            for t in _all_shift_times:
+                day_bools = [time_bool[(pid, t, d)] for d in range(len(all_dates)) if (pid, t, d) in time_bool]
+                if not day_bools:
+                    continue
+                for d_idx in range(len(all_dates) - 1):
+                    tb1 = time_bool.get((pid, t, d_idx))
+                    tb2 = time_bool.get((pid, t, d_idx + 1))
+                    if tb1 is None or tb2 is None:
+                        continue
+                    repeat = model.new_bool_var(f"tvrepeat_{pid}_{t}_{d_idx}")
+                    model.add_implication(repeat, tb1)
+                    model.add_implication(repeat, tb2)
+                    model.add(tb1 + tb2 <= 1 + repeat)
+                    variety_penalty_terms.append(-_VARIETY_REPEAT_PENALTY * repeat)
+
+                over_t = model.new_int_var(0, len(day_bools), f"tvover_{pid}_{t}")
+                model.add(over_t >= sum(day_bools) - per_time_allowance)
+                variety_penalty_terms.append(-_VARIETY_OVERAGE_PENALTY * over_t)
+
         # ----------------------------------------------------------------
         # HC-13b: No isolated 2400h nights (hard). Unless a physician has
         # prefer_singleton_nights set, a 2400h shift must have at least one
@@ -1355,6 +1425,10 @@ class CpsatScheduleGenerator:
 
         # Anti-clustering penalty for prefer_singleton_nights physicians.
         # These physicians want isolated 2400h shifts, so consecutive nights are penalised.
+        # Raised from -30 -- at that level this was getting swamped by
+        # fill-rate bonuses in the 1000s, same failure mode confirmed on the
+        # weekend-overage penalty against real Oct 2026 data (Brenneis, who
+        # has this flag set, still got 2 consecutive midnights).
         for pid in pids:
             pid_cfg = _get_cfg(pid)
             if not (pid_cfg and pid_cfg.prefer_singleton_nights):
@@ -1368,7 +1442,7 @@ class CpsatScheduleGenerator:
                 model.add_implication(consec, nb1)
                 model.add_implication(consec, nb2)
                 model.add(nb1 + nb2 <= 1 + consec)
-                clustering_bonus_terms.append(-30 * consec)  # penalty for consecutive nights
+                clustering_bonus_terms.append(-200 * consec)  # penalty for consecutive nights
 
         # Soft: Any-shift clustering bonus — reward consecutive working days.
         # Mirrors the 2400h singleton logic but for all shift types: a bonus for
@@ -1562,6 +1636,7 @@ class CpsatScheduleGenerator:
         objective_terms.extend(anchor_overage_penalty_terms)
         objective_terms.extend(anchor_fulfillment_bonus_terms)
         objective_terms.extend(weekend_clump_penalty_terms)
+        objective_terms.extend(variety_penalty_terms)
         objective_terms.extend(weekend_overage_penalty_terms)
 
         # ----------------------------------------------------------------

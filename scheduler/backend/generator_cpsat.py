@@ -1159,6 +1159,14 @@ class CpsatScheduleGenerator:
         # casual physician, who stays in their own separate, strictly-lower
         # priority tier regardless of this value.
         requested_bonus_by_pid: dict[str, object] = {}
+        # bonus_high/bonus_low kept separately per pid (not just their sum)
+        # so the lexicographic tiers below can protect a non-casual
+        # physician's essential first-half demand (bonus_high) from ever
+        # being outcompeted by a casual physician, while still letting
+        # casuals compete freely against everyone's marginal (bonus_low)
+        # second-half demand. See the tier-building code further down.
+        bonus_high_by_pid: dict[str, object] = {}
+        bonus_low_by_pid: dict[str, object] = {}
         effective_requested_by_pid: dict[str, int] = {}
         deficit_penalty_terms = []
         for pid in pids:
@@ -1184,6 +1192,8 @@ class CpsatScheduleGenerator:
                 if low_span > 0:
                     deficit_penalty_terms.append(round(50 * priority) * bonus_low)
                 requested_bonus_by_pid[pid] = bonus_high + bonus_low
+                bonus_high_by_pid[pid] = bonus_high
+                bonus_low_by_pid[pid] = bonus_low
 
             # Small linear term: slight incentive to fill toward max even above requested.
             deficit_penalty_terms.append(3 * physician_shift_exprs[pid])
@@ -1652,29 +1662,45 @@ class CpsatScheduleGenerator:
         # achieved value with model.add(...) before the next tier runs, so a
         # later tier can never undo an earlier one's guarantee.
         #
-        # Normal and casual physicians' requested-count bonuses are merged
-        # into ONE tier here, not two separate ones. They used to be
-        # strictly separate (normal physicians locked to their full
-        # requested count first, casuals only getting whatever was left) --
-        # confirmed on real Oct 2026 data that this meant casuals essentially
-        # never got anything even on weekends they were genuinely available
-        # for and a non-casual physician's marginal (already-past-halfway)
-        # shift was contested for the exact same slot instead. bonus_high/
-        # bonus_low (above) already gives a physician's own first half of
-        # their request double the weight of their second half; merging the
-        # tiers lets that same diminishing-value structure decide fairly
-        # between a casual's higher-value first shifts and a normal
-        # physician's lower-value marginal ones, instead of the tier wall
-        # deciding it categorically regardless of value. Bounded risk: a
-        # casual's requested count is typically small (a handful of shifts),
-        # so the maximum a normal physician's marginal fill can be displaced
-        # by is capped by the casual roster's total modest demand, not
-        # open-ended.
+        # Normal physicians' ESSENTIAL demand (bonus_high, their own first
+        # half) is protected in its own tier, ahead of everyone else --
+        # casual physicians then compete on equal footing with everyone's
+        # MARGINAL demand (bonus_low, the second half) in a second tier.
+        #
+        # A prior version fully merged normal and casual into one tier
+        # (both bonus_high and bonus_low together). That fixed casuals
+        # getting essentially nothing (confirmed on real Oct 2026 data --
+        # a casual with genuine weekend availability got 0 shifts because
+        # every one of her slots was already claimed before her tier ever
+        # ran), but overcorrected: a casual's bonus_high (worth 100, same
+        # weight as a normal physician's bonus_high) could and did outbid a
+        # normal physician's own bonus_high for a contested slot, since
+        # nothing in a single merged sum objective distinguishes "casual's
+        # essential demand" from "normal physician's essential demand" --
+        # both are just 100-weighted units to maximize. Confirmed on a real
+        # Oct 2026 solve: casual shift usage roughly doubled vs. the human
+        # schedule (9 vs 5) while several full-time physicians landed under
+        # their own requested count (Breton -3, Norum -3, and others -1).
+        #
+        # Splitting bonus_high out as its own protected tier keeps a normal
+        # physician's essential demand strictly ahead of ANY casual demand
+        # (matching the original, pre-casual-competition guarantee), while
+        # still letting a casual's shifts compete for -- and potentially win
+        # -- a normal physician's marginal, already-past-halfway demand,
+        # which is the actual thing this was meant to fix (a casual's real
+        # weekend availability being usable instead of wasted).
         # ----------------------------------------------------------------
         casual_pids = {pid for pid in pids if getattr(_get_cfg(pid), "casual", False)}
-        normal_bonus_terms = [
+        normal_high_terms = [
+            bonus_high_by_pid[pid] for pid in pids
+            if pid not in casual_pids and pid in bonus_high_by_pid
+        ]
+        marginal_and_casual_terms = [
+            bonus_low_by_pid[pid] for pid in pids
+            if pid not in casual_pids and pid in bonus_low_by_pid
+        ] + [
             requested_bonus_by_pid[pid] for pid in pids
-            if pid not in casual_pids and pid in requested_bonus_by_pid
+            if pid in casual_pids and pid in requested_bonus_by_pid
         ]
         casual_bonus_terms = [
             requested_bonus_by_pid[pid] for pid in pids
@@ -1705,55 +1731,67 @@ class CpsatScheduleGenerator:
             for k, v in cb.best_values.items():
                 model.add_hint(shifts[k], v)
 
-        if casual_pids and casual_bonus_terms:
+        def _run_priority_tier(tier_label: str, terms: list, progress_pct: int) -> None:
+            nonlocal remaining_time_limit
+            if not terms:
+                return
             tier_time_limit = min(60.0, max(5.0, time_limit * 0.1))
+            logger.info("CP-SAT lexicographic: %s", tier_label)
+            tier_expr = sum(terms)
+            model.maximize(tier_expr)
+            tier_solver = _cp_model.CpSolver()
+            tier_solver.parameters.max_time_in_seconds = tier_time_limit
+            tier_solver.parameters.num_search_workers = num_workers
+            tier_cb = _SolutionCallback(shifts, should_stop=cancel_check)
+            tier_status = tier_solver.solve(model, tier_cb)
+            if tier_status in (_cp_model.OPTIMAL, _cp_model.FEASIBLE) and tier_cb.best_values:
+                model.add(tier_expr >= int(tier_cb.best_objective))
+                # Also freeze each individual physician's achieved count, not
+                # just the tier-wide sum. Locking only the sum lets a later
+                # tier trade one physician's progress for another's of equal
+                # weight — e.g. dropping someone a shift below their own
+                # request to buy a group-balance or clustering bonus
+                # elsewhere, since the total sum is unchanged either way.
+                # Confirmed via a real run: Keyes landed a shift under his
+                # own stated request even though a sum-only lock was
+                # respected. Capped at each physician's own
+                # effective_requested so this can never ratchet in an
+                # accidental overage beyond what they actually asked for.
+                for pid, eff_req in effective_requested_by_pid.items():
+                    achieved = sum(
+                        tier_cb.best_values.get((pid, d_idx, shift.code), 0)
+                        for d_idx in range(len(all_dates))
+                        for block in BLOCKS
+                        for shift in block
+                    )
+                    floor = min(achieved, eff_req)
+                    if floor > 0:
+                        model.add(physician_shift_exprs[pid] >= floor)
+                _apply_hint(tier_cb)
+            remaining_time_limit -= tier_solver.wall_time
+            if progress_callback:
+                progress_callback(progress_pct, 100, tier_cb.best_objective if tier_cb.best_values else 0.0)
 
-            merged_bonus_terms = normal_bonus_terms + casual_bonus_terms
-            if merged_bonus_terms:
-                logger.info("CP-SAT lexicographic: tier 1/2 — every physician (normal + casual) toward requested")
-                tier1_expr = sum(merged_bonus_terms)
-                model.maximize(tier1_expr)
-                tier1_solver = _cp_model.CpSolver()
-                tier1_solver.parameters.max_time_in_seconds = tier_time_limit
-                tier1_solver.parameters.num_search_workers = num_workers
-                tier1_cb = _SolutionCallback(shifts, should_stop=cancel_check)
-                tier1_status = tier1_solver.solve(model, tier1_cb)
-                if tier1_status in (_cp_model.OPTIMAL, _cp_model.FEASIBLE) and tier1_cb.best_values:
-                    model.add(tier1_expr >= int(tier1_cb.best_objective))
-                    # Also freeze each individual physician's achieved count,
-                    # not just the tier-wide sum. Locking only the sum lets a
-                    # later tier trade one physician's progress for another's
-                    # of equal weight — e.g. dropping someone a shift below
-                    # their own request to buy a group-balance or clustering
-                    # bonus elsewhere, since the total sum is unchanged
-                    # either way. Confirmed via a real run: Keyes landed a
-                    # shift under his own stated request even though tier1's
-                    # sum-only lock was respected. Now applies to casual
-                    # physicians too (previously skipped, back when they had
-                    # their own separate, later tier) — capped at each
-                    # physician's own effective_requested so this can never
-                    # ratchet in an accidental tier1 overage beyond what they
-                    # actually asked for.
-                    for pid, eff_req in effective_requested_by_pid.items():
-                        achieved = sum(
-                            tier1_cb.best_values.get((pid, d_idx, shift.code), 0)
-                            for d_idx in range(len(all_dates))
-                            for block in BLOCKS
-                            for shift in block
-                        )
-                        floor = min(achieved, eff_req)
-                        if floor > 0:
-                            model.add(physician_shift_exprs[pid] >= floor)
-                    _apply_hint(tier1_cb)
-                remaining_time_limit -= tier1_solver.wall_time
-                if progress_callback:
-                    progress_callback(70, 100, tier1_cb.best_objective if tier1_cb.best_values else 0.0)
+        if casual_pids and casual_bonus_terms:
+            # Tier 1: every normal physician's ESSENTIAL demand only
+            # (bonus_high) — protected ahead of any casual competition.
+            _run_priority_tier(
+                "tier 1/3 — normal physicians' essential demand (protected from casual competition)",
+                normal_high_terms, 65,
+            )
+            # Tier 2: everyone's MARGINAL demand (normal bonus_low) competing
+            # together with casual physicians' full demand (bonus_high +
+            # bonus_low) — this is the actual fair-competition zone.
+            _run_priority_tier(
+                "tier 2/3 — marginal demand + casual physicians toward requested",
+                marginal_and_casual_terms, 70,
+            )
 
-            # Floor so tier 2 — the tier that actually matters most for
+            # Floor so tier 3 — the tier that actually matters most for
             # schedule quality — always gets a meaningful budget even if
-            # tier 1 ate most of its (small) allocation.
+            # tiers 1/2 ate most of their (small) allocations.
             remaining_time_limit = max(30.0, remaining_time_limit)
-            logger.info("CP-SAT lexicographic: tier 2/2 — full objective (everyone up to max)")
+            logger.info("CP-SAT lexicographic: tier 3/3 — full objective (everyone up to max)")
 
         # ----------------------------------------------------------------
         # Anchor-fulfillment floor (2400h/0600h requests). Runs

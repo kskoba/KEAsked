@@ -1670,14 +1670,20 @@ class ScheduleGenerator:
                 # Must not have a regular shift on the call day
                 if pid in shift_dates.get(call_date, set()):
                     continue
-                # Never an isolated weekend call: if this call falls in a
-                # Fri/Sat/Sun cluster, the physician must already have at
-                # least one regular shift somewhere in that same cluster.
-                # Leaving the call unfilled is preferred over handing it to
-                # someone who is otherwise off entirely that weekend.
-                if call_date.weekday() in _WEEKEND_WEEKDAYS:
-                    if _weekend_key(call_date) not in weekend_worked_by_pid.get(pid, set()):
-                        continue
+                # NOTE: an earlier version of this method hard-blocked an
+                # "isolated" weekend call (a Fri/Sat/Sun call for a physician
+                # with no other regular shift that same weekend). Rolled
+                # back 2026-09-23 -- checked real June and October 2026
+                # human-built schedules and isolated weekend calls are
+                # normal, accepted practice there too (18% and 38% of all
+                # weekend calls respectively, not an anomaly), and the hard
+                # block was costing real fill rate (call fill dropped from
+                # 54/62 to 35/62 on a real Oct 2026 solve) to enforce a
+                # stricter standard than actual practice uses.
+                # weekend_worked_by_pid (above) is left in place, unused,
+                # in case a softer, non-blocking version of this preference
+                # is wanted later.
+                #
                 # Next-day rest: no regular shift the day after the call —
                 # except call_linkage="doc_before_evening"'s one confirmed-
                 # safe case (DOC immediately before an evening-start shift;

@@ -949,17 +949,17 @@ class CpsatScheduleGenerator:
         # Captured per-pid so the weekend-clumping soft term (below) can
         # reuse these same "worked this weekend" BoolVars instead of
         # rebuilding them.
-        # Raised 35->250->500. At 35 this was getting swamped outright by
+        # Raised from 35 -- at that level this was getting swamped by
         # fill-rate bonuses in the 1000s. At 250, re-tested against real Oct
         # 2026 data, the roster-wide over-cap rate dropped from 50% to 37%,
         # but two physicians (Breton, Sachs) still landed on 4 weekends
         # despite a cap of 2 -- traced to real weekday-slot contention from
-        # other physicians (both had nearly 1:1 weekday/weekend
-        # availability, so it wasn't a hard infeasibility on their end, just
-        # the penalty still losing often enough). Still soft, not a hard
-        # cap -- the solver can still exceed it under genuine infeasibility
-        # pressure, just needs a much stronger reason to than before.
-        _WEEKEND_OVERAGE_PENALTY = 500
+        # other physicians, not infeasibility on their end. Went to 500
+        # briefly to chase that further, then back to 250 here so the
+        # casual-priority change below (see casual_pids handling) is the
+        # only variable moving in this round -- revisit raising this again
+        # once that change's own effect has been measured on its own.
+        _WEEKEND_OVERAGE_PENALTY = 250
         weekend_worked_vars_by_pid: dict[str, list] = {}
         weekend_overage_penalty_terms = []
         for pid in pids:
@@ -1644,20 +1644,32 @@ class CpsatScheduleGenerator:
         objective_terms.extend(weekend_overage_penalty_terms)
 
         # ----------------------------------------------------------------
-        # Lexicographic casual-priority tiers (only when casual physicians
-        # exist in this roster). Everything above — every hard constraint,
-        # every decision variable, HC-7's casual hard-cap — is already built
-        # into this ONE model for every physician. Each tier just picks a
-        # different objective to maximize on that same model, solves, and
-        # then locks in the achieved value with model.add(...) before the
-        # next tier runs, so a later tier can never undo an earlier one's
-        # guarantee. This is what makes the priority order (1) normal
-        # physicians to their requested count, (2) casual physicians to
-        # their requested count, (3) normal physicians up to their real
-        # max — a guarantee rather than just a weighted preference, without
-        # ever losing sight of the full problem (unlike three separate
-        # models, which would have no way to know what another phase
-        # already assigned).
+        # Lexicographic priority tiers (only when casual physicians exist in
+        # this roster). Everything above — every hard constraint, every
+        # decision variable, HC-7's casual hard-cap — is already built into
+        # this ONE model for every physician. Each tier picks a different
+        # objective to maximize on that same model, solves, and locks in the
+        # achieved value with model.add(...) before the next tier runs, so a
+        # later tier can never undo an earlier one's guarantee.
+        #
+        # Normal and casual physicians' requested-count bonuses are merged
+        # into ONE tier here, not two separate ones. They used to be
+        # strictly separate (normal physicians locked to their full
+        # requested count first, casuals only getting whatever was left) --
+        # confirmed on real Oct 2026 data that this meant casuals essentially
+        # never got anything even on weekends they were genuinely available
+        # for and a non-casual physician's marginal (already-past-halfway)
+        # shift was contested for the exact same slot instead. bonus_high/
+        # bonus_low (above) already gives a physician's own first half of
+        # their request double the weight of their second half; merging the
+        # tiers lets that same diminishing-value structure decide fairly
+        # between a casual's higher-value first shifts and a normal
+        # physician's lower-value marginal ones, instead of the tier wall
+        # deciding it categorically regardless of value. Bounded risk: a
+        # casual's requested count is typically small (a handful of shifts),
+        # so the maximum a normal physician's marginal fill can be displaced
+        # by is capped by the casual roster's total modest demand, not
+        # open-ended.
         # ----------------------------------------------------------------
         casual_pids = {pid for pid in pids if getattr(_get_cfg(pid), "casual", False)}
         normal_bonus_terms = [
@@ -1669,13 +1681,13 @@ class CpsatScheduleGenerator:
             if pid in casual_pids and pid in requested_bonus_by_pid
         ]
 
-        # Tiers 1/2 get a small slice of the total budget, not a share on
-        # top of tier 3 getting the full time_limit again — otherwise the
-        # actual wall-clock time can run to ~1.7x what the caller asked
-        # for (and what the UI's countdown displays), since each tier
-        # used to get its own independent allocation. Whatever tiers 1/2
-        # actually spend (via .wall_time, not the cap itself) is deducted
-        # from tier 3's budget, so total time stays close to time_limit.
+        # Tier 1 gets a small slice of the total budget, not a share on top
+        # of tier 2 getting the full time_limit again — otherwise the actual
+        # wall-clock time can run over what the caller asked for (and what
+        # the UI's countdown displays), since each tier used to get its own
+        # independent allocation. Whatever tier 1 actually spends (via
+        # .wall_time, not the cap itself) is deducted from tier 2's budget,
+        # so total time stays close to time_limit.
         remaining_time_limit = time_limit
 
         def _apply_hint(cb: "_SolutionCallback") -> None:
@@ -1696,9 +1708,10 @@ class CpsatScheduleGenerator:
         if casual_pids and casual_bonus_terms:
             tier_time_limit = min(60.0, max(5.0, time_limit * 0.1))
 
-            if normal_bonus_terms:
-                logger.info("CP-SAT lexicographic: tier 1/3 — normal physicians toward requested")
-                tier1_expr = sum(normal_bonus_terms)
+            merged_bonus_terms = normal_bonus_terms + casual_bonus_terms
+            if merged_bonus_terms:
+                logger.info("CP-SAT lexicographic: tier 1/2 — every physician (normal + casual) toward requested")
+                tier1_expr = sum(merged_bonus_terms)
                 model.maximize(tier1_expr)
                 tier1_solver = _cp_model.CpSolver()
                 tier1_solver.parameters.max_time_in_seconds = tier_time_limit
@@ -1712,16 +1725,16 @@ class CpsatScheduleGenerator:
                     # later tier trade one physician's progress for another's
                     # of equal weight — e.g. dropping someone a shift below
                     # their own request to buy a group-balance or clustering
-                    # bonus elsewhere, since the total normal_bonus_terms sum
-                    # is unchanged either way. Confirmed via a real run: Keyes
-                    # landed a shift under his own stated request even though
-                    # tier1's sum-only lock was respected. Capped at each
+                    # bonus elsewhere, since the total sum is unchanged
+                    # either way. Confirmed via a real run: Keyes landed a
+                    # shift under his own stated request even though tier1's
+                    # sum-only lock was respected. Now applies to casual
+                    # physicians too (previously skipped, back when they had
+                    # their own separate, later tier) — capped at each
                     # physician's own effective_requested so this can never
                     # ratchet in an accidental tier1 overage beyond what they
                     # actually asked for.
                     for pid, eff_req in effective_requested_by_pid.items():
-                        if pid in casual_pids:
-                            continue
                         achieved = sum(
                             tier1_cb.best_values.get((pid, d_idx, shift.code), 0)
                             for d_idx in range(len(all_dates))
@@ -1734,32 +1747,17 @@ class CpsatScheduleGenerator:
                     _apply_hint(tier1_cb)
                 remaining_time_limit -= tier1_solver.wall_time
                 if progress_callback:
-                    progress_callback(60, 100, tier1_cb.best_objective if tier1_cb.best_values else 0.0)
+                    progress_callback(70, 100, tier1_cb.best_objective if tier1_cb.best_values else 0.0)
 
-            logger.info("CP-SAT lexicographic: tier 2/3 — casual physicians toward requested")
-            tier2_expr = sum(casual_bonus_terms)
-            model.maximize(tier2_expr)
-            tier2_solver = _cp_model.CpSolver()
-            tier2_solver.parameters.max_time_in_seconds = tier_time_limit
-            tier2_solver.parameters.num_search_workers = num_workers
-            tier2_cb = _SolutionCallback(shifts, should_stop=cancel_check)
-            tier2_status = tier2_solver.solve(model, tier2_cb)
-            if tier2_status in (_cp_model.OPTIMAL, _cp_model.FEASIBLE) and tier2_cb.best_values:
-                model.add(tier2_expr >= int(tier2_cb.best_objective))
-                _apply_hint(tier2_cb)
-            remaining_time_limit -= tier2_solver.wall_time
-            if progress_callback:
-                progress_callback(75, 100, tier2_cb.best_objective if tier2_cb.best_values else 0.0)
-
-            # Floor so tier 3 — the tier that actually matters most for
+            # Floor so tier 2 — the tier that actually matters most for
             # schedule quality — always gets a meaningful budget even if
-            # tiers 1/2 ate most of their (small) allocations.
+            # tier 1 ate most of its (small) allocation.
             remaining_time_limit = max(30.0, remaining_time_limit)
-            logger.info("CP-SAT lexicographic: tier 3/3 — full objective (normal physicians up to max)")
+            logger.info("CP-SAT lexicographic: tier 2/2 — full objective (everyone up to max)")
 
         # ----------------------------------------------------------------
         # Anchor-fulfillment floor (2400h/0600h requests). Runs
-        # unconditionally — unlike tiers 1/2 above, not gated on casual
+        # unconditionally — unlike tier 1 above, not gated on casual
         # physicians existing — since the problem it fixes has nothing to
         # do with casual staffing. Confirmed on real October 2026 data: a
         # 20-minute solve at 1.1% optimality gap (so not a search-depth
@@ -1785,7 +1783,7 @@ class CpsatScheduleGenerator:
         #     on top of stage A's breadth guarantee, to use up whatever
         #     capacity remains as efficiently as possible.
         #
-        # Runs after tiers 1/2 (if they ran) deliberately — reaching a
+        # Runs after tier 1 (if it ran) deliberately — reaching a
         # physician's own requested TOTAL shift count should take priority
         # over the TYPE mix within that count; you can't fulfill an anchor
         # request with a shift you were never assigned in the first place.

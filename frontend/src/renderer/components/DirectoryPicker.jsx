@@ -556,7 +556,7 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
               Solver Time Limit
               <span className="ml-2 text-slate-400 font-normal">— longer runs get closer to optimal</span>
             </label>
-            <div className="flex gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               {[5, 10, 20, 30].map(mins => (
                 <button
                   key={mins}
@@ -571,6 +571,26 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
                   {mins} min
                 </button>
               ))}
+              <div className="flex items-center gap-1.5 ml-1">
+                <input
+                  type="number"
+                  min={1}
+                  max={180}
+                  step={1}
+                  value={timeLimitMinutes}
+                  disabled={generating}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value, 10)
+                    if (Number.isFinite(v)) setTimeLimitMinutes(Math.min(180, Math.max(1, v)))
+                  }}
+                  className={`w-16 px-2 py-1.5 text-sm text-center rounded-md border transition-colors ${
+                    [5, 10, 20, 30].includes(timeLimitMinutes)
+                      ? 'bg-white border-slate-300 text-slate-600'
+                      : 'bg-sky-50 border-sky-400 text-sky-700 font-medium'
+                  } focus:outline-none focus:ring-2 focus:ring-sky-400 disabled:opacity-50`}
+                />
+                <span className="text-sm text-slate-500">min (custom)</span>
+              </div>
             </div>
           </div>
 

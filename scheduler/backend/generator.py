@@ -1593,18 +1593,9 @@ class ScheduleGenerator:
         # Build shift index directly from result — no state restoration needed.
         shift_dates: dict[datetime.date, set[str]] = defaultdict(set)
         shift_by_pid_date: dict[tuple[str, datetime.date], Shift] = {}
-        # Which Fri/Sat/Sun clusters each physician already has a regular
-        # shift in -- used below to never hand a weekend call to someone
-        # who is otherwise entirely off that weekend (see the check in the
-        # greedy loop). Built from all assignments regardless of weekday,
-        # since a physician's Friday shift still counts toward "already
-        # working this weekend" for a Saturday/Sunday call, and vice versa.
-        weekend_worked_by_pid: dict[str, set[tuple]] = defaultdict(set)
         for a in result.assignments:
             shift_dates[a.date].add(a.physician_id)
             shift_by_pid_date[(a.physician_id, a.date)] = a.shift
-            if a.date.weekday() in _WEEKEND_WEEKDAYS:
-                weekend_worked_by_pid[a.physician_id].add(_weekend_key(a.date))
 
         # Track which (date, call_type) slots are already filled so we never
         # double-book the same call slot (one DOC and one NOC per day max).
@@ -1635,6 +1626,33 @@ class ScheduleGenerator:
                 return 0 if (prev_shift is None and next_shift is None) else 2
             return 1
 
+        def _isolation_rank(pid: str, call_date: datetime.date) -> int:
+            """
+            0 = not an isolated weekend call (weekday call, or a weekend
+            call with a regular shift within 2 calendar days either side),
+            1 = an isolated weekend call -- still eligible, just tried after
+            every 0 candidate for this physician.
+
+            Checked against real June/October 2026 human-built schedules
+            (2026-09-24): isolated weekend calls do happen there (~17-19%
+            of weekend calls, using this same +/-2-day definition), so this
+            is a soft ordering preference, not a hard block like an earlier,
+            reverted version of this method had -- humans clearly treat
+            "adjacent to my other work" as a strong preference, not an
+            absolute rule, and a hard block cost real call fill rate to
+            enforce a stricter standard than actual practice uses. The
+            previous version of assign_on_calls had no such preference at
+            all (pure chronological fallback), which tested at ~3x the
+            human isolation rate on a real Oct 2026 solve (53% vs 19%) --
+            this closes that gap without reintroducing the fill-rate cost.
+            """
+            if call_date.weekday() not in _WEEKEND_WEEKDAYS:
+                return 0
+            for delta in (-2, -1, 1, 2):
+                if shift_by_pid_date.get((pid, call_date + datetime.timedelta(days=delta))) is not None:
+                    return 0
+            return 1
+
         # Build per-physician on-call availability:
         # pid -> [(date, call_type)] sorted weekdays first, then by date
         avail: dict[str, list[tuple[datetime.date, str]]] = {}
@@ -1656,7 +1674,12 @@ class ScheduleGenerator:
                     days_list.append((day.date, "NOC"))
             if days_list:
                 days_list.sort(
-                    key=lambda x: (_linkage_rank(pid, x[0], x[1]), x[0].weekday() >= 5, x[0])
+                    key=lambda x: (
+                        _linkage_rank(pid, x[0], x[1]),
+                        x[0].weekday() >= 5,
+                        _isolation_rank(pid, x[0]),
+                        x[0],
+                    )
                 )
                 avail[pid] = days_list
 
@@ -1679,10 +1702,10 @@ class ScheduleGenerator:
                 # weekend calls respectively, not an anomaly), and the hard
                 # block was costing real fill rate (call fill dropped from
                 # 54/62 to 35/62 on a real Oct 2026 solve) to enforce a
-                # stricter standard than actual practice uses.
-                # weekend_worked_by_pid (above) is left in place, unused,
-                # in case a softer, non-blocking version of this preference
-                # is wanted later.
+                # stricter standard than actual practice uses. Replaced
+                # 2026-09-24 with _isolation_rank's soft ordering preference
+                # instead (see its docstring above) -- isolation is now
+                # tried last per physician, never blocked outright.
                 #
                 # Next-day rest: no regular shift the day after the call —
                 # except call_linkage="doc_before_evening"'s one confirmed-

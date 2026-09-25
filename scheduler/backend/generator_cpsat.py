@@ -1167,6 +1167,12 @@ class CpsatScheduleGenerator:
         # second-half demand. See the tier-building code further down.
         bonus_high_by_pid: dict[str, object] = {}
         bonus_low_by_pid: dict[str, object] = {}
+        # Only a tiny slice of a non-casual physician's own marginal
+        # (bonus_low) demand is actually exposed to casual competition --
+        # see its use in the tier-building code further down for why this
+        # is capped at 1, not split roughly in half like bonus_high/low
+        # themselves.
+        bonus_contestable_by_pid: dict[str, object] = {}
         effective_requested_by_pid: dict[str, int] = {}
         deficit_penalty_terms = []
         for pid in pids:
@@ -1194,6 +1200,12 @@ class CpsatScheduleGenerator:
                 requested_bonus_by_pid[pid] = bonus_high + bonus_low
                 bonus_high_by_pid[pid] = bonus_high
                 bonus_low_by_pid[pid] = bonus_low
+
+                if not (cfg and cfg.casual) and low_span > 0:
+                    contestable_span = min(1, low_span)
+                    bonus_contestable = model.new_int_var(0, contestable_span, f"reqbonus_contestable_{pid}")
+                    model.add(bonus_contestable <= bonus_low)
+                    bonus_contestable_by_pid[pid] = bonus_contestable
 
             # Small linear term: slight incentive to fill toward max even above requested.
             deficit_penalty_terms.append(3 * physician_shift_exprs[pid])
@@ -1665,42 +1677,52 @@ class CpsatScheduleGenerator:
         # achieved value with model.add(...) before the next tier runs, so a
         # later tier can never undo an earlier one's guarantee.
         #
-        # Normal physicians' ESSENTIAL demand (bonus_high, their own first
-        # half) is protected in its own tier, ahead of everyone else --
-        # casual physicians then compete on equal footing with everyone's
-        # MARGINAL demand (bonus_low, the second half) in a second tier.
+        # Normal physicians' demand is protected almost in full -- everything
+        # except a single contestable unit (bonus_contestable, at most 1
+        # shift regardless of how large their request is) -- ahead of any
+        # casual competition. Casuals then compete only for that tiny
+        # per-physician sliver, together with their own full demand, in a
+        # second tier.
         #
-        # A prior version fully merged normal and casual into one tier
-        # (both bonus_high and bonus_low together). That fixed casuals
-        # getting essentially nothing (confirmed on real Oct 2026 data --
-        # a casual with genuine weekend availability got 0 shifts because
-        # every one of her slots was already claimed before her tier ever
-        # ran), but overcorrected: a casual's bonus_high (worth 100, same
-        # weight as a normal physician's bonus_high) could and did outbid a
-        # normal physician's own bonus_high for a contested slot, since
-        # nothing in a single merged sum objective distinguishes "casual's
-        # essential demand" from "normal physician's essential demand" --
-        # both are just 100-weighted units to maximize. Confirmed on a real
-        # Oct 2026 solve: casual shift usage roughly doubled vs. the human
-        # schedule (9 vs 5) while several full-time physicians landed under
-        # their own requested count (Breton -3, Norum -3, and others -1).
-        #
-        # Splitting bonus_high out as its own protected tier keeps a normal
-        # physician's essential demand strictly ahead of ANY casual demand
-        # (matching the original, pre-casual-competition guarantee), while
-        # still letting a casual's shifts compete for -- and potentially win
-        # -- a normal physician's marginal, already-past-halfway demand,
-        # which is the actual thing this was meant to fix (a casual's real
-        # weekend availability being usable instead of wasted).
+        # Two prior versions of this over- and under-corrected in opposite
+        # directions, both confirmed on real Oct 2026 solves:
+        #   - Fully separate tiers (normal to full request, then casuals):
+        #     casuals got essentially nothing -- every slot they were
+        #     available for was already claimed before their tier ran.
+        #   - Fully merged (bonus_high + bonus_low together): fixed that,
+        #     but casual usage roughly doubled vs. the human schedule (9 vs
+        #     5 shifts) while several normal physicians landed notably under
+        #     their own requested count (Breton -3, Norum -3, others -1) --
+        #     opening a normal physician's entire second-half demand
+        #     (bonus_low, up to half their request) to casual competition
+        #     was simply too much room to give up.
+        # Capping the contestable slice at 1 unit per normal physician,
+        # regardless of request size, keeps a normal physician's own
+        # shortfall to at most 1 shift from this mechanism specifically,
+        # while still giving casuals *some* real (if narrow) room to win
+        # shifts instead of being shut out entirely.
         # ----------------------------------------------------------------
         casual_pids = {pid for pid in pids if getattr(_get_cfg(pid), "casual", False)}
         normal_high_terms = [
             bonus_high_by_pid[pid] for pid in pids
             if pid not in casual_pids and pid in bonus_high_by_pid
+        ] + [
+            # Everything in bonus_low except the tiny contestable slice --
+            # i.e. all but at most 1 shift of a normal physician's marginal
+            # demand is protected here too, not just their essential half.
+            bonus_low_by_pid[pid] - bonus_contestable_by_pid[pid]
+            for pid in pids
+            if pid not in casual_pids and pid in bonus_low_by_pid and pid in bonus_contestable_by_pid
+        ] + [
+            # A normal physician with low_span == 0 (effective_requested
+            # == 1) never got a bonus_contestable var at all -- their
+            # single unit of demand is entirely essential, full stop.
+            bonus_low_by_pid[pid] for pid in pids
+            if pid not in casual_pids and pid in bonus_low_by_pid and pid not in bonus_contestable_by_pid
         ]
         marginal_and_casual_terms = [
-            bonus_low_by_pid[pid] for pid in pids
-            if pid not in casual_pids and pid in bonus_low_by_pid
+            bonus_contestable_by_pid[pid] for pid in pids
+            if pid not in casual_pids and pid in bonus_contestable_by_pid
         ] + [
             requested_bonus_by_pid[pid] for pid in pids
             if pid in casual_pids and pid in requested_bonus_by_pid

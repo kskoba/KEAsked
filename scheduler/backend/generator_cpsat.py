@@ -1439,10 +1439,13 @@ class CpsatScheduleGenerator:
 
         # Anti-clustering penalty for prefer_singleton_nights physicians.
         # These physicians want isolated 2400h shifts, so consecutive nights are penalised.
-        # Raised from -30 -- at that level this was getting swamped by
-        # fill-rate bonuses in the 1000s, same failure mode confirmed on the
-        # weekend-overage penalty against real Oct 2026 data (Brenneis, who
-        # has this flag set, still got 2 consecutive midnights).
+        # Raised -30->-200->-400. At -200, re-tested against a real Oct 2026
+        # solve, Brenneis (who has this flag) again got 2 consecutive
+        # midnights (Oct 25/26) despite having 16 widely-spread 2400h-
+        # available days that month and requesting only 3 -- confirmed she
+        # had plenty of mutually non-adjacent options available (e.g. days
+        # 2/20/27 all in her available set), so this wasn't infeasibility,
+        # just the penalty still losing to competing objective terms.
         for pid in pids:
             pid_cfg = _get_cfg(pid)
             if not (pid_cfg and pid_cfg.prefer_singleton_nights):
@@ -1456,7 +1459,7 @@ class CpsatScheduleGenerator:
                 model.add_implication(consec, nb1)
                 model.add_implication(consec, nb2)
                 model.add(nb1 + nb2 <= 1 + consec)
-                clustering_bonus_terms.append(-200 * consec)  # penalty for consecutive nights
+                clustering_bonus_terms.append(-400 * consec)  # penalty for consecutive nights
 
         # Soft: Any-shift clustering bonus — reward consecutive working days.
         # Mirrors the 2400h singleton logic but for all shift types: a bonus for

@@ -137,6 +137,9 @@ def is_spacing_ok(prev_shift: Shift, next_shift: Shift) -> bool:
     return not violates_min_spacing(prev_shift, next_shift) and not violates_max_spacing(prev_shift, next_shift)
 
 
+_LATE_SHIFT_MIN_START_HOUR = 20  # 2000h or later triggers the extended-rest rules below
+
+
 def is_next_shift_ok(prev_shift: Shift, days_gap: int, next_shift: Shift) -> bool:
     """
     Return True if scheduling *next_shift* is allowed given that *prev_shift*
@@ -147,9 +150,23 @@ def is_next_shift_ok(prev_shift: Shift, days_gap: int, next_shift: Shift) -> boo
 
     Rules:
       days_gap == 1: 23-hour minimum between start times.
-      days_gap == 2 and prev is 2400h: next shift must start at noon or later
-          (36-hour rest rule — earliest allowed is 1200h on the third calendar day).
-      days_gap >= 2 otherwise: no spacing restriction.
+      prev starts at 2000h or later (a "late" shift -- 2000h/2400h and
+      anything after): the calendar day right after is blocked outright
+      (days_gap == 2 never allowed, regardless of next_shift), and the day
+      after THAT (days_gap == 3) still requires next shift to start at noon
+      or later.
+      days_gap >= 2 otherwise (prev started before 2000h): no spacing
+      restriction.
+
+    Widened 2026-09-28 from "prev is exactly 2400h, next allowed at noon on
+    day 2" after a real schedule (cpsat-oct17) produced a 2400h shift on the
+    2nd followed by a 1200h shift on the 4th -- technically satisfying the
+    old rule (next_shift.start_hour >= 12 at days_gap==2) but only ~28 hours
+    of actual rest once the night shift's own ~8-hour duration is accounted
+    for, not the ~36 the rule's name implied. Confirmed directly: a late
+    shift needs a full extra day, and 2000h-start shifts (which also run
+    into the early morning) need the same protection a 2400h start gets,
+    not just literal midnight starts.
 
     Parameters
     ----------
@@ -162,8 +179,11 @@ def is_next_shift_ok(prev_shift: Shift, days_gap: int, next_shift: Shift) -> boo
     """
     if days_gap == 1:
         return not violates_min_spacing(prev_shift, next_shift)
-    if days_gap == 2 and prev_shift.time == "2400h":
-        return next_shift.start_hour >= 12
+    if prev_shift.start_hour >= _LATE_SHIFT_MIN_START_HOUR:
+        if days_gap == 2:
+            return False
+        if days_gap == 3:
+            return next_shift.start_hour >= 12
     return True
 
 

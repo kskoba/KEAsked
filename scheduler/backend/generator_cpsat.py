@@ -51,6 +51,7 @@ from scheduler.backend.shifts import (
     SiteGroup,
     is_next_shift_ok,
     violates_max_spacing,
+    _LATE_SHIFT_MIN_START_HOUR,
 )
 
 logger = logging.getLogger(__name__)
@@ -530,19 +531,24 @@ class CpsatScheduleGenerator:
                                     )
                                     swing_penalty_terms.append(-_SWING_PENALTY * swing)
 
-            # 2-day gap: only 2400h → next morning matters (36h rest rule)
-            for d_idx in range(len(all_dates) - 2):
-                for block1 in BLOCKS:
-                    for shift1 in block1:
-                        if shift1.time != "2400h":
-                            continue
-                        for block2 in BLOCKS:
-                            for shift2 in block2:
-                                if not is_next_shift_ok(shift1, 2, shift2):
-                                    model.add(
-                                        shifts[(pid, d_idx, shift1.code)]
-                                        + shifts[(pid, d_idx + 2, shift2.code)] <= 1
-                                    )
+            # 2-day and 3-day gap: a late shift (2000h or later -- includes
+            # 2400h) blocks the entire next day outright and still requires
+            # a noon-or-later start the day after that. Both loops share the
+            # same is_next_shift_ok() so the actual day counts/threshold
+            # only need to change in one place (shifts.py).
+            for gap in (2, 3):
+                for d_idx in range(len(all_dates) - gap):
+                    for block1 in BLOCKS:
+                        for shift1 in block1:
+                            if shift1.start_hour < _LATE_SHIFT_MIN_START_HOUR:
+                                continue
+                            for block2 in BLOCKS:
+                                for shift2 in block2:
+                                    if not is_next_shift_ok(shift1, gap, shift2):
+                                        model.add(
+                                            shifts[(pid, d_idx, shift1.code)]
+                                            + shifts[(pid, d_idx + gap, shift2.code)] <= 1
+                                        )
 
         # ----------------------------------------------------------------
         # HC-9a: Linked-rest pairs (scheduler_config.yaml's
@@ -620,19 +626,21 @@ class CpsatScheduleGenerator:
                                         )
                                         swing_penalty_terms.append(-_SWING_PENALTY * swing)
 
-                # 2-day gap: only 2400h → next morning matters (36h rest rule)
-                for d_idx in range(len(all_dates) - 2):
-                    for block1 in BLOCKS:
-                        for shift1 in block1:
-                            if shift1.time != "2400h":
-                                continue
-                            for block2 in BLOCKS:
-                                for shift2 in block2:
-                                    if not is_next_shift_ok(shift1, 2, shift2):
-                                        model.add(
-                                            shifts[(first, d_idx, shift1.code)]
-                                            + shifts[(second, d_idx + 2, shift2.code)] <= 1
-                                        )
+                # 2-day and 3-day gap: same late-shift extended-rest rule as
+                # the single-physician case above.
+                for gap in (2, 3):
+                    for d_idx in range(len(all_dates) - gap):
+                        for block1 in BLOCKS:
+                            for shift1 in block1:
+                                if shift1.start_hour < _LATE_SHIFT_MIN_START_HOUR:
+                                    continue
+                                for block2 in BLOCKS:
+                                    for shift2 in block2:
+                                        if not is_next_shift_ok(shift1, gap, shift2):
+                                            model.add(
+                                                shifts[(first, d_idx, shift1.code)]
+                                                + shifts[(second, d_idx + gap, shift2.code)] <= 1
+                                            )
 
         # ----------------------------------------------------------------
         # HC-9b: Conditional co-working (scheduler_config.yaml's
@@ -2302,12 +2310,13 @@ class CpsatScheduleGenerator:
             prev_shift, prev_date = prev
             gap = (d - prev_date).days
             if not is_next_shift_ok(prev_shift, gap, shift):
-                if prev_shift.time == "2400h" and gap == 2:
+                if prev_shift.start_hour >= _LATE_SHIFT_MIN_START_HOUR and gap in (2, 3):
                     v.append(ViolationReason(
-                        rule="post_2400h_rest",
+                        rule="post_late_shift_rest",
                         description=(
-                            f"After 2400h on {prev_date:%b %d}, next shift must start "
-                            f"at noon or later (requested: {shift.time})"
+                            f"After {prev_shift.time} on {prev_date:%b %d} (2000h or later), "
+                            f"the next day must be off entirely, and the day after that "
+                            f"must start at noon or later (requested: {shift.time})"
                         ),
                     ))
                 else:
@@ -2324,12 +2333,13 @@ class CpsatScheduleGenerator:
             nxt_shift, nxt_date = nxt
             fwd_gap = (nxt_date - d).days
             if not is_next_shift_ok(shift, fwd_gap, nxt_shift):
-                if shift.time == "2400h" and fwd_gap == 2:
+                if shift.start_hour >= _LATE_SHIFT_MIN_START_HOUR and fwd_gap in (2, 3):
                     v.append(ViolationReason(
-                        rule="post_2400h_rest",
+                        rule="post_late_shift_rest",
                         description=(
-                            f"After 2400h on {d:%b %d}, next shift must start at noon "
-                            f"or later (have: {nxt_shift.time} on {nxt_date:%b %d})"
+                            f"After {shift.time} on {d:%b %d} (2000h or later), the next "
+                            f"day must be off entirely, and the day after that must start "
+                            f"at noon or later (have: {nxt_shift.time} on {nxt_date:%b %d})"
                         ),
                     ))
                 else:

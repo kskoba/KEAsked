@@ -406,6 +406,33 @@ export default function RosterEditor() {
                 />
               </Section>
 
+              <Section title="Annual survey baseline">
+                <p className="text-xs text-slate-400 -mt-1.5">
+                  What this physician says to typically expect, from the annual preferences
+                  survey — reference only, not fed into the solver or any monthly submission.
+                </p>
+                <div className="grid grid-cols-3 gap-3">
+                  <IntegerField
+                    label="Typical shifts / month"
+                    value={form.typical_shifts_per_month}
+                    onChange={(v) => setField('typical_shifts_per_month', v)}
+                    nullable
+                  />
+                  <IntegerField
+                    label="Typical 0600h / month"
+                    value={form.typical_0600h_per_month}
+                    onChange={(v) => setField('typical_0600h_per_month', v)}
+                    nullable
+                  />
+                  <IntegerField
+                    label="Typical 2400h / month"
+                    value={form.typical_2400h_per_month}
+                    onChange={(v) => setField('typical_2400h_per_month', v)}
+                    nullable
+                  />
+                </div>
+              </Section>
+
               <Section title="Notes &amp; contact">
                 <TextField
                   label="Email"
@@ -438,7 +465,7 @@ export default function RosterEditor() {
                   label="Prefer weekends"
                   checked={form.prefer_weekends}
                   onChange={(v) => setField('prefer_weekends', v)}
-                  hint="Soft bonus — the solver favors giving them weekend (Fri/Sat/Sun) shifts over weekday ones."
+                  hint="Soft bonus — favors weekend (Fri/Sat/Sun) shifts over weekday ones, waives any weekend cap, and avoids a fragmented Fri+Sun-without-Saturday pattern."
                 />
                 <CheckboxField
                   label="Honor all requests"
@@ -761,7 +788,7 @@ function TextAreaField({ label, value, onChange, hint }) {
 // ("1e5"), a leading "+"/"-", scroll-wheel increment — by never letting
 // non-digit characters into the field at all rather than trying to
 // validate them after the fact.
-function IntegerField({ label, value, onChange, nullable = false }) {
+function IntegerField({ label, value, onChange, nullable = false, hint }) {
   const display = value === null || value === undefined ? '' : String(value)
 
   function handleChange(e) {
@@ -779,6 +806,7 @@ function IntegerField({ label, value, onChange, nullable = false }) {
   return (
     <label className="block">
       <span className="block text-xs text-slate-500 mb-1">{label}</span>
+      {hint && <p className="text-xs text-slate-400 mb-1">{hint}</p>}
       <input
         type="text"
         inputMode="numeric"

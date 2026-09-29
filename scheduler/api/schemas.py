@@ -398,6 +398,9 @@ class PhysicianDetail(BaseModel):
 
     max_consecutive_shifts: int = 3
     max_consecutive_nights: int = 3
+    typical_shifts_per_month: Optional[int] = None
+    typical_0600h_per_month: Optional[int] = None
+    typical_2400h_per_month: Optional[int] = None
     group_b_site_preference: Optional[str] = None
     forbidden_sites: list[str] = []
     only_2400h: bool = False

@@ -332,12 +332,20 @@ class CpsatScheduleGenerator:
             return cfg.max_consecutive_shifts if cfg else self._max_consec_default
 
         def _eff_max_weekends(pid: str) -> int:
-            # Explicit per-physician override always wins (e.g. KLam/MRico
-            # are set to 5 -- "works every weekend"). Otherwise scale
+            # prefer_weekends means "no weekend cap, period" -- this used to
+            # require a manual max_weekends override (e.g. KLam/MRico were
+            # set to 5, "exceeds any month's cluster count") to work around
+            # the overage penalty below; the flag itself now waives it
+            # directly, so a manual max_weekends is no longer needed for
+            # this purpose (still honoured for anyone using it standalone,
+            # without prefer_weekends, as a real fixed cap).
+            cfg = _get_cfg(pid)
+            if cfg and cfg.prefer_weekends:
+                return len(weekend_clusters) if weekend_clusters else self._max_weekends
+            # Explicit per-physician override wins next. Otherwise scale
             # max_weekends_per_month by this physician's requested shifts
             # relative to a full-time month, so a low-volume physician
             # isn't held to the same weekend ceiling as a high-volume one.
-            cfg = _get_cfg(pid)
             if cfg and cfg.max_weekends is not None:
                 return cfg.max_weekends
             if self._full_time_shifts <= 0:
@@ -1017,9 +1025,17 @@ class CpsatScheduleGenerator:
         # The flag is no longer read here; a physician who explicitly wants
         # the opposite (spread thin) has no mechanism for that today and
         # would need a new negative-weight field if that ever comes up.
+        #
+        # prefer_weekends physicians are exempt: the whole point of that
+        # flag is to touch AS MANY weekends as possible, which this penalty
+        # would otherwise directly fight (see the prefer_weekends bonus
+        # below).
         _WEEKEND_CLUMP_PENALTY = 15
         weekend_clump_penalty_terms = []
         for pid in pids:
+            cfg = _get_cfg(pid)
+            if cfg and cfg.prefer_weekends:
+                continue
             for wv in weekend_worked_vars_by_pid.get(pid, []):
                 weekend_clump_penalty_terms.append(-_WEEKEND_CLUMP_PENALTY * wv)
 
@@ -1141,6 +1157,59 @@ class CpsatScheduleGenerator:
                 w = model.new_bool_var(f"w_{pid}_{d_idx}")
                 model.add(sum(day_vars) == w)
                 worked_bool[(pid, d_idx)] = w
+
+        # ----------------------------------------------------------------
+        # Soft: prefer_weekends bonus + continuity.
+        # The weekend cap is already waived entirely for these physicians
+        # (see _eff_max_weekends above) and they're exempt from the
+        # weekend-clumping penalty (see weekend_clump_penalty_terms above)
+        # since clumping directly fights "touch as many weekends as
+        # possible". Two more things needed for the flag to actually do
+        # something under CP-SAT (previously a no-op here -- only read by
+        # the legacy, unused generator.py):
+        #   (a) an actual per-shift reward for weekend (Fri/Sat/Sun) shifts,
+        #       so the solver steers contested slots their way instead of
+        #       merely not penalizing them;
+        #   (b) a penalty for a fragmented Fri+Sun-without-Saturday pattern
+        #       within one weekend cluster, so a "prefer weekends" physician
+        #       gets a continuous run, not two shifts either side of a day
+        #       off. Only applies to clusters with all 3 days in range —
+        #       a month-boundary cluster missing Fri or Sun has no "gap" to
+        #       speak of.
+        # Both weights are a first pass, not re-tuned against real data yet
+        # like the older weekend terms above -- revisit once tested.
+        # ----------------------------------------------------------------
+        _PREFER_WEEKEND_SHIFT_BONUS = 80
+        # Must beat 2x the shift bonus -- a gap earns the solver two
+        # weekend-shift bonuses (Friday + Sunday) it wouldn't otherwise
+        # need Saturday to unlock, so anything <= 2x bonus is a net win for
+        # leaving the gap. Kept comfortably above that line rather than
+        # exactly at it.
+        _PREFER_WEEKEND_GAP_PENALTY = 220
+        prefer_weekend_bonus_terms = []
+        prefer_weekend_gap_penalty_terms = []
+        for pid in pids:
+            cfg = _get_cfg(pid)
+            if not (cfg and cfg.prefer_weekends):
+                continue
+            for d_idx, d in enumerate(all_dates):
+                if d.weekday() not in _WEEKEND_WEEKDAYS:
+                    continue
+                for block in BLOCKS:
+                    for shift in block:
+                        prefer_weekend_bonus_terms.append(
+                            _PREFER_WEEKEND_SHIFT_BONUS * shifts[(pid, d_idx, shift.code)]
+                        )
+            for wk_key, d_indices in weekend_clusters.items():
+                by_weekday = {all_dates[i].weekday(): i for i in d_indices}
+                if not all(wd in by_weekday for wd in (4, 5, 6)):
+                    continue
+                fri_w = worked_bool[(pid, by_weekday[4])]
+                sat_w = worked_bool[(pid, by_weekday[5])]
+                sun_w = worked_bool[(pid, by_weekday[6])]
+                gap = model.new_bool_var(f"wkndgap_{pid}_{wk_key[2]}")
+                model.add(fri_w + sun_w - sat_w <= 1 + gap)
+                prefer_weekend_gap_penalty_terms.append(-_PREFER_WEEKEND_GAP_PENALTY * gap)
 
         # requested_bonus_by_pid captures each physician's own bonus expression
         # so the lexicographic tiers below (normal-vs-casual priority) can sum
@@ -1675,6 +1744,8 @@ class CpsatScheduleGenerator:
         objective_terms.extend(weekend_clump_penalty_terms)
         objective_terms.extend(variety_penalty_terms)
         objective_terms.extend(weekend_overage_penalty_terms)
+        objective_terms.extend(prefer_weekend_bonus_terms)
+        objective_terms.extend(prefer_weekend_gap_penalty_terms)
 
         # ----------------------------------------------------------------
         # Lexicographic priority tiers (only when casual physicians exist in

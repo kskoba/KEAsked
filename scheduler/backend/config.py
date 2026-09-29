@@ -116,6 +116,19 @@ class PhysicianConfig:
     max_consecutive_shifts: int = 3    # SIAR — max shifts in a row (any type)
     max_consecutive_nights: int = 3    # NIAR — max 2400h shifts in a row
 
+    # Standing annual-survey baseline: roughly how many shifts/month, and
+    # how many 0600h/2400h shifts specifically, this physician says they
+    # typically want (+/- 1-2 shifts), independent of any single month's
+    # actual submission. Informational/reference only — nothing in the
+    # scheduler reads these to constrain a solve. Distinct from
+    # default_shifts_requested below, which *does* actively override a
+    # month's submitted count; these three are just what the person told
+    # us to expect, for sanity-checking a given month's numbers against.
+    # None (default) means not yet recorded from a survey.
+    typical_shifts_per_month: Optional[int] = None
+    typical_0600h_per_month: Optional[int] = None
+    typical_2400h_per_month: Optional[int] = None
+
     # Within-Group-B site preference for the 62% non-acute allocation.
     #   "nehc"  → prefer NEHC
     #   "rah"   → prefer RAH I or RAH F (generic RAH within Group B)
@@ -381,6 +394,21 @@ def _parse_physician(raw: dict) -> PhysicianConfig:
         max_consecutive_nights=int(
             sched.get("max_consecutive_nights", sched.get("max_consecutive_shifts", 3))
         ),
+        typical_shifts_per_month=(
+            int(sched["typical_shifts_per_month"])
+            if sched.get("typical_shifts_per_month") is not None
+            else None
+        ),
+        typical_0600h_per_month=(
+            int(sched["typical_0600h_per_month"])
+            if sched.get("typical_0600h_per_month") is not None
+            else None
+        ),
+        typical_2400h_per_month=(
+            int(sched["typical_2400h_per_month"])
+            if sched.get("typical_2400h_per_month") is not None
+            else None
+        ),
         group_b_site_preference=raw_pref,
         forbidden_sites=forbidden_sites,
         rule_overrides=overrides,
@@ -474,6 +502,12 @@ def physician_config_to_raw(cfg: PhysicianConfig) -> dict:
     sched: dict = {"max_consecutive_shifts": cfg.max_consecutive_shifts}
     if cfg.max_consecutive_nights != cfg.max_consecutive_shifts:
         sched["max_consecutive_nights"] = cfg.max_consecutive_nights
+    if cfg.typical_shifts_per_month is not None:
+        sched["typical_shifts_per_month"] = cfg.typical_shifts_per_month
+    if cfg.typical_0600h_per_month is not None:
+        sched["typical_0600h_per_month"] = cfg.typical_0600h_per_month
+    if cfg.typical_2400h_per_month is not None:
+        sched["typical_2400h_per_month"] = cfg.typical_2400h_per_month
     if cfg.group_b_site_preference:
         sched["group_b_site_preference"] = cfg.group_b_site_preference
     if cfg.only_2400h:

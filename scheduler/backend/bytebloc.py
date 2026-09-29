@@ -6,9 +6,13 @@ Reference: ByteBloc Application Programming Interface (PDF), section 10
 other function here (getMainSchedule, getUserDetails, getShiftDetails)
 is one of ByteBloc's read-only GET services, safe to call any time using
 only read_security_token. This module's real job is turning validated
-physician submissions into ByteBloc "OffRequest"/"NeedOff" entries (one
-per shift a physician marked unavailable for), and — only on explicit
-human confirmation — POSTing them; the read-only helpers exist to
+physician submissions into ByteBloc "OffRequest" entries -- one per
+mapped shift per day, OffType "NeedOff" or "Available" depending on the
+physician's current submission -- so every send is a full, idempotent
+re-sync of every cell (including flipping a previously-sent NeedOff back
+to Available if the physician's availability changed since the last
+send), and — only on explicit human confirmation — POSTing them; the
+read-only helpers exist to
 build/verify the shift_map and provider_map config values that job
 depends on. See build_shift_requests_payload's own docstring for why
 this sends Off requests rather than On requests for now.
@@ -57,6 +61,82 @@ def _resolve_config_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).parent / "config"
     return Path(__file__).parent.parent / "config"
+
+
+# ---------------------------------------------------------------------------
+# Last-sent tracking (for delta sends)
+# ---------------------------------------------------------------------------
+# Local to whichever backend instance actually calls send_shift_requests --
+# the local backend on whatever computer is running it, or Unraid's, if the
+# app's backend mode is remote. Lives alongside physicians.yaml/bytebloc.yaml
+# in the same CONFIG_DIR, so it's per-backend-instance the same way those
+# are, but it is NOT a substitute for ByteBloc's own live state: this only
+# knows what THIS instance has itself successfully sent. A send made from a
+# different instance (a different computer's local backend, or before/after
+# switching between local and remote mode) is invisible to it -- that's a
+# real gap, not just a caveat, and the UI must make this explicit rather
+# than implying it's authoritative.
+_LAST_SENT_FILENAME = "bytebloc_last_sent.json"
+
+
+def _last_sent_path(path: str | Path | None = None) -> Path:
+    return Path(path) if path else _resolve_config_dir() / _LAST_SENT_FILENAME
+
+
+def load_last_sent(year: int, month: int, path: str | Path | None = None) -> dict:
+    """
+    This instance's record of the off_type it last successfully sent for
+    every (physician_id, day, shift_code) cell in this period, nested
+    physician_id -> day (yyyy-MM-dd) -> shift_code -> "NeedOff"|"Available".
+    Returns {} if nothing has ever been sent for this period from this
+    instance, or the file is missing/corrupt -- never raises, since this
+    only ever gates an optimization (which cells filter_to_delta can skip
+    resending), never correctness of what actually gets sent.
+    """
+    fpath = _last_sent_path(path)
+    if not fpath.exists():
+        return {}
+    try:
+        with fpath.open(encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data.get(f"{year:04d}-{month:02d}", {})
+
+
+def record_sent(
+    year: int, month: int, items: list["RequestPreviewItem"], path: str | Path | None = None
+) -> None:
+    """
+    Merge *items* -- whatever was just actually included in a successful
+    send -- into this instance's on-disk last-sent record for this period.
+    Call only after send_shift_requests() returns a genuine success, never
+    speculatively (a failed or rejected send must not be recorded, or a
+    real cell that still needs fixing on ByteBloc's side would get
+    silently skipped on the next delta send).
+
+    Merges rather than replaces, so a delta send (which only carries the
+    cells that changed) still correctly leaves every other cell's prior
+    record in place instead of erasing it.
+    """
+    fpath = _last_sent_path(path)
+    try:
+        with fpath.open(encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        data = {}
+
+    period = data.setdefault(f"{year:04d}-{month:02d}", {})
+    for item in items:
+        by_day = period.setdefault(item.physician_id, {})
+        by_shift = by_day.setdefault(item.day, {})
+        by_shift[item.shift_code] = item.off_type
+
+    fpath.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = fpath.with_suffix(".json.tmp")
+    with tmp_path.open("w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2, sort_keys=True)
+    tmp_path.replace(fpath)
 
 
 _DEFAULT_BYTEBLOC_CONFIG_PATH = _resolve_config_dir() / "bytebloc.yaml"
@@ -247,6 +327,7 @@ class RequestPreviewItem:
     physician_name: str
     day: str            # yyyy-MM-dd, for display
     shift_code: str      # KEAsked's internal code, e.g. "0600h RAH A side"
+    off_type: str = "NeedOff"   # "NeedOff" (marking unavailable) or "Available" (clearing a prior off request)
 
 
 def build_shift_requests_payload(
@@ -255,25 +336,38 @@ def build_shift_requests_payload(
     year: int,
     month: int,
     display_names: dict[str, str] | None = None,
-) -> tuple[dict, list[str], list[RequestPreviewItem]]:
+    last_sent: dict | None = None,
+) -> tuple[dict, list[str], list[RequestPreviewItem], int]:
     """
     Build the createShiftRequests JSON payload (section 10 of the API doc)
     from validated physician submissions. Does NOT contact ByteBloc.
 
-    Sends "OffRequest"/"NeedOff" for every (day, shift) a physician's
-    submission marks unavailable -- one request per slot (not a blanket
-    day-level off) so a physician available for only part of a day is
-    represented correctly. Checked against day.requested_shifts for every
-    regular shift code; DOC/NOC are handled separately, against
-    day.doc_available/day.noc_available -- those two live in their own
-    submission fields, not the regular per-shift-row grid, so they can't
-    be read off requested_shifts the way every other code can. OffReason
-    is left blank: a spot-check of
-    ByteBloc's current setup (2026-09-23) found no existing Off requests
-    there have one set despite the API doc listing it as part of the
-    required schema shape, so this matches how the org already uses the
-    system -- revisit if a real send ever comes back with an
-    OffReason-related error status.
+    Sends one "OffRequest" per (day, shift) for every mapped shift code and
+    every day in the period -- a full re-sync of every cell, not just an
+    incremental diff of what's newly unavailable. Checked against
+    day.requested_shifts for every regular shift code; DOC/NOC are handled
+    separately, against day.doc_available/day.noc_available -- those two
+    live in their own submission fields, not the regular per-shift-row
+    grid, so they can't be read off requested_shifts the way every other
+    code can.
+
+    OffType is "NeedOff" when the physician's current submission marks the
+    cell unavailable, or "Available" when it's marked available. Sending
+    "Available" explicitly (rather than just omitting the cell) is what
+    lets a previously-sent NeedOff/WishOff be cleared on ByteBloc's side --
+    confirmed with ByteBloc support (2026-09-29): the only way to remove an
+    existing off/wish-off request is a new OffRequest with
+    OffType="Available", not simply not sending one. Before this, a
+    physician who became available again after an earlier send had no way
+    to have that reflected on ByteBloc at all -- every send is now a full,
+    idempotent statement of the current submission's state for every
+    mapped cell, so re-sending after any change (including someone
+    becoming available again) correctly overwrites whatever was there
+    before. OffReason is left blank for both: a spot-check of ByteBloc's
+    current setup (2026-09-23) found no existing Off requests there have
+    one set despite the API doc listing it as part of the required schema
+    shape, so this matches how the org already uses the system -- revisit
+    if a real send ever comes back with an OffReason-related error status.
 
     Explicit "OnRequest" assignment requests (a physician's *preferred*
     shifts, sked's grid "preferred"/starred state) are NOT sent yet --
@@ -281,18 +375,32 @@ def build_shift_requests_payload(
     is a deliberate follow-up once that data is actually captured/used
     somewhere, not done here.
 
-    Returns (payload, warnings, preview_items):
+    last_sent, if given (see load_last_sent()), is this backend instance's
+    record of the off_type it last successfully sent for each
+    (physician_id, day, shift_code) cell. Any cell whose current value
+    already matches that record is dropped from the result entirely --
+    resending it would tell ByteBloc nothing new. Pass None (the default)
+    to always include every cell regardless of history, e.g. the first
+    send for a period (nothing recorded yet, so this makes no difference),
+    or a deliberate full resend. See record_sent() for writing this record
+    after a successful send.
+
+    Returns (payload, warnings, preview_items, skipped_unchanged_count):
       - payload: the JSON body, ready for send_shift_requests(). May have
-        an empty ProviderRequests list if nothing was mappable.
+        an empty ProviderRequests list if nothing was mappable, or nothing
+        actually changed since last_sent.
       - warnings: human-readable reasons any physician or request was
         left out (missing ByteBloc provider/shift mapping, etc.).
-      - preview_items: one row per request actually included, for
-        rendering a review table before the user is asked to confirm.
+      - preview_items: one row per request actually included (every mapped
+        cell not filtered out by last_sent, off_type set accordingly).
+      - skipped_unchanged_count: how many cells were dropped because
+        last_sent already matched. Always 0 when last_sent is None.
     """
     display_names = display_names or {}
     warnings: list[str] = []
     provider_requests: list[dict] = []
     preview_items: list[RequestPreviewItem] = []
+    skipped_unchanged = 0
 
     # Warn once per unmapped shift code, not once per (physician, day) it's
     # hit on -- off-requests are checked against every shift code for every
@@ -328,22 +436,30 @@ def build_shift_requests_payload(
                     available = day.noc_available
                 else:
                     available = shift_code in day.requested_shifts
-                if available:
-                    continue  # marked available -- nothing to request off
+                off_type = "Available" if available else "NeedOff"
+                day_iso = day.date.isoformat()
+
+                if last_sent is not None:
+                    prior = last_sent.get(sub.physician_id, {}).get(day_iso, {}).get(shift_code)
+                    if prior == off_type:
+                        skipped_unchanged += 1
+                        continue
+
                 shift_id = config.shift_map[shift_code]["shift_id"]
                 shift_requests.append({
                     "Day": day.date.strftime("%Y%m%d"),
                     "SiteId": "",
                     "ShiftId": shift_id,
                     "RequestType": "OffRequest",
-                    "OffType": "NeedOff",
+                    "OffType": off_type,
                     "OffReason": "",
                 })
                 preview_items.append(RequestPreviewItem(
                     physician_id=sub.physician_id,
                     physician_name=name,
-                    day=day.date.isoformat(),
+                    day=day_iso,
                     shift_code=shift_code,
+                    off_type=off_type,
                 ))
 
         if shift_requests:
@@ -357,7 +473,7 @@ def build_shift_requests_payload(
         "SkedStartDate": datetime.date(year, month, 1).strftime("%Y%m%d"),
         "ProviderRequests": provider_requests,
     }
-    return payload, warnings, preview_items
+    return payload, warnings, preview_items, skipped_unchanged
 
 
 def send_shift_requests(payload: dict, config: ByteBlocConfig, confirmation_text: str) -> dict:
@@ -373,12 +489,15 @@ def send_shift_requests(payload: dict, config: ByteBlocConfig, confirmation_text
     Confirmed with ByteBloc support (2026-09-23): no limit on the number of
     ShiftRequest objects in a single call, and the same 10-minutes-per-endpoint
     rate limit as the read-only GET services (section 2 of the API doc)
-    applies here too. build_shift_requests_payload already batches every
-    physician into one ProviderRequests array per call (matches the API
-    doc's own recommendation, section 10: "Calling the service for each
-    request per provider is inadvisable"), so a full-roster send is a single
-    call and stays well within that limit -- don't add per-physician retry
-    loops or split large sends into multiple calls, both would risk tripping it.
+    applies here too -- still true now that build_shift_requests_payload
+    sends one request per mapped cell instead of just the unavailable
+    subset, a meaningfully larger count than before, but no different in
+    kind. build_shift_requests_payload already batches every physician
+    into one ProviderRequests array per call (matches the API doc's own
+    recommendation, section 10: "Calling the service for each request per
+    provider is inadvisable"), so a full-roster send is a single call and
+    stays well within that limit -- don't add per-physician retry loops or
+    split large sends into multiple calls, both would risk tripping it.
     """
     if confirmation_text != CONFIRMATION_PHRASE:
         raise PermissionError(

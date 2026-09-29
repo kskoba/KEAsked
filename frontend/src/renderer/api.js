@@ -353,11 +353,16 @@ export async function assignOnCall(date, callType, physicianId) {
  * call any time, including just to check whether ByteBloc is configured.
  * @returns {{ configured: boolean, group_code: string, location_code: string,
  *   requester_id: string, sked_start_date: string,
- *   items: { physician_id: string, physician_name: string, day: string, shift_code: string }[],
- *   warnings: string[], physician_count: number, request_count: number }}
+ *   by_physician: { physician_id: string, physician_name: string, count: number,
+ *     need_off_count: number, available_count: number }[],
+ *   warnings: string[], physician_count: number, request_count: number,
+ *   need_off_count: number, available_count: number,
+ *   used_delta: boolean, skipped_unchanged_count: number }}
+ * @param {boolean} useDelta - only include cells changed since this backend
+ *   instance's last successful send for this period (default true).
  */
-export async function getByteBlocPreview() {
-  return request('GET', '/api/bytebloc/preview')
+export async function getByteBlocPreview(useDelta = true) {
+  return request('GET', `/api/bytebloc/preview?use_delta=${useDelta ? 'true' : 'false'}`)
 }
 
 /**
@@ -368,10 +373,11 @@ export async function getByteBlocPreview() {
  * the human typed into the confirmation dialog verbatim; do not
  * hardcode "CONFIRM" here as a way to skip the prompt.
  * @param {string} confirmation
+ * @param {boolean} useDelta - must match whatever was last previewed.
  * @returns {{ ok: boolean, status: string, raw: object|null }}
  */
-export async function sendByteBlocRequests(confirmation) {
-  return request('POST', '/api/bytebloc/send', { confirmation })
+export async function sendByteBlocRequests(confirmation, useDelta = true) {
+  return request('POST', '/api/bytebloc/send', { confirmation, use_delta: useDelta })
 }
 
 /**

@@ -246,11 +246,12 @@ class OverrideLogResponse(BaseModel):
 # See scheduler/backend/bytebloc.py for the hard safety rule: nothing is
 # ever sent to ByteBloc without a human typing the confirmation phrase.
 
-class ByteBlocRequestPreviewItem(BaseModel):
+class ByteBlocPhysicianSummary(BaseModel):
     physician_id: str
     physician_name: str
-    day: str            # yyyy-MM-dd
-    shift_code: str      # KEAsked's internal code, e.g. "0600h RAH A side"
+    count: int = 0
+    need_off_count: int = 0
+    available_count: int = 0
 
 
 class ByteBlocPreviewResponse(BaseModel):
@@ -259,14 +260,36 @@ class ByteBlocPreviewResponse(BaseModel):
     location_code: str = ""
     requester_id: str = ""
     sked_start_date: str = ""                 # yyyy-MM-dd, for display
-    items: list[ByteBlocRequestPreviewItem] = []
+    # Per-physician counts only -- no per-cell line items. A full send can
+    # be tens of thousands of individual (physician, day, shift) requests,
+    # far too many to usefully render as a review table.
+    by_physician: list[ByteBlocPhysicianSummary] = []
     warnings: list[str] = []
     physician_count: int = 0
+    # Every mapped cell gets a request (a full re-sync, not just an
+    # unavailable-only diff) unless used_delta narrowed it down -- these
+    # two split request_count by off_type so the UI can show how many are
+    # actually marking someone unavailable vs. just confirming/clearing to
+    # available.
+    need_off_count: int = 0
+    available_count: int = 0
     request_count: int = 0
+    # Delta-send bookkeeping -- see bytebloc.py's load_last_sent/record_sent.
+    # used_delta reflects whether this preview/send actually applied the
+    # filter (false whenever the caller asked for a full resend, OR there
+    # was nothing on record yet to diff against). skipped_unchanged_count
+    # is how many cells were dropped because they matched what this same
+    # backend instance last successfully sent.
+    used_delta: bool = False
+    skipped_unchanged_count: int = 0
 
 
 class ByteBlocSendRequest(BaseModel):
     confirmation: str    # must exactly equal bytebloc.CONFIRMATION_PHRASE
+    # Mirrors the toggle in the send UI -- "only send what changed since
+    # this backend instance's last successful send for this period" (true)
+    # vs. "resend every mapped cell regardless of history" (false).
+    use_delta: bool = True
 
 
 class ByteBlocSendResponse(BaseModel):

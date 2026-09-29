@@ -52,19 +52,29 @@ export default function ValidationPanel({ importResult, onImportResultUpdate }) 
   }
 
   async function handleOpenByteBloc() {
-    setByteBloc({ loading: true, error: null, preview: null, sendResult: null })
+    setByteBloc({ loading: true, error: null, preview: null, sendResult: null, useDelta: true })
     try {
-      const preview = await getByteBlocPreview()
-      setByteBloc({ loading: false, error: null, preview, sendResult: null })
+      const preview = await getByteBlocPreview(true)
+      setByteBloc({ loading: false, error: null, preview, sendResult: null, useDelta: true })
     } catch (err) {
-      setByteBloc({ loading: false, error: err.message, preview: null, sendResult: null })
+      setByteBloc({ loading: false, error: err.message, preview: null, sendResult: null, useDelta: true })
+    }
+  }
+
+  async function handleToggleByteBlocDelta(useDelta) {
+    setByteBloc(prev => ({ ...prev, loading: true, useDelta }))
+    try {
+      const preview = await getByteBlocPreview(useDelta)
+      setByteBloc(prev => ({ ...prev, loading: false, preview }))
+    } catch (err) {
+      setByteBloc(prev => ({ ...prev, loading: false, error: err.message }))
     }
   }
 
   async function handleConfirmSendToByteBloc(confirmationText) {
     setByteBloc(prev => ({ ...prev, sending: true }))
     try {
-      const sendResult = await sendByteBlocRequests(confirmationText)
+      const sendResult = await sendByteBlocRequests(confirmationText, byteBloc?.useDelta ?? true)
       setByteBloc(prev => ({ ...prev, sending: false, sendResult }))
     } catch (err) {
       setByteBloc(prev => ({ ...prev, sending: false, sendResult: { ok: false, status: err.message } }))
@@ -275,6 +285,7 @@ export default function ValidationPanel({ importResult, onImportResultUpdate }) 
         <ByteBlocModal
           state={byteBloc}
           onConfirmSend={handleConfirmSendToByteBloc}
+          onToggleDelta={handleToggleByteBlocDelta}
           onClose={() => setByteBloc(null)}
         />
       )}
@@ -282,8 +293,8 @@ export default function ValidationPanel({ importResult, onImportResultUpdate }) 
   )
 }
 
-function ByteBlocModal({ state, onConfirmSend, onClose }) {
-  const { loading, error, preview, sendResult, sending } = state
+function ByteBlocModal({ state, onConfirmSend, onToggleDelta, onClose }) {
+  const { loading, error, preview, sendResult, sending, useDelta = true } = state
   const [confirmText, setConfirmText] = useState('')
   const canSend = !sending && !sendResult && preview?.configured && preview.request_count > 0 && confirmText === 'CONFIRM'
 
@@ -315,8 +326,31 @@ function ByteBlocModal({ state, onConfirmSend, onClose }) {
               <div className="text-sm text-slate-700 bg-slate-50 border border-slate-200 rounded-md px-3 py-2">
                 <div><span className="font-medium">Destination:</span> group {preview.group_code || '—'} / location {preview.location_code || '—'}</div>
                 <div><span className="font-medium">Schedule period starting:</span> {preview.sked_start_date || '—'}</div>
-                <div><span className="font-medium">Requests:</span> {preview.request_count} shift request(s) across {preview.physician_count} physician(s)</div>
+                <div><span className="font-medium">Requests:</span> {preview.request_count} shift request(s) across {preview.physician_count} physician(s) ({preview.need_off_count} marking unavailable, {preview.available_count} marking available)</div>
               </div>
+
+              <label className="flex items-start gap-2.5 cursor-pointer text-sm">
+                <input
+                  type="checkbox"
+                  checked={useDelta}
+                  onChange={(e) => onToggleDelta(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <span className="text-slate-700">
+                  Only send changes since this period was last sent from <em>this computer</em>
+                  <span className="block text-xs text-slate-400 mt-0.5">
+                    Won't catch changes previously sent from a different computer, or made directly
+                    in ByteBloc — turn off to resend every cell regardless of history.
+                  </span>
+                  {useDelta && (
+                    <span className="block text-xs text-slate-400 mt-0.5">
+                      {preview.used_delta
+                        ? `${preview.skipped_unchanged_count} unchanged cell${preview.skipped_unchanged_count === 1 ? '' : 's'} skipped.`
+                        : 'Nothing on record yet for this period from this computer — this is a full send.'}
+                    </span>
+                  )}
+                </span>
+              </label>
 
               {preview.warnings.length > 0 && (
                 <div className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
@@ -328,35 +362,22 @@ function ByteBlocModal({ state, onConfirmSend, onClose }) {
               )}
 
               {preview.request_count > 0 && (
-                <div className="border border-slate-200 rounded-md overflow-hidden">
-                  <table className="w-full text-xs">
-                    <thead className="bg-slate-50 border-b border-slate-200">
-                      <tr>
-                        <th className="text-left px-3 py-1.5 font-medium text-slate-600">Physician</th>
-                        <th className="text-left px-3 py-1.5 font-medium text-slate-600">Day</th>
-                        <th className="text-left px-3 py-1.5 font-medium text-slate-600">Shift</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {preview.items.slice(0, 100).map((item, i) => (
-                        <tr key={i}>
-                          <td className="px-3 py-1 text-slate-700">{item.physician_name}</td>
-                          <td className="px-3 py-1 text-slate-700">{item.day}</td>
-                          <td className="px-3 py-1 text-slate-700">{item.shift_code}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  {preview.items.length > 100 && (
-                    <div className="px-3 py-1.5 text-xs text-slate-400 bg-slate-50">
-                      …and {preview.items.length - 100} more
+                <div className="border border-slate-200 rounded-md divide-y divide-slate-100 max-h-64 overflow-auto">
+                  {preview.by_physician.map((p) => (
+                    <div key={p.physician_id} className="px-3 py-1.5 flex items-center justify-between text-sm">
+                      <span className="text-slate-700">{p.physician_name}</span>
+                      <span className="text-slate-500">{p.count} request{p.count === 1 ? '' : 's'}</span>
                     </div>
-                  )}
+                  ))}
                 </div>
               )}
 
               {preview.request_count === 0 && (
-                <p className="text-sm text-slate-500">There is nothing to send.</p>
+                <p className="text-sm text-slate-500">
+                  {useDelta && preview.used_delta
+                    ? 'Nothing changed since the last send from this computer.'
+                    : 'There is nothing to send.'}
+                </p>
               )}
 
               {preview.request_count > 0 && (

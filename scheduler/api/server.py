@@ -68,7 +68,7 @@ from scheduler.api.schemas import (
     ValidationSummaryItem,
     ValidationSummaryResponse,
     ViolationSchema,
-    ByteBlocRequestPreviewItem,
+    ByteBlocPhysicianSummary,
     ByteBlocPreviewResponse,
     ByteBlocSendRequest,
     ByteBlocSendResponse,
@@ -1776,24 +1776,37 @@ def _eligible_submissions_for_bytebloc() -> tuple[list[PhysicianSubmission], int
     return eligible, len(submissions) - len(eligible)
 
 
-def _build_bytebloc_payload() -> tuple[bytebloc_mod.ByteBlocConfig | None, dict, list[str], list]:
-    """Shared by preview and send so both always agree on exactly what would be sent."""
+def _build_bytebloc_payload(
+    use_delta: bool = True,
+) -> tuple[bytebloc_mod.ByteBlocConfig | None, dict, list[str], list, bool, int]:
+    """
+    Shared by preview and send so both always agree on exactly what would
+    be sent. Returns (config, payload, warnings, preview_items, used_delta,
+    skipped_unchanged_count) -- used_delta is False whenever use_delta was
+    False, or there was nothing on record yet for this period to diff
+    against (a plain full send either way, just worth the caller knowing
+    which case it was).
+    """
     config = bytebloc_mod.load_bytebloc_config()
     if config is None:
         return None, {}, [
             "ByteBloc is not configured yet. Copy "
             "scheduler/config/bytebloc_template.yaml to bytebloc.yaml and fill it in."
-        ], []
+        ], [], False, 0
 
     year, month = _state.get("year"), _state.get("month")
     if not year or not month:
-        return config, {}, ["Import and validate a month's submissions first."], []
+        return config, {}, ["Import and validate a month's submissions first."], [], False, 0
 
     eligible, excluded = _eligible_submissions_for_bytebloc()
     roster = _state.get("roster") or {}
     display_names = build_display_names(roster)
-    payload, warnings, preview_items = bytebloc_mod.build_shift_requests_payload(
+
+    last_sent = bytebloc_mod.load_last_sent(year, month) if use_delta else {}
+    applied_delta = use_delta and bool(last_sent)
+    payload, warnings, preview_items, skipped = bytebloc_mod.build_shift_requests_payload(
         eligible, config, year, month, display_names,
+        last_sent=last_sent if applied_delta else None,
     )
     if excluded:
         warnings.insert(
@@ -1803,39 +1816,52 @@ def _build_bytebloc_payload() -> tuple[bytebloc_mod.ByteBlocConfig | None, dict,
         )
     if not bytebloc_mod.is_fully_configured(config):
         warnings.insert(0, "ByteBloc connection details in bytebloc.yaml are incomplete.")
-    return config, payload, warnings, preview_items
+    return config, payload, warnings, preview_items, applied_delta, skipped
 
 
 @app.get("/api/bytebloc/preview", response_model=ByteBlocPreviewResponse)
-def bytebloc_preview() -> ByteBlocPreviewResponse:
+def bytebloc_preview(use_delta: bool = True) -> ByteBlocPreviewResponse:
     """
     Build (but never send) the ByteBloc createShiftRequests payload from
     the current, currently-valid physician submissions. Read-only — this
     never contacts ByteBloc.
+
+    use_delta=True (default) only includes cells that differ from this
+    backend instance's own record of what it last successfully sent for
+    this period — see bytebloc.py's load_last_sent for what that instance
+    scoping does and doesn't cover. use_delta=False always includes every
+    mapped cell, a full resend.
     """
-    config, payload, warnings, preview_items = _build_bytebloc_payload()
+    config, payload, warnings, preview_items, used_delta, skipped = _build_bytebloc_payload(use_delta)
     if config is None:
         return ByteBlocPreviewResponse(configured=False, warnings=warnings)
 
-    provider_ids = {pr["ProviderId"] for pr in payload.get("ProviderRequests", [])}
+    by_physician: dict[str, ByteBlocPhysicianSummary] = {}
+    for item in preview_items:
+        row = by_physician.setdefault(
+            item.physician_id,
+            ByteBlocPhysicianSummary(physician_id=item.physician_id, physician_name=item.physician_name),
+        )
+        row.count += 1
+        if item.off_type == "NeedOff":
+            row.need_off_count += 1
+        else:
+            row.available_count += 1
+
     return ByteBlocPreviewResponse(
         configured=True,
         group_code=config.group_code,
         location_code=config.location_code,
         requester_id=config.requester_id,
         sked_start_date=payload.get("SkedStartDate", ""),
-        items=[
-            ByteBlocRequestPreviewItem(
-                physician_id=item.physician_id,
-                physician_name=item.physician_name,
-                day=item.day,
-                shift_code=item.shift_code,
-            )
-            for item in preview_items
-        ],
+        by_physician=sorted(by_physician.values(), key=lambda r: r.physician_name),
         warnings=warnings,
-        physician_count=len(provider_ids),
+        physician_count=len(by_physician),
         request_count=len(preview_items),
+        need_off_count=sum(1 for item in preview_items if item.off_type == "NeedOff"),
+        available_count=sum(1 for item in preview_items if item.off_type == "Available"),
+        used_delta=used_delta,
+        skipped_unchanged_count=skipped,
     )
 
 
@@ -1857,7 +1883,7 @@ def bytebloc_send(body: ByteBlocSendRequest) -> ByteBlocSendResponse:
             detail=f'Type "{bytebloc_mod.CONFIRMATION_PHRASE}" exactly to confirm.',
         )
 
-    config, payload, warnings, preview_items = _build_bytebloc_payload()
+    config, payload, warnings, preview_items, used_delta, skipped = _build_bytebloc_payload(body.use_delta)
     if config is None:
         raise HTTPException(status_code=400, detail="ByteBloc is not configured.")
     if not bytebloc_mod.is_fully_configured(config):
@@ -1873,7 +1899,15 @@ def bytebloc_send(body: ByteBlocSendRequest) -> ByteBlocSendResponse:
         raise HTTPException(status_code=502, detail=str(e))
 
     status = str(result.get("Status", "unknown"))
-    return ByteBlocSendResponse(ok=status == "OK", status=status, raw=result)
+    ok = status == "OK"
+    if ok:
+        # Only record what was actually just sent, and only on genuine
+        # success -- see record_sent()'s own docstring for why a failed or
+        # rejected send must never be recorded.
+        year, month = _state.get("year"), _state.get("month")
+        if year and month:
+            bytebloc_mod.record_sent(year, month, preview_items)
+    return ByteBlocSendResponse(ok=ok, status=status, raw=result)
 
 
 @app.post("/api/generate-cancel")

@@ -170,6 +170,34 @@ def list_period_submissions(config: SkedConfig, period_id: str) -> list[dict]:
     return res.json()
 
 
+def push_physician_rules(config: SkedConfig, physician_id: str, items: list[str]) -> None:
+    """
+    Push one physician's plain-language "what's actually configured for
+    you" summary to sked, for their "My Rules" view. items is already
+    rendered plain-language text (see config.py's
+    describe_physician_facing_rules) -- sked just stores and displays it
+    verbatim, never re-derives anything from it.
+
+    Called automatically after every roster save (see server.py's
+    update_physician/create_physician). A 404 here means this physician
+    doesn't have a sked account yet -- not an error worth raising, sked
+    itself treats it as skip-and-continue. Callers should still catch
+    SkedApiError around this and swallow it (log, don't raise) so a
+    transient sked outage never blocks saving a physician's config
+    locally -- this sync is a nice-to-have, not the source of truth.
+    """
+    with httpx.Client(timeout=15) as client:
+        res = client.put(
+            f"{config.base_url}/api/admin/physician-rules",
+            headers=_headers(config),
+            json={"physicianId": physician_id, "items": items},
+        )
+    if res.status_code == 404:
+        return
+    if res.status_code != 200:
+        raise SkedApiError(f"Could not push rules summary for {physician_id!r}: {res.text}")
+
+
 def fetch_physician_export(config: SkedConfig, physician_id: str, period_id: str) -> bytes:
     """
     Rebuild and download one physician's filled-preferences .xlsx for a period,

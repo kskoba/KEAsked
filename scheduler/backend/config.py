@@ -308,6 +308,114 @@ class PhysicianConfig:
         return ", ".join(parts)
 
 
+_CALL_LINKAGE_TEXT = {
+    "end_of_block": "Your on-call (DOC/NOC) days are scheduled right after your last regular shift in a stretch, when possible.",
+    "doc_before_evening": "A day-on-call (DOC) day is scheduled the day before a shift starting in the evening, when possible.",
+    "independent": "Your on-call (DOC/NOC) days are scheduled apart from your own regular shifts, when possible.",
+}
+
+_ANCHOR_PREFERENCE_TEXT = {
+    "2400h": "If you go over your requested count of 0600h/2400h shifts, the extra ones are given as 2400h shifts.",
+    "0600h": "If you go over your requested count of 0600h/2400h shifts, the extra ones are given as 0600h shifts.",
+}
+
+
+def describe_physician_facing_rules(cfg: "PhysicianConfig") -> list[str]:
+    """
+    Plain-language, physician-facing summary of what's actually configured
+    for this physician in physicians.yaml -- pushed to sked's "My Rules"
+    view on every roster save (see server.py + sked_client.push_physician_rules).
+
+    Deliberately filtered: internal solver-tuning knobs a physician has no
+    reason to see (combined_headcount, default_shifts_requested,
+    rule_overrides, cap_at_requested, casual/special_provisions status,
+    coordinator's own free-text notes) are left out. prefer_weekend_clumping
+    is also left out -- it's applied to everyone now regardless of its
+    value (see generator_cpsat.py's own comment on that), so showing it
+    per-physician would be actively misleading. max_consecutive_1800h is
+    left out too since it's no longer independently set -- it always tracks
+    max_consecutive_shifts now, so it'd just be a confusing duplicate line.
+
+    max_consecutive_shifts (SIAR) and max_consecutive_nights (NIAR) are
+    always shown, even at their default value, since physicians clearly
+    want to see their actual caps rather than only being told about
+    deviations. Most other fields are only surfaced when they differ from
+    the plain default -- a physician with nothing else unusual configured
+    just gets those two lines, not a wall of baseline values everyone
+    shares.
+    """
+    items: list[str] = []
+
+    items.append(f"You can be scheduled up to {cfg.max_consecutive_shifts} shift(s) in a row.")
+    if cfg.max_consecutive_nights > 0:
+        items.append(f"You can be scheduled up to {cfg.max_consecutive_nights} 2400h (night) shift(s) in a row.")
+    else:
+        items.append("You are never scheduled for a 2400h (night) shift at all — the cap is set to zero.")
+    if cfg.only_2400h:
+        items.append("You're only ever assigned 2400h (night) shifts.")
+    if cfg.only_0600h:
+        items.append("You're only ever assigned 0600h shifts.")
+    if cfg.group_b_site_preference:
+        site_text = {"nehc": "NEHC", "rah": "RAH (I or F side)", "rah_f": "RAH F side"}.get(
+            cfg.group_b_site_preference, cfg.group_b_site_preference
+        )
+        items.append(f"Within the non-acute allocation, you're preferentially scheduled at {site_text}.")
+    if cfg.forbidden_sites:
+        items.append(f"You're never scheduled at: {', '.join(cfg.forbidden_sites)}.")
+    if cfg.forbidden_shift_times:
+        items.append(f"You're never scheduled for these shift times: {', '.join(cfg.forbidden_shift_times)}.")
+    if cfg.prefer_weekends:
+        items.append(
+            "You've indicated you prefer weekend shifts — the scheduler actively favors giving you more "
+            "weekend work and avoids leaving you with just a Friday or Sunday shift and a gap on Saturday."
+        )
+    if cfg.max_weekends is not None and not cfg.prefer_weekends:
+        # prefer_weekends unconditionally waives this cap (see
+        # generator_cpsat.py's _eff_max_weekends) -- showing it while that
+        # flag is also set would misstate an actual cap that doesn't apply.
+        items.append(f"You're capped at {cfg.max_weekends} weekend(s) worked per month.")
+    if cfg.honor_all_requests:
+        items.append("Your specific date/shift requests are treated as close to mandatory.")
+    if cfg.priority_weight > 1.0:
+        items.append(
+            "Your requested shifts are given extra weight over a colleague's when the schedule can't "
+            "accommodate everyone's requests in full — you're prioritized for reaching your own requested count."
+        )
+    if cfg.prefer_singleton_nights:
+        items.append("You prefer isolated single night shifts rather than several in a row.")
+    if cfg.no_call:
+        items.append("You're never assigned on-call (DOC/NOC) shifts.")
+    if cfg.avoid_weekday:
+        items.append(f"Scheduling tries to avoid putting you on {cfg.avoid_weekday}s.")
+    elif cfg.avoid_mondays:
+        items.append("Scheduling tries to avoid putting you on Mondays.")
+    if cfg.rest_after_late_shift:
+        items.append("You're guaranteed a day off after any shift starting at 1600h, 1800h, or 2000h.")
+    if cfg.post_block_rest_days:
+        items.append(
+            f"After working {cfg.post_block_min_length}+ days in a row, you're guaranteed "
+            f"{cfg.post_block_rest_days} day(s) off before working again."
+        )
+    if cfg.call_linkage and cfg.call_linkage in _CALL_LINKAGE_TEXT:
+        items.append(_CALL_LINKAGE_TEXT[cfg.call_linkage])
+    if cfg.max_consecutive_same_site is not None:
+        items.append(f"You're never scheduled more than {cfg.max_consecutive_same_site} day(s) in a row at the same site.")
+    if cfg.anchor_preference and cfg.anchor_preference in _ANCHOR_PREFERENCE_TEXT:
+        items.append(_ANCHOR_PREFERENCE_TEXT[cfg.anchor_preference])
+
+    if cfg.typical_shifts_per_month is not None or cfg.typical_0600h_per_month is not None or cfg.typical_2400h_per_month is not None:
+        bits = []
+        if cfg.typical_shifts_per_month is not None:
+            bits.append(f"{cfg.typical_shifts_per_month} shifts/month")
+        if cfg.typical_0600h_per_month is not None:
+            bits.append(f"{cfg.typical_0600h_per_month} 0600h shifts/month")
+        if cfg.typical_2400h_per_month is not None:
+            bits.append(f"{cfg.typical_2400h_per_month} 2400h shifts/month")
+        items.append("On file as your typical monthly baseline from the annual survey: " + ", ".join(bits) + ".")
+
+    return items
+
+
 def _parse_physician(raw: dict) -> PhysicianConfig:
     """Parse one physician dict from the YAML into a PhysicianConfig."""
     sched: dict = raw.get("scheduling") or {}

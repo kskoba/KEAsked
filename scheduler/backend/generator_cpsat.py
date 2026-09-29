@@ -711,6 +711,97 @@ class CpsatScheduleGenerator:
                                 + shifts[(pid_b, d_idx, shift_b.code)] <= 1
                             )
 
+            # Same rule extended across adjacent days, both directions --
+            # e.g. Brenneis/Fanaeian: a late shift for one of them
+            # shouldn't be followed by an early shift for the other the
+            # next day either, not just a same-day clash. Reuses the exact
+            # same min_hours_gap/forbidden_time_pairs as the same-day
+            # check above rather than introducing separate config for it.
+            for first, second in ((pid_a, pid_b), (pid_b, pid_a)):
+                for d_idx in range(len(all_dates) - 1):
+                    for shift_a in all_shifts_list:
+                        for shift_b in all_shifts_list:
+                            gap = abs(shift_a.start_hour - shift_b.start_hour)
+                            is_forbidden_pair = frozenset((shift_a.time, shift_b.time)) in forbidden_pairs
+                            if gap < min_gap or is_forbidden_pair:
+                                model.add(
+                                    shifts[(first, d_idx, shift_a.code)]
+                                    + shifts[(second, d_idx + 1, shift_b.code)] <= 1
+                                )
+
+        # ----------------------------------------------------------------
+        # HC-9d: Forbidden precursor shift-times (scheduler_config.yaml's
+        # forbidden_precursor_shifts, e.g. Esterhuizen: only a 1700h-or-
+        # earlier shift, or nothing at all, may precede a 2400h shift --
+        # 1800h/2000h forbidden as the immediately preceding day's shift.
+        # Same shape as timed_separation (HC-9c) but for one physician's
+        # own day-to-day sequence rather than a pair.
+        # ----------------------------------------------------------------
+        for rule in self.config.get("forbidden_precursor_shifts", []):
+            pid = rule.get("physician")
+            if pid not in pids:
+                continue
+            target_time = rule.get("target_time")
+            forbidden_precursor_times = set(rule.get("forbidden_precursor_times", []))
+            target_shifts = [s for s in all_shifts_list if s.time == target_time]
+            precursor_shifts = [s for s in all_shifts_list if s.time in forbidden_precursor_times]
+            for d_idx in range(1, len(all_dates)):
+                for prev_shift in precursor_shifts:
+                    for tgt_shift in target_shifts:
+                        model.add(
+                            shifts[(pid, d_idx - 1, prev_shift.code)]
+                            + shifts[(pid, d_idx, tgt_shift.code)] <= 1
+                        )
+
+        # ----------------------------------------------------------------
+        # Soft: night-chain ramp-in (scheduler_config.yaml's
+        # night_chain_ramp_in, e.g. Velji: doesn't want to start a run of
+        # 2400h shifts cold off a day off -- wants a shift the day before,
+        # ideally at preferred_precursor_time (1800h). Only checked at the
+        # START of a night run (the day before a 2400h shift that isn't
+        # itself preceded by another 2400h shift) -- once already in a
+        # chain, the preceding day is a night shift by definition and this
+        # doesn't apply. Soft, not hard: penalize starting a chain with a
+        # day off before it, bonus (smaller, so it never outweighs the
+        # penalty above) if that preceding shift is the preferred time.
+        # ----------------------------------------------------------------
+        _NIGHT_CHAIN_NO_RAMPIN_PENALTY = 30
+        _NIGHT_CHAIN_PREFERRED_RAMPIN_BONUS = 15
+        night_chain_ramp_in_terms: list = []
+        for rule in self.config.get("night_chain_ramp_in", []):
+            pid = rule.get("physician")
+            if pid not in pids:
+                continue
+            preferred_time = rule.get("preferred_precursor_time")
+            night_shifts = [s for s in all_shifts_list if s.time == "2400h"]
+            for d_idx in range(1, len(all_dates)):
+                night_today = sum(shifts[(pid, d_idx, s.code)] for s in night_shifts)
+                night_yesterday = sum(shifts[(pid, d_idx - 1, s.code)] for s in night_shifts)
+                any_yesterday = sum(
+                    shifts[(pid, d_idx - 1, s.code)] for s in all_shifts_list
+                )
+                # starts_chain == 1 iff today is a night shift and yesterday
+                # wasn't (i.e. this is the first night of a fresh run).
+                starts_chain = model.new_bool_var(f"nightchain_start_{pid}_{d_idx}")
+                model.add(night_today - night_yesterday <= starts_chain)
+                model.add(starts_chain <= night_today)
+
+                no_rampin = model.new_bool_var(f"nightchain_norampin_{pid}_{d_idx}")
+                model.add(no_rampin >= starts_chain - any_yesterday)
+                night_chain_ramp_in_terms.append(-_NIGHT_CHAIN_NO_RAMPIN_PENALTY * no_rampin)
+
+                if preferred_time:
+                    preferred_yesterday = sum(
+                        shifts[(pid, d_idx - 1, s.code)]
+                        for s in all_shifts_list if s.time == preferred_time
+                    )
+                    got_preferred = model.new_bool_var(f"nightchain_preferred_{pid}_{d_idx}")
+                    model.add(got_preferred <= starts_chain)
+                    model.add(got_preferred <= preferred_yesterday)
+                    night_chain_ramp_in_terms.append(
+                        _NIGHT_CHAIN_PREFERRED_RAMPIN_BONUS * got_preferred
+                    )
+
         # ----------------------------------------------------------------
         # HC-10: Same-shift-code on adjacent days forbidden
         # ----------------------------------------------------------------
@@ -1746,6 +1837,7 @@ class CpsatScheduleGenerator:
         objective_terms.extend(weekend_overage_penalty_terms)
         objective_terms.extend(prefer_weekend_bonus_terms)
         objective_terms.extend(prefer_weekend_gap_penalty_terms)
+        objective_terms.extend(night_chain_ramp_in_terms)
 
         # ----------------------------------------------------------------
         # Lexicographic priority tiers (only when casual physicians exist in

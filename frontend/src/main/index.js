@@ -547,6 +547,44 @@ async function createByteBlocWindow() {
   return byteBlocWindow
 }
 
+// Read-only viewer for scheduler_config.yaml's person-specific pair/
+// sequencing rules (timed_separation, conditional_cowork, etc.) -- lives
+// next to the Roster Editor since these rules are keyed by physician but
+// aren't part of physicians.yaml, so the roster editor itself has no way
+// to show them.
+let schedulingRulesWindow = null
+
+async function createSchedulingRulesWindow() {
+  if (schedulingRulesWindow && !schedulingRulesWindow.isDestroyed()) {
+    schedulingRulesWindow.focus()
+    return schedulingRulesWindow
+  }
+
+  schedulingRulesWindow = new BrowserWindow({
+    width: 800,
+    height: 700,
+    backgroundColor: '#f8fafc',
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
+    }
+  })
+
+  schedulingRulesWindow.on('closed', () => {
+    schedulingRulesWindow = null
+  })
+
+  if (isDev && process.env['ELECTRON_RENDERER_URL']) {
+    schedulingRulesWindow.loadURL(`${process.env['ELECTRON_RENDERER_URL']}#scheduling-rules`)
+  } else {
+    schedulingRulesWindow.loadFile(join(__dirname, '../renderer/index.html'), { hash: 'scheduling-rules' })
+  }
+
+  return schedulingRulesWindow
+}
+
 // IPC: open native directory picker
 ipcMain.handle('dialog:openDirectory', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
@@ -602,6 +640,11 @@ ipcMain.handle('window:openSurveyResponses', () => {
 // IPC: open (or focus) the ByteBloc window
 ipcMain.handle('window:openByteBloc', () => {
   createByteBlocWindow()
+})
+
+// IPC: open (or focus) the read-only Scheduling Rules window
+ipcMain.handle('window:openSchedulingRules', () => {
+  createSchedulingRulesWindow()
 })
 
 // IPC: force-close whichever window sent this, bypassing its own

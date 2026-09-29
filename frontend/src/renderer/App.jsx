@@ -285,6 +285,7 @@ export default function App() {
         onOpenMonthlyRequests={() => window.electronAPI.openMonthlyRequestsWindow()}
         onOpenSurveyResponses={() => window.electronAPI.openSurveyResponsesWindow()}
         onOpenByteBloc={() => window.electronAPI.openByteBlocWindow()}
+        onOpenSchedulingRules={() => window.electronAPI.openSchedulingRulesWindow()}
       />
 
       {view === 'setup' && (

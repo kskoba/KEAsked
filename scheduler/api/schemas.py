@@ -299,6 +299,23 @@ class ByteBlocSendResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Person-specific sequencing/pair rules (scheduler_config.yaml) -- read-only
+# view for the roster editor. See build_sequencing_rule_summaries in
+# server.py for how these are derived; nothing here is ever written back.
+# ---------------------------------------------------------------------------
+
+class SequencingRuleSummary(BaseModel):
+    kind: str                      # e.g. "timed_separation"
+    physician_ids: list[str]
+    physician_names: list[str]     # display names, same order as physician_ids
+    description: str               # plain-language, ready to render as-is
+
+
+class SequencingRulesResponse(BaseModel):
+    rules: list[SequencingRuleSummary] = []
+
+
+# ---------------------------------------------------------------------------
 # Schedule generation
 # ---------------------------------------------------------------------------
 

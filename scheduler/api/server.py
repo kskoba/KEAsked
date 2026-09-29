@@ -72,6 +72,8 @@ from scheduler.api.schemas import (
     ByteBlocPreviewResponse,
     ByteBlocSendRequest,
     ByteBlocSendResponse,
+    SequencingRuleSummary,
+    SequencingRulesResponse,
     EmailStatusResponse,
     SendReminderEmailRequest,
     SendReminderEmailResponse,
@@ -107,6 +109,7 @@ from scheduler.backend.config import (
     WEEKDAY_VALUES,
     PhysicianConfig,
     add_physician,
+    describe_physician_facing_rules,
     load_roster,
     remove_physician,
     save_physician,
@@ -525,6 +528,148 @@ def _load_scheduler_config() -> dict:
     return cfg
 
 
+def _push_physician_rules_summary(physician_id: str, cfg: PhysicianConfig, roster: dict) -> None:
+    """
+    Auto-sync: push this physician's plain-language "what's actually
+    configured for you" summary to sked on every roster save (see
+    update_physician/create_physician below), for display in sked's "My
+    Rules" view. Combines physicians.yaml fields (describe_physician_facing_rules)
+    with any scheduler_config.yaml person-specific pair/sequencing rule
+    that names them.
+
+    Never raises -- sked.yaml missing, sked unreachable, or this physician
+    not yet having a sked account are all just skipped/logged, never
+    surfaced to the caller. This sync is a nice-to-have that keeps sked in
+    sync automatically; it must never block saving a physician's config
+    locally, which stays the source of truth regardless of whether this
+    push succeeds.
+    """
+    sked_config = sked_client.load_sked_config()
+    if sked_config is None or not sked_client.is_fully_configured(sked_config):
+        return
+    try:
+        items = describe_physician_facing_rules(cfg)
+        scheduler_cfg = _load_scheduler_config()
+        for rule in build_sequencing_rule_summaries(scheduler_cfg, roster):
+            if physician_id in rule.physician_ids:
+                items.append(rule.description)
+        sked_client.push_physician_rules(sked_config, physician_id, items)
+    except Exception as exc:
+        print(f"[sked sync] WARNING: could not push rules summary for {physician_id!r}: {exc}")
+
+
+def _display_name_or_id(pid: str, display_names: dict[str, str]) -> str:
+    return display_names.get(pid, pid)
+
+
+def build_sequencing_rule_summaries(cfg: dict, roster: dict) -> list[SequencingRuleSummary]:
+    """
+    Turn scheduler_config.yaml's person-specific pair/sequencing rules into
+    plain-language summaries for a read-only display (roster editor's
+    "Scheduling Rules" panel). Nothing here is ever written back -- this is
+    strictly a renderer for what's already in the yaml file; edit that file
+    directly (or ask support) to actually change a rule.
+    """
+    display_names = build_display_names(roster)
+    summaries: list[SequencingRuleSummary] = []
+
+    def names(ids: list[str]) -> list[str]:
+        return [_display_name_or_id(p, display_names) for p in ids]
+
+    for rule in cfg.get("timed_separation", []) or []:
+        phys = rule.get("physicians", [])
+        if len(phys) != 2:
+            continue
+        a, b = names(phys)
+        parts = [f"If scheduled the same day (or adjacent days), their shift start times must be at least {rule.get('min_hours_gap', 0)} hours apart."]
+        forbidden = rule.get("forbidden_time_pairs") or []
+        if forbidden:
+            pairs_text = ", ".join(f"{p[0]}/{p[1]}" for p in forbidden)
+            parts.append(f"These specific start-time combinations are never allowed together regardless of gap: {pairs_text}.")
+        summaries.append(SequencingRuleSummary(
+            kind="timed_separation", physician_ids=phys, physician_names=[a, b],
+            description=f"{a} and {b}: " + " ".join(parts),
+        ))
+
+    for rule in cfg.get("conditional_cowork", []) or []:
+        phys = rule.get("physicians", [])
+        if len(phys) != 2:
+            continue
+        a, b = names(phys)
+        parts = []
+        if rule.get("no_shared_weekends"):
+            parts.append("They can never both have a shift on the same weekend (Fri/Sat/Sun) date.")
+        required_time = rule.get("weekday_requires_one_at")
+        if required_time:
+            parts.append(f"On a weekday where both are scheduled, exactly one of them must be on the {required_time} shift.")
+        summaries.append(SequencingRuleSummary(
+            kind="conditional_cowork", physician_ids=phys, physician_names=[a, b],
+            description=f"{a} and {b}: " + " ".join(parts),
+        ))
+
+    for rule in cfg.get("forbidden_precursor_shifts", []) or []:
+        pid = rule.get("physician")
+        if not pid:
+            continue
+        forbidden = ", ".join(rule.get("forbidden_precursor_times", []))
+        target = rule.get("target_time")
+        summaries.append(SequencingRuleSummary(
+            kind="forbidden_precursor_shifts", physician_ids=[pid], physician_names=names([pid]),
+            description=(
+                f"{_display_name_or_id(pid, display_names)}: a {forbidden} shift may never be the day "
+                f"immediately before a {target} shift — only an earlier shift, or a day off, may precede it."
+            ),
+        ))
+
+    for rule in cfg.get("night_chain_ramp_in", []) or []:
+        pid = rule.get("physician")
+        if not pid:
+            continue
+        preferred = rule.get("preferred_precursor_time")
+        summaries.append(SequencingRuleSummary(
+            kind="night_chain_ramp_in", physician_ids=[pid], physician_names=names([pid]),
+            description=(
+                f"{_display_name_or_id(pid, display_names)}: prefers a shift the day before starting a new "
+                f"run of 2400h night shifts, rather than coming off a day off"
+                + (f" — ideally a {preferred} shift." if preferred else ".")
+            ),
+        ))
+
+    for rule in cfg.get("linked_rest_pairs", []) or []:
+        phys = rule.get("physicians", [])
+        if len(phys) != 2:
+            continue
+        a, b = names(phys)
+        inactive_note = ""
+        for p in phys:
+            c = roster.get(p)
+            if c and not c.active:
+                inactive_note = f" ({_display_name_or_id(p, display_names)} is currently inactive — this rule has no effect.)"
+        summaries.append(SequencingRuleSummary(
+            kind="linked_rest_pairs", physician_ids=phys, physician_names=[a, b],
+            description=(
+                f"{a} and {b}: treated as one combined timeline for rest purposes — never both scheduled the "
+                f"same day, and the same rest-gap/consecutive-run rules that apply to one person's own schedule "
+                f"apply across their combined schedule too.{inactive_note}"
+            ),
+        ))
+
+    return summaries
+
+
+@app.get("/api/scheduling-rules/person-specific", response_model=SequencingRulesResponse)
+def get_person_specific_scheduling_rules() -> SequencingRulesResponse:
+    """
+    Read-only: every person-specific pair/sequencing rule currently in
+    scheduler_config.yaml, rendered in plain language. Never modifies
+    anything — the roster editor's "Scheduling Rules" panel uses this to
+    show what's configured, with a note to contact support for changes.
+    """
+    cfg = _load_scheduler_config()
+    roster = load_roster()
+    return SequencingRulesResponse(rules=build_sequencing_rule_summaries(cfg, roster))
+
+
 def _shift_to_schema(shift: Shift) -> ShiftSchema:
     return ShiftSchema(
         time=shift.time,
@@ -853,6 +998,9 @@ def update_physician(physician_id: str, body: PhysicianUpdateRequest) -> Physici
     if physician_id in _state.get("roster", {}):
         _state["roster"][physician_id] = cfg
 
+    roster[physician_id] = cfg
+    _push_physician_rules_summary(physician_id, cfg, roster)
+
     return _physician_to_detail(cfg)
 
 
@@ -899,6 +1047,9 @@ def create_physician(body: CreatePhysicianRequest) -> PhysicianDetail:
 
     if _state.get("roster"):
         _state["roster"][new_id] = cfg
+
+    roster[new_id] = cfg
+    _push_physician_rules_summary(new_id, cfg, roster)
 
     return _physician_to_detail(cfg)
 

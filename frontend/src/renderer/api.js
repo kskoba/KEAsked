@@ -423,3 +423,14 @@ export async function removePhysician(physicianId, confirmation) {
   return request('POST', `/api/physicians/${encodeURIComponent(physicianId)}/remove`, { confirmation })
 }
 
+/**
+ * Read-only: every person-specific pair/sequencing rule currently in
+ * scheduler_config.yaml (timed_separation, conditional_cowork,
+ * forbidden_precursor_shifts, night_chain_ramp_in, linked_rest_pairs),
+ * rendered in plain language. Never modifies anything.
+ * @returns {{ rules: { kind: string, physician_ids: string[], physician_names: string[], description: string }[] }}
+ */
+export async function getSequencingRules() {
+  return request('GET', '/api/scheduling-rules/person-specific')
+}
+

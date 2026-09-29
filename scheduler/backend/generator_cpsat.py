@@ -176,12 +176,31 @@ class CpsatScheduleGenerator:
         self._avail: set[tuple] = set()
         # (pid, date) -> frozenset[shift_code]  (flat-file specific shifts)
         self._shift_avail: dict[tuple, frozenset] = {}
+        # (pid, date) -> frozenset[shift_code]  (this physician's specific
+        # pick for the day, from the "Preferred" row -- see
+        # importer.py/models.py's DayAvailability.preferred_shifts)
+        self._preferred_shifts: dict[tuple, frozenset] = {}
         for sub in submissions:
             for day in sub.days:
+                # A day the physician didn't mark as a Service Day (Z) is
+                # never actually assignable, regardless of which individual
+                # shift-cells happen to still be marked available on it --
+                # a stray checked cell on a non-Z day isn't a real offer to
+                # work that day. Confirmed as a real gap (not just a
+                # theoretical one): MacGougan was assigned a shift on a day
+                # he never marked Z, because this index used to key off
+                # available_blocks/requested_shifts alone. wants_to_work is
+                # the actual "I might work this day at all" signal; the
+                # per-cell marks underneath it only mean "if I do work this
+                # day, these are the times I could".
+                if not day.wants_to_work:
+                    continue
                 for b in day.available_blocks:
                     self._avail.add((sub.physician_id, day.date, b))
                 if day.requested_shifts:
                     self._shift_avail[(sub.physician_id, day.date)] = day.requested_shifts
+                if day.preferred_shifts:
+                    self._preferred_shifts[(sub.physician_id, day.date)] = day.preferred_shifts
 
         # Mutable assignment state — initialized here so _assign/_unassign work
         # even when called before generate() (e.g. when rebuilding from a loaded
@@ -1205,6 +1224,17 @@ class CpsatScheduleGenerator:
         filled_expr = sum(weighted_fill_terms)
 
         # Soft: requests bonus
+        # honor_all_requests only elevates the specific shift(s) this
+        # physician actually marked as their pick for that day (the
+        # "Preferred" row -- see DayAvailability.preferred_shifts), not
+        # every cell they merely left available. Confirmed as a real bug
+        # (2026-09-29, MacGougan): this used to give the same +150 to
+        # every available cell regardless of whether it was his actual
+        # preference, which both diluted what the flag was supposed to
+        # mean and rewarded cells on days he hadn't specifically asked
+        # for. A day with no stated preference gets the normal weight for
+        # everyone, honor_all_requests or not -- there's nothing specific
+        # to elevate.
         request_bonus_terms = []
         for pid in pids:
             sub = self.submissions[pid]
@@ -1213,9 +1243,10 @@ class CpsatScheduleGenerator:
             for d_idx, d in enumerate(all_dates):
                 day_shifts_req = self._shift_avail.get((pid, d))
                 if day_shifts_req:
+                    day_preferred = self._preferred_shifts.get((pid, d), frozenset())
                     for shift_code in day_shifts_req:
                         if (pid, d_idx, shift_code) in shifts:
-                            weight = 150 if honor else 5
+                            weight = 150 if (honor and shift_code in day_preferred) else 5
                             request_bonus_terms.append(
                                 weight * shifts[(pid, d_idx, shift_code)]
                             )

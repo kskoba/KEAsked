@@ -1109,12 +1109,17 @@ def _apply_shift_count_overrides(submissions: list[PhysicianSubmission], roster:
     after _apply_roster has resolved sub.physician_id to the roster's
     canonical id:
 
-    - default_shifts_requested: always use this value as shifts_requested,
-      regardless of what the submission itself says (including a blank/
-      zero submission) — for a physician whose reported count is
-      unreliable but who should still get normal scheduling priority
-      every month. shifts_max is floored to at least this value too, so a
-      stale lower max can't silently undercut the overridden request.
+    - default_shifts_requested: fallback only -- used as shifts_requested
+      when that month's submission doesn't actually state a number
+      (shifts_requested == 0, meaning the N cell was blank/unparseable),
+      never overriding a real stated number. A physician who reliably
+      reports their own count every month should always have that number
+      honored, even if this field is still set from an earlier month
+      where their reporting genuinely was unreliable -- confirmed as a
+      real bug (2026-09-29, MacGougan): this used to override a real,
+      correctly-filled-in 10 with a stale default of 9. shifts_max is
+      floored to at least the applied value too, so a stale lower max
+      can't silently undercut it.
     - combined_headcount: multiply shifts_requested/min/max by this factor
       — for a roster identity shared by more than one real person (each
       submitting their own identical-values sheet under aliases that all
@@ -1126,7 +1131,7 @@ def _apply_shift_count_overrides(submissions: list[PhysicianSubmission], roster:
         cfg = roster.get(sub.physician_id)
         if not cfg:
             continue
-        if cfg.default_shifts_requested is not None:
+        if cfg.default_shifts_requested is not None and sub.shifts_requested == 0:
             sub.shifts_requested = cfg.default_shifts_requested
             if sub.shifts_max < cfg.default_shifts_requested:
                 sub.shifts_max = cfg.default_shifts_requested

@@ -53,6 +53,7 @@ _N_0600H_ROW = 61
 _N_0600H_COL = 37      # Col AK  — requested 0600h shifts
 
 _Z_ROW = 5             # "Service Days" row
+_PREFERRED_ROW = 6     # "Preferred" row -- physician's specific pick for the day, if any
 _DOW_ROW = 4           # Day-of-week abbreviation row
 _FIRST_DAY_COL = 2     # Col B = day 1
 
@@ -221,6 +222,29 @@ def _parse_worksheet(
             if _is_filled(_cell(ws, row, col))
         }
 
+        # --- Preferred shift (the "Preferred" row, above the main grid) ---
+        # The sheet's own convention is shorthand text (e.g. "15NE",
+        # "18RA") that's ALSO exactly what's typed into that shift's own
+        # row for this day -- so rather than parsing the shorthand
+        # ourselves (ambiguous on its own: "18RA" is printed identically
+        # for both 1800h RAH A side and 1800h RAH B side in this
+        # template), match it against this physician's own per-row text
+        # for this same day and take whichever row(s) it equals. Usually
+        # resolves to exactly one shift code; two when the sheet's
+        # shorthand is genuinely ambiguous between two sites, in which
+        # case both are kept as candidates. DOC/NOC rows are deliberately
+        # excluded here -- on-call assignment isn't part of the same
+        # shifts[] mechanism this feeds (see generator_cpsat.py's
+        # honor_all_requests bonus), so a "NOC"-style preferred entry has
+        # nothing to resolve against and is silently ignored, not an error.
+        preferred_raw = str(_cell(ws, _PREFERRED_ROW, col) or "").strip()
+        preferred_shifts: set[str] = set()
+        if preferred_raw:
+            for row, shift_code in _ROW_TO_SHIFT_CODE.items():
+                cell_text = str(_cell(ws, row, col) or "").strip()
+                if cell_text and cell_text.upper() == preferred_raw.upper():
+                    preferred_shifts.add(shift_code)
+
         # --- On-call availability (Day On Call / Night On Call) — physicians
         # type "DOC" / "NOC" on the days they're available for each, on their
         # own dedicated rows separate from the regular shift grid. ---
@@ -235,6 +259,7 @@ def _parse_worksheet(
                 requested_shifts=frozenset(available_shifts),
                 doc_available=doc_available,
                 noc_available=noc_available,
+                preferred_shifts=frozenset(preferred_shifts),
             )
         )
 
@@ -282,6 +307,31 @@ def _parse_worksheet(
     )
 
 
+# A file exported from Apple Numbers always gets this exact cover sheet
+# name, inserted before the real content -- "This document was exported
+# from Numbers. Each table was converted to an Excel worksheet..." with a
+# Numbers-sheet-name -> Excel-worksheet-name mapping table. No real
+# physician submission would ever be named this. Confirmed twice against
+# real submissions (Samoraj, Mrochuk) -- in both cases the actual
+# preference grid was the sheet immediately after this one.
+_NUMBERS_EXPORT_SUMMARY_SHEET_NAME = "Export Summary"
+
+
+def _first_real_worksheet(wb):
+    """
+    The worksheet import_single_file should actually parse -- normally
+    just the first one, but skips a leading "Export Summary" cover sheet
+    left behind by an Apple Numbers export, which otherwise gets silently
+    parsed as if it were the submission (empty name, no dates, nothing --
+    not an error, just wrong data flowing through as if the physician
+    submitted blank).
+    """
+    for ws in wb.worksheets:
+        if ws.title.strip() != _NUMBERS_EXPORT_SUMMARY_SHEET_NAME:
+            return ws
+    return wb.worksheets[0]
+
+
 # --------------------------------------------------------------------------- #
 # Public API
 # --------------------------------------------------------------------------- #
@@ -300,7 +350,7 @@ def import_single_file(
     """
     path = Path(path)
     wb = openpyxl.load_workbook(path, data_only=True)
-    ws = wb.worksheets[0]
+    ws = _first_real_worksheet(wb)
     return _parse_worksheet(
         ws=ws,
         year=year,

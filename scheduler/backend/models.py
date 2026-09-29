@@ -63,6 +63,18 @@ class DayAvailability:
     requested_shifts: frozenset[str] = field(default_factory=frozenset)
     doc_available: bool = False   # physician listed DOC (day on call) for this day
     noc_available: bool = False   # physician listed NOC (night on call) for this day
+    # Specific shift code(s) this physician marked as their actual
+    # preferred pick for this day, in the sheet's "Preferred" row --
+    # distinct from requested_shifts, which is everything they're merely
+    # available for. Almost always 0 or 1 code; can be 2 when the sheet's
+    # own shorthand is ambiguous between two sites at the same time (e.g.
+    # "18RA" printed identically for both 1800h RAH A side and 1800h RAH B
+    # side) -- in that case both are kept as candidates rather than
+    # guessing which one was meant. Currently only populated by the
+    # per-physician xlsx importer (importer.py); sked's own web grid has
+    # an equivalent "desirable" mark (grid state 2) that isn't wired into
+    # this yet -- a deliberate follow-up, not an oversight.
+    preferred_shifts: frozenset[str] = field(default_factory=frozenset)
 
     # ------------------------------------------------------------------ #
     # Derived properties used by the validator

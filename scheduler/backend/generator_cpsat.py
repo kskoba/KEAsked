@@ -563,8 +563,36 @@ class CpsatScheduleGenerator:
             # a noon-or-later start the day after that. Both loops share the
             # same is_next_shift_ok() so the actual day counts/threshold
             # only need to change in one place (shifts.py).
+            #
+            # The gap==2 branch of is_next_shift_ok() is an unconditional
+            # "return False" -- it was written assuming day d_idx+1 sits
+            # empty between the two shifts being compared (the rest day a
+            # late shift is supposed to buy). It doesn't know day d_idx+1
+            # might itself be WORKED with a shift that continues the same
+            # late-shift chain (e.g. a run of consecutive 2400h nights) --
+            # in that case gap=1 rules between d_idx/d_idx+1 and between
+            # d_idx+1/d_idx+2 already fully govern the rest requirement, and
+            # this skip-ahead pairwise check becomes a false conflict.
+            # Confirmed as a real bug, not theoretical: forcing KLam (or any
+            # physician) into any 3+-night consecutive run always came back
+            # INFEASIBLE, even solo/uncontested with every other constraint
+            # relaxed -- traced to exactly this, e.g. a night on day 13 and
+            # a night on day 15 hard-conflicting via this gap==2 pair check
+            # despite day 14 (also a night) making that conflict spurious.
+            # Waiving the rule whenever day d_idx+1 is worked at all is safe:
+            # given shift1 is late, the only shift that can legally occupy
+            # d_idx+1 is itself another late/night shift (anything else
+            # would already violate the plain 23h gap==1 check above), so
+            # "d_idx+1 worked" already implies the chain-continuation case
+            # this rule was never meant to catch.
             for gap in (2, 3):
                 for d_idx in range(len(all_dates) - gap):
+                    between_day_worked = sum(
+                        shifts[(pid, d_between, shift.code)]
+                        for d_between in range(d_idx + 1, d_idx + gap)
+                        for block in BLOCKS
+                        for shift in block
+                    )
                     for block1 in BLOCKS:
                         for shift1 in block1:
                             if shift1.start_hour < _LATE_SHIFT_MIN_START_HOUR:
@@ -574,7 +602,8 @@ class CpsatScheduleGenerator:
                                     if not is_next_shift_ok(shift1, gap, shift2):
                                         model.add(
                                             shifts[(pid, d_idx, shift1.code)]
-                                            + shifts[(pid, d_idx + gap, shift2.code)] <= 1
+                                            + shifts[(pid, d_idx + gap, shift2.code)]
+                                            <= 1 + between_day_worked
                                         )
 
         # ----------------------------------------------------------------
@@ -820,6 +849,36 @@ class CpsatScheduleGenerator:
                     night_chain_ramp_in_terms.append(
                         _NIGHT_CHAIN_PREFERRED_RAMPIN_BONUS * got_preferred
                     )
+
+        # ----------------------------------------------------------------
+        # Soft: prefer_clustered_nights (PhysicianConfig.prefer_clustered_nights,
+        # e.g. KLam). Rewards actually completing a night-shift run of this
+        # physician's own full max_consecutive_nights length -- the generic
+        # pair-clustering bonus below (weekend_clump_penalty_terms is a
+        # different thing; see the "+18 per consecutive 2400h pair" term in
+        # the objective composite) applies to everyone already but wasn't
+        # assertive enough on its own to reliably produce full-length runs
+        # over several separate short ones in a large joint solve. Since
+        # HC-13 hard-caps any run at max_consecutive_nights, a run can
+        # never be longer than that -- so there's exactly one qualifying
+        # window per maximal run, never double-counted.
+        # ----------------------------------------------------------------
+        _CLUSTERED_NIGHTS_BONUS = 45
+        clustered_nights_bonus_terms: list = []
+        night_shifts_all = [s for s in all_shifts_list if s.time == "2400h"]
+        for pid in pids:
+            cfg = _get_cfg(pid)
+            if not (cfg and cfg.prefer_clustered_nights):
+                continue
+            max_nights = cfg.max_consecutive_nights
+            if max_nights < 2 or max_nights > len(all_dates):
+                continue
+            for start in range(len(all_dates) - max_nights + 1):
+                full_run = model.new_bool_var(f"fullnightrun_{pid}_{start}")
+                for d_idx in range(start, start + max_nights):
+                    night_var = sum(shifts[(pid, d_idx, s.code)] for s in night_shifts_all)
+                    model.add(full_run <= night_var)
+                clustered_nights_bonus_terms.append(_CLUSTERED_NIGHTS_BONUS * full_run)
 
         # ----------------------------------------------------------------
         # HC-10: Same-shift-code on adjacent days forbidden
@@ -1869,6 +1928,7 @@ class CpsatScheduleGenerator:
         objective_terms.extend(prefer_weekend_bonus_terms)
         objective_terms.extend(prefer_weekend_gap_penalty_terms)
         objective_terms.extend(night_chain_ramp_in_terms)
+        objective_terms.extend(clustered_nights_bonus_terms)
 
         # ----------------------------------------------------------------
         # Lexicographic priority tiers (only when casual physicians exist in

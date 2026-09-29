@@ -475,6 +475,12 @@ export default function RosterEditor() {
                   hint="Relaxes a hard rule — normally every 2400h night must be part of a 2+ day run; this lets a single isolated night stand alone for them."
                 />
                 <CheckboxField
+                  label="Prefer clustered nights"
+                  checked={form.prefer_clustered_nights}
+                  onChange={(v) => setField('prefer_clustered_nights', v)}
+                  hint="Opposite of singleton nights — specifically rewards a night run reaching their own Max consecutive nights value in full, not just any adjacent pair."
+                />
+                <CheckboxField
                   label="No call (DOC/NOC)"
                   checked={form.no_call}
                   onChange={(v) => setField('no_call', v)}

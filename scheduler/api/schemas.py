@@ -455,6 +455,7 @@ class PhysicianDetail(BaseModel):
     max_weekends: Optional[int] = None
     honor_all_requests: bool = False
     prefer_singleton_nights: bool = False
+    prefer_clustered_nights: bool = False
     forbidden_shift_times: list[str] = []
     no_call: bool = False
     avoid_mondays: bool = False

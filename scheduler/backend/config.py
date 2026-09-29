@@ -165,6 +165,27 @@ class PhysicianConfig:
     # (i.e. singleton midnight shifts are acceptable / preferred).
     prefer_singleton_nights: bool = False
 
+    # Opposite of prefer_singleton_nights: if True, the solver specifically
+    # rewards a night-shift run that reaches this physician's own full
+    # max_consecutive_nights length, not just any adjacent pair. Added for
+    # KLam (2026-09-29), who wants 4 consecutive 2400h nights rather than
+    # shorter clusters. The generic pair-clustering bonus everyone already
+    # gets isn't always assertive enough on its own to prefer a full-length
+    # run over several shorter ones, so this adds a direct, larger bonus
+    # for physicians who've said the full run is what they want.
+    #
+    # A genuine hard-constraint bug (now fixed, see HC-9's gap==2/3 loop in
+    # generator_cpsat.py) used to make ANY 3+-night consecutive run
+    # mathematically infeasible for every physician -- the gap-2 "late
+    # shift forces a rest day" check didn't account for the day in between
+    # itself being a continuing night shift. If a physician with this flag
+    # still isn't landing full-length runs in a real joint solve, that's
+    # now a weight-tuning question (this bonus losing out to other
+    # objective terms, e.g. prefer_weekends day-specific incentives), not
+    # a structural infeasibility -- confirm with a solo/uncontested test
+    # before assuming otherwise.
+    prefer_clustered_nights: bool = False
+
     # Shift-time restrictions: physician may never be assigned shifts at these
     # start times (e.g. ["0600h", "2400h"]).
     forbidden_shift_times: list[str] = field(default_factory=list)
@@ -383,6 +404,11 @@ def describe_physician_facing_rules(cfg: "PhysicianConfig") -> list[str]:
         )
     if cfg.prefer_singleton_nights:
         items.append("You prefer isolated single night shifts rather than several in a row.")
+    if cfg.prefer_clustered_nights:
+        items.append(
+            f"You've indicated you prefer a full run of {cfg.max_consecutive_nights} 2400h (night) shifts "
+            "in a row over shorter, separate clusters — the scheduler specifically rewards completing the full run."
+        )
     if cfg.no_call:
         items.append("You're never assigned on-call (DOC/NOC) shifts.")
     if cfg.avoid_weekday:
@@ -526,6 +552,7 @@ def _parse_physician(raw: dict) -> PhysicianConfig:
         max_weekends=parsed_max_weekends,
         honor_all_requests=bool(sched.get("honor_all_requests", False)),
         prefer_singleton_nights=bool(sched.get("prefer_singleton_nights", False)),
+        prefer_clustered_nights=bool(sched.get("prefer_clustered_nights", False)),
         forbidden_shift_times=forbidden_shift_times,
         no_call=bool(sched.get("no_call", False)),
         avoid_mondays=bool(sched.get("avoid_mondays", False)),
@@ -630,6 +657,8 @@ def physician_config_to_raw(cfg: PhysicianConfig) -> dict:
         sched["honor_all_requests"] = True
     if cfg.prefer_singleton_nights:
         sched["prefer_singleton_nights"] = True
+    if cfg.prefer_clustered_nights:
+        sched["prefer_clustered_nights"] = True
     if cfg.forbidden_shift_times:
         sched["forbidden_shift_times"] = list(cfg.forbidden_shift_times)
     if cfg.no_call:

@@ -239,7 +239,18 @@ def _parse_worksheet(
         # nothing to resolve against and is silently ignored, not an error.
         preferred_raw = str(_cell(ws, _PREFERRED_ROW, col) or "").strip()
         preferred_shifts: set[str] = set()
-        if preferred_raw:
+        if preferred_raw.upper() == "N":
+            # Bare "N" is a different, coarser convention some physicians
+            # use for "a night shift, any site" rather than a specific
+            # site+time code (confirmed against a real submission,
+            # RScheirer, 2026-09-29). Every 2400h code he's actually
+            # available for that day is kept as a candidate -- same
+            # "don't guess a single site" principle as the site-ambiguous
+            # case below, just starting from a coarser signal.
+            preferred_shifts = {
+                shift_code for shift_code in available_shifts if shift_code.startswith("2400h")
+            }
+        elif preferred_raw:
             for row, shift_code in _ROW_TO_SHIFT_CODE.items():
                 cell_text = str(_cell(ws, row, col) or "").strip()
                 if cell_text and cell_text.upper() == preferred_raw.upper():

@@ -827,7 +827,12 @@ def update_physician(physician_id: str, body: PhysicianUpdateRequest) -> Physici
         no_call=body.no_call,
         avoid_mondays=body.avoid_mondays,
         rest_after_late_shift=body.rest_after_late_shift,
-        max_consecutive_1800h=body.max_consecutive_1800h,
+        # No longer an independent roster-editor field -- 1800h-in-a-row
+        # always tracks max_consecutive_shifts (SIAR) now, per 2026-09-29
+        # annual survey import. body.max_consecutive_1800h is stale/unedited
+        # form state at this point (the input was removed from the UI), so
+        # it's never read here.
+        max_consecutive_1800h=body.max_consecutive_shifts,
         cap_at_requested=body.cap_at_requested,
         special_provisions=body.special_provisions,
         casual=body.casual,

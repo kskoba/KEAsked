@@ -375,11 +375,6 @@ export default function RosterEditor() {
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <IntegerField
-                    label="Max consecutive 1800h"
-                    value={form.max_consecutive_1800h}
-                    onChange={(v) => setField('max_consecutive_1800h', v)}
-                  />
-                  <IntegerField
                     label="Max weekends (blank = no cap)"
                     value={form.max_weekends}
                     onChange={(v) => setField('max_weekends', v)}

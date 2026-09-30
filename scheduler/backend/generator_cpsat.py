@@ -1357,8 +1357,21 @@ class CpsatScheduleGenerator:
         #       off. Only applies to clusters with all 3 days in range —
         #       a month-boundary cluster missing Fri or Sun has no "gap" to
         #       speak of.
-        # Both weights are a first pass, not re-tuned against real data yet
-        # like the older weekend terms above -- revisit once tested.
+        #
+        # Both (a) and (b) are skipped for a physician who ALSO has
+        # prefer_clustered_nights set (only KLam today) -- confirmed on
+        # real data that the per-shift weekend reward directly fights
+        # completing a full-length night run: with every shift a 2400h
+        # night, the solver found it more lucrative to touch nearly every
+        # weekend cluster via short 2-night pairs (repeated +80 hits) than
+        # to complete fewer, longer runs at his own max_consecutive_nights
+        # length (a one-time +45 each). Explicit guidance: 4-day blocks
+        # matter more than weekend coverage for a physician in that
+        # position -- don't penalize hitting every weekend (still waived
+        # above), but don't push toward it either. A physician with
+        # prefer_weekends alone (no competing clustering goal) keeps the
+        # full push exactly as before -- this is a narrow, targeted
+        # exemption for the specific conflict, not a general weakening.
         # ----------------------------------------------------------------
         _PREFER_WEEKEND_SHIFT_BONUS = 80
         # Must beat 2x the shift bonus -- a gap earns the solver two
@@ -1372,6 +1385,8 @@ class CpsatScheduleGenerator:
         for pid in pids:
             cfg = _get_cfg(pid)
             if not (cfg and cfg.prefer_weekends):
+                continue
+            if cfg.prefer_clustered_nights:
                 continue
             for d_idx, d in enumerate(all_dates):
                 if d.weekday() not in _WEEKEND_WEEKDAYS:

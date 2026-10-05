@@ -250,14 +250,31 @@ class PhysicianConfig:
     # no override; use whatever the submission reports, as normal.
     default_shifts_requested: Optional[int] = None
 
-    # Number of real people sharing this single roster identity (e.g.
-    # LamRico = Kenneth Lam + Michelle Rico, each submitting their own
-    # identical-values sheet under aliases that both resolve to this one
-    # id). Only one submission survives import-time id resolution, so its
-    # shifts_requested/min/max are multiplied by this factor to reflect the
-    # combined capacity of every person behind the identity. 1 (default)
-    # means a normal single-person identity — no scaling.
+    # Number of real people sharing this single roster identity, when
+    # they submit under aliases that both resolve to this ONE id (so only
+    # one submission survives import-time id resolution, and its
+    # shifts_requested/min/max need multiplying by this factor to reflect
+    # everyone behind the identity). 1 (default) means normal, no scaling.
+    # Not the mechanism for KLam/MRico specifically — they're two separate
+    # roster ids now, each submitting their own real (non-duplicate) sheet
+    # with their own share of the total; see combined_with below for that
+    # case. This field stays for the narrower case of a genuinely single,
+    # aliased identity, which nothing in the real roster currently uses.
     combined_headcount: int = 1
+
+    # This physician's submission represents a share of a position also
+    # filled by the named OTHER physician_id, and should never be
+    # separately scheduled. When both submit for the same month,
+    # server.py's _apply_combined_submissions sums their shift-count
+    # fields and unions their day-by-day availability into the target
+    # physician's submission, then drops this one. Set on the inactive/
+    # secondary member only (e.g. MRico.combined_with = "KLam") — the
+    # active target physician itself leaves this unset. Confirmed real
+    # case (2026-10, January): KLam and MRico each submitted their own
+    # file requesting 8 shifts; the combined position wants the sum, 16,
+    # scheduled across the union of both their marked availability, not
+    # just whichever file's id happened to resolve as "the" submission.
+    combined_with: Optional[str] = None
 
     # Multiplier on this physician's requested-count scheduling priority
     # (see generator_cpsat.py's per-physician requested-count bonus). 1.0
@@ -593,6 +610,9 @@ def _parse_physician(raw: dict) -> PhysicianConfig:
             else None
         ),
         combined_headcount=int(sched.get("combined_headcount", 1)),
+        combined_with=(
+            str(sched["combined_with"]) if sched.get("combined_with") is not None else None
+        ),
         priority_weight=float(sched.get("priority_weight", 1.0)),
         anchor_preference=(
             sched["anchor_preference"]
@@ -707,6 +727,8 @@ def physician_config_to_raw(cfg: PhysicianConfig) -> dict:
         sched["default_shifts_requested"] = cfg.default_shifts_requested
     if cfg.combined_headcount != 1:
         sched["combined_headcount"] = cfg.combined_headcount
+    if cfg.combined_with:
+        sched["combined_with"] = cfg.combined_with
     if cfg.priority_weight != 1.0:
         sched["priority_weight"] = cfg.priority_weight
     if cfg.anchor_preference in ("2400h", "0600h"):

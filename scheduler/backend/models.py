@@ -198,6 +198,20 @@ class PhysicianSubmission:
     # potentially assigned to the wrong day of the week.
     month_mismatch: bool = False
 
+    def __post_init__(self) -> None:
+        # shifts_max is supposed to be an upper bound on shifts_requested
+        # (the sheet's own rule: shifts_max <= shifts_requested + 2, see
+        # the docstring above) -- but a real submission can still state a
+        # max BELOW its own requested count (confirmed, January 2027:
+        # KLam and MRico each had requested=8, max=7). A hard floor below
+        # the target is nonsensical -- raise max to match requested rather
+        # than let shifts_max silently undercut it downstream. Applied
+        # once here, not per-importer, so every submission gets it
+        # regardless of source (xlsx, flat file, sked, a merged/combined
+        # submission, or a synthetic one).
+        if self.shifts_max < self.shifts_requested:
+            self.shifts_max = self.shifts_requested
+
 
 @dataclass
 class ValidationIssue:

@@ -243,6 +243,65 @@ ALL_SHIFT_CODES: frozenset[str] = frozenset(SHIFT_TO_BLOCK.keys())
 # Anchor blocks: 0600h (index 0) and 2400h (index 4)
 ANCHOR_BLOCK_INDICES: frozenset[int] = frozenset({0, 4})
 
+
+# --------------------------------------------------------------------------- #
+# Export/display shape — the grid layout used by both the xlsx export
+# (server.py's _build_export_workbook/_parse_schedule_xlsx) and the master
+# Google Sheet push/read-back (google_sheets_client.py/
+# sheets_schedule_reader.py). Lives here, not in server.py, specifically so
+# a second reader/writer can import it without a circular import back into
+# server.py — this is display/row-layout knowledge, not request-handling
+# logic, so it belongs with the rest of the shift domain data.
+# --------------------------------------------------------------------------- #
+
+# (site_label, time_label, time_code, site_code) — site_label/time_label are
+# the row headers a human reads (xlsx or the department's real Sheet);
+# time_code+site_code combine to a real Shift.code. (None, None) marks the
+# two on-call sentinel rows (DOC/NOC), which carry no Shift object.
+EXPORT_SHIFTS: list[tuple[str, str, str | None, str | None]] = [
+    ("DOC",       "0500-1559",  None,     None),           # Day on call row — same hour range the human schedule uses
+    ("RAH A",     "0600-1200",  "0600h",  "RAH A side"),
+    ("RAH B",     "0600-1200",  "0600h",  "RAH B side"),
+    ("NECHC",     "0600-1400",  "0600h",  "NEHC"),
+    ("RAH I",     "0600-1400",  "0600h",  "RAH I side"),
+    ("NECHC",     "0900-1700",  "0900h",  "NEHC"),
+    ("RAH I",     "1000-1800",  "1000h",  "RAH I side"),
+    ("RAH A",     "1200-1800",  "1200h",  "RAH A side"),
+    ("RAH B",     "1200-1800",  "1200h",  "RAH B side"),
+    ("NECHC",     "1200-2000",  "1200h",  "NEHC"),
+    ("RAH I",     "1400-2200",  "1400h",  "RAH I side"),
+    ("NECHC",     "1500-2300",  "1500h",  "NEHC"),
+    ("NOC",       "1600-0459",  None,     None),           # Night on call row — same hour range the human schedule uses
+    ("RAH Float", "1600-0459",  "1600h",  "RAH F side"),
+    ("NECHC",     "1700-0100",  "1700h",  "NEHC"),
+    ("RAH A",     "1800-0000",  "1800h",  "RAH A side"),
+    ("RAH B",     "1800-0000",  "1800h",  "RAH B side"),
+    ("RAH I",     "1800-0200",  "1800h",  "RAH I side"),
+    ("NECHC",     "2000-0400",  "2000h",  "NEHC"),
+    ("RAH A",     "2400-0600",  "2400h",  "RAH A side"),
+    ("RAH B",     "2400-0600",  "2400h",  "RAH B side"),
+    ("NECHC",     "2400-0800",  "2400h",  "NEHC"),
+    ("RAH I",     "2400-0800",  "2400h",  "RAH I side"),
+]
+
+# Reverse lookup: (site_label, time_label) -> (time_code, site_code)
+EXPORT_SHIFT_LOOKUP: dict[tuple[str, str], tuple[str | None, str | None]] = {
+    (site_label, time_label): (time_code, site_code)
+    for site_label, time_label, time_code, site_code in EXPORT_SHIFTS
+}
+# Back-compat: files exported before on-call rows carried a real hour range
+# used the literal label as the time row. Keep these loadable.
+EXPORT_SHIFT_LOOKUP[("DOC", "Day On Call")] = (None, None)
+EXPORT_SHIFT_LOOKUP[("NOC", "Night On Call")] = (None, None)
+
+# Flat shift-code -> Shift object lookup (used by the xlsx loader and the
+# master-sheet reader).
+SHIFT_CODE_LOOKUP: dict[str, Shift] = {
+    shift.code: shift
+    for block in BLOCKS
+    for shift in block
+}
+
 # Pre-computed per-group shift sets (used by the scheduler)
 SHIFTS_BY_GROUP: dict[SiteGroup, frozenset[str]] = {
     group: frozenset(

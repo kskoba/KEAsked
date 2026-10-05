@@ -55,6 +55,11 @@ from scheduler.api.schemas import (
     RemovePhysicianResponse,
     ImportDirectoryResponse,
     LoadScheduleRequest,
+    GoogleSheetsStatusResponse,
+    PushToMasterSheetRequest,
+    PushToMasterSheetResponse,
+    PushResultDetail,
+    LoadFromMasterSheetRequest,
     OverrideAllRequest,
     OverrideLogItem,
     OverrideLogResponse,
@@ -101,6 +106,8 @@ import os
 from scheduler.backend import bytebloc as bytebloc_mod
 from scheduler.backend import email_sender
 from scheduler.backend import sked_client
+from scheduler.backend import google_sheets_client
+from scheduler.backend import sheets_schedule_reader
 from scheduler.backend.config import (
     CALL_LINKAGE_VALUES,
     GROUP_B_PREFS,
@@ -132,7 +139,15 @@ except Exception:  # pragma: no cover
 from scheduler.backend.importer import import_directory, import_single_file
 from scheduler.backend.importer_flat import import_flat_file
 from scheduler.backend.models import DayAvailability, PhysicianSubmission, ValidationIssue
-from scheduler.backend.shifts import ALL_SHIFT_CODES, BLOCKS, SHIFT_TO_BLOCK, Shift
+from scheduler.backend.shifts import (
+    ALL_SHIFT_CODES,
+    BLOCKS,
+    SHIFT_TO_BLOCK,
+    Shift,
+    EXPORT_SHIFTS as _EXPORT_SHIFTS,
+    EXPORT_SHIFT_LOOKUP as _EXPORT_SHIFT_LOOKUP,
+    SHIFT_CODE_LOOKUP as _SHIFT_CODE_LOOKUP,
+)
 
 
 def _display_name(cfg) -> str:
@@ -447,6 +462,72 @@ def _apply_roster(submissions: list[PhysicianSubmission], roster: dict) -> set[s
             # else: sub is a lower-scoring duplicate — silently dropped
     submissions[:] = ordered
     return unresolved
+
+
+def _apply_combined_submissions(submissions: list[PhysicianSubmission], roster: dict) -> None:
+    """
+    Merge a physician's submission into another physician's when
+    physicians.yaml says they're a shared position (see
+    PhysicianConfig.combined_with) -- e.g. KLam and MRico each submit
+    their own share of the same role's total. Must run right after
+    _apply_roster (physician_id already resolved to a real roster id,
+    duplicates already dropped) and before any shift-count/casual
+    overrides, so everything downstream sees one already-merged
+    submission per shared position, never two competing ones.
+
+    Merging sums the shift-count fields (requested/min/max, and
+    2400h/0600h counts whenever either side actually stated them) into
+    the target physician's submission, and takes a day-by-day UNION of
+    availability (wants_to_work, available_blocks, requested_shifts,
+    doc_available, noc_available, preferred_shifts) -- either person
+    being willing/able to work a slot makes it available to the combined
+    position. The secondary physician's own submission is then dropped
+    from `submissions` entirely; they are never separately scheduled.
+    Confirmed real case (2026-10, January): KLam and MRico each submitted
+    8 requested shifts for the same month -- the combined position wants
+    the sum, 16, scheduled across the union of both their marked
+    availability, not just whichever file happened to resolve as the
+    "real" one (the prior bug: both survived as two fully independent,
+    separately-scheduled physicians, each only reflecting their own
+    half).
+    """
+    by_pid = {s.physician_id: s for s in submissions}
+    for pid, sub in list(by_pid.items()):
+        cfg = roster.get(pid)
+        target_pid = cfg.combined_with if cfg else None
+        if not target_pid or target_pid not in by_pid:
+            continue
+        target = by_pid[target_pid]
+
+        target.shifts_requested += sub.shifts_requested
+        target.shifts_min += sub.shifts_min
+        target.shifts_max += sub.shifts_max
+        if sub.shifts_2400h_stated:
+            target.shifts_2400h_requested += sub.shifts_2400h_requested
+            target.shifts_2400h_stated = True
+        if sub.shifts_0600h_stated:
+            target.shifts_0600h_requested += sub.shifts_0600h_requested
+            target.shifts_0600h_stated = True
+
+        days_by_date = {d.date: d for d in target.days}
+        for day in sub.days:
+            existing = days_by_date.get(day.date)
+            if existing is None:
+                target.days.append(day)
+                continue
+            existing.wants_to_work = existing.wants_to_work or day.wants_to_work
+            existing.available_blocks = existing.available_blocks | day.available_blocks
+            existing.requested_shifts = existing.requested_shifts | day.requested_shifts
+            existing.doc_available = existing.doc_available or day.doc_available
+            existing.noc_available = existing.noc_available or day.noc_available
+            existing.preferred_shifts = existing.preferred_shifts | day.preferred_shifts
+
+        # Re-apply PhysicianSubmission's own invariants (e.g. shifts_max
+        # >= shifts_requested) -- mutating fields directly above bypasses
+        # __post_init__, which only runs on construction.
+        target.__post_init__()
+
+        submissions.remove(sub)
 
 
 def _build_import_results(
@@ -934,12 +1015,12 @@ def update_physician(physician_id: str, body: PhysicianUpdateRequest) -> Physici
             detail=f"Invalid avoid_weekday {body.avoid_weekday!r}. Valid values: {sorted(WEEKDAY_VALUES)}",
         )
 
-    # default_shifts_requested / combined_headcount / priority_weight /
-    # float_shift_target aren't exposed in the roster editor's form, so they
-    # must be carried forward from the existing config rather than left to
-    # default away — otherwise any unrelated edit through the UI silently
-    # wipes them (confirmed: this is exactly what happened to MacGougan's
-    # default_shifts_requested).
+    # default_shifts_requested / combined_headcount / combined_with /
+    # priority_weight / float_shift_target aren't exposed in the roster
+    # editor's form, so they must be carried forward from the existing
+    # config rather than left to default away — otherwise any unrelated
+    # edit through the UI silently wipes them (confirmed: this is exactly
+    # what happened to MacGougan's default_shifts_requested).
     existing = roster[physician_id]
 
     cfg = PhysicianConfig(
@@ -987,6 +1068,7 @@ def update_physician(physician_id: str, body: PhysicianUpdateRequest) -> Physici
         rule_overrides=dict(body.rule_overrides),
         default_shifts_requested=existing.default_shifts_requested,
         combined_headcount=existing.combined_headcount,
+        combined_with=existing.combined_with,
         priority_weight=existing.priority_weight,
         anchor_preference=existing.anchor_preference,
         float_shift_target=existing.float_shift_target,
@@ -1189,6 +1271,7 @@ def import_submissions(body: ImportRequest) -> ImportDirectoryResponse:
 
     _state["overrides"] = {}
     unresolved = _apply_roster(submissions, roster)
+    _apply_combined_submissions(submissions, roster)
     _auto_override_flagged_physicians(submissions, roster)
     _apply_shift_count_overrides(submissions, roster)
     _apply_casual_availability_default(submissions, roster)
@@ -1217,6 +1300,7 @@ def import_flat(body: ImportFlatRequest) -> ImportDirectoryResponse:
 
     _state["overrides"] = {}
     unresolved = _apply_roster(submissions, roster)
+    _apply_combined_submissions(submissions, roster)
     _auto_override_flagged_physicians(submissions, roster)
     _apply_shift_count_overrides(submissions, roster)
     _apply_casual_availability_default(submissions, roster)
@@ -1748,6 +1832,7 @@ def sked_import(body: SkedImportRequest) -> ImportDirectoryResponse:
 
         _state["overrides"] = {}
         unresolved = _apply_roster(submissions, roster)
+        _apply_combined_submissions(submissions, roster)
         _auto_override_flagged_physicians(submissions, roster)
         _apply_shift_count_overrides(submissions, roster)
         _apply_casual_availability_default(submissions, roster)
@@ -1913,6 +1998,176 @@ def resend_survey_link(body: ResendSurveyLinkRequest) -> ResendSurveyLinkRespons
         raise HTTPException(status_code=500, detail=str(exc))
 
     return ResendSurveyLinkResponse(ok=True, status="sent", detail=f"Sent to {cfg.email}.")
+
+
+# ---------------------------------------------------------------------------
+# Master Google Sheet integration — push an approved schedule into the
+# department's real shared monthly spreadsheet, or reopen a prior month
+# from it. See scheduler/backend/google_sheets_client.py /
+# sheets_schedule_reader.py and docs/physician-calendar-feed-design.md.
+#
+# "Push to Master Sheet" also pushes to sked's existing schedule_assignments
+# table (same call, see _push_result_to_master_sheet below) so the shared
+# Sheet and every physician's personal .ics calendar feed stay in sync from
+# one action.
+# ---------------------------------------------------------------------------
+
+
+def _result_to_sked_assignments(result: ScheduleResult) -> list[dict]:
+    """Wire-format payload for sked_client.push_schedule — see
+    docs/physician-calendar-feed-design.md's _result_to_schedule_payload sketch."""
+    out = [
+        {
+            "physicianId": a.physician_id,
+            "date": a.date.isoformat(),
+            "kind": "shift",
+            "shiftTime": a.shift.time,
+            "shiftSite": a.shift.site,
+            "isManual": a.is_manual,
+        }
+        for a in result.assignments
+    ]
+    out += [
+        {
+            "physicianId": c.physician_id,
+            "date": c.date.isoformat(),
+            "kind": "on_call",
+            "callType": c.call_type,
+        }
+        for c in result.on_calls
+    ]
+    return out
+
+
+def _push_result_to_master_sheet(
+    result: ScheduleResult, config: google_sheets_client.GoogleSheetsConfig
+) -> tuple[int, str]:
+    """
+    Write result's physician-assignment cells into that month's master
+    spreadsheet (creating it, copying the previous month's file for
+    formatting if one exists, when none exists yet). Never writes the
+    header/date rows or the row directly below each shift row (the
+    department's learner-pairing row) — only physician-name cells.
+
+    Returns (cells_written, spreadsheet_url).
+    """
+    file_id = google_sheets_client.find_month_file_id(config, result.year, result.month)
+    if not file_id:
+        prev_year, prev_month = result.year, result.month - 1
+        if prev_month == 0:
+            prev_year, prev_month = prev_year - 1, 12
+        copy_from = google_sheets_client.find_month_file_id(config, prev_year, prev_month)
+        file_id = google_sheets_client.create_month_file(
+            config, result.year, result.month, copy_from_file_id=copy_from
+        )
+
+    index: dict[tuple, str] = {(a.date, a.shift.code): a.physician_name for a in result.assignments}
+    call_index: dict[tuple, str] = {(oc.date, oc.call_type): oc.physician_name for oc in result.on_calls}
+
+    days_in_month = calendar.monthrange(result.year, result.month)[1]
+    all_dates = [datetime.date(result.year, result.month, d) for d in range(1, days_in_month + 1)]
+    weeks: list[list[datetime.date | None]] = []
+    first = all_dates[0]
+    week_start = first - datetime.timedelta(days=(first.weekday() + 1) % 7)
+    d = week_start
+    while d <= all_dates[-1]:
+        weeks.append([
+            (day if day.month == result.month else None)
+            for day in (d + datetime.timedelta(days=i) for i in range(7))
+        ])
+        d += datetime.timedelta(days=7)
+
+    col_letters = ["B", "C", "D", "E", "F", "G", "H"]
+    data: list[dict] = []
+    row = 1
+    for week_dates in weeks:
+        row += 2  # week header row + date row -- never written, assumed already correct
+        for site_label, time_label, time_code, site_code in _EXPORT_SHIFTS:
+            is_oncall = time_code is None
+            for col_letter, day in zip(col_letters, week_dates):
+                if day is None:
+                    continue
+                if is_oncall:
+                    name = call_index.get((day, site_label), "")
+                elif time_code and site_code:
+                    name = index.get((day, f"{time_code} {site_code}"), "")
+                else:
+                    continue
+                data.append({"range": f"{col_letter}{row}", "values": [[name]]})
+            row += 2  # physician-name row + the row below it (learner row — never written)
+        row += 1  # gap row between weeks
+
+    cells_written = google_sheets_client.write_ranges(config, file_id, data)
+    return cells_written, google_sheets_client.spreadsheet_url(file_id)
+
+
+@app.get("/api/google-sheets/status", response_model=GoogleSheetsStatusResponse)
+def google_sheets_status() -> GoogleSheetsStatusResponse:
+    """Whether the master Google Sheet connection is configured."""
+    config = google_sheets_client.load_google_sheets_config()
+    configured = config is not None and google_sheets_client.is_fully_configured(config)
+    return GoogleSheetsStatusResponse(configured=configured)
+
+
+@app.post("/api/google-sheets/push-schedule", response_model=PushToMasterSheetResponse)
+def push_schedule_to_master_sheet(body: PushToMasterSheetRequest) -> PushToMasterSheetResponse:
+    """
+    Push the active schedule to the master Google Sheet and to sked's
+    schedule_assignments table (one action, two independent results —
+    see module-level docstring above). Refuses to run unless
+    confirmation_text is exactly google_sheets_client.CONFIRMATION_PHRASE,
+    checked again here even though the UI should already have required it.
+    """
+    if body.confirmation_text != google_sheets_client.CONFIRMATION_PHRASE:
+        raise HTTPException(
+            status_code=400,
+            detail=f'Push refused: confirmation text must be exactly "{google_sheets_client.CONFIRMATION_PHRASE}".',
+        )
+
+    result: ScheduleResult | None = _state.get("result")
+    if result is None:
+        raise HTTPException(status_code=400, detail="No active schedule to push. Generate or load one first.")
+
+    sheet_config = google_sheets_client.load_google_sheets_config()
+    if sheet_config is None or not google_sheets_client.is_fully_configured(sheet_config):
+        sheet_result = PushResultDetail(ok=False, detail="Google Sheets integration is not configured.")
+        spreadsheet_url = None
+    else:
+        try:
+            cells, spreadsheet_url = _push_result_to_master_sheet(result, sheet_config)
+            sheet_result = PushResultDetail(ok=True, detail=f"Wrote {cells} cell(s).")
+        except google_sheets_client.GoogleSheetsApiError as exc:
+            sheet_result = PushResultDetail(ok=False, detail=str(exc))
+            spreadsheet_url = None
+
+    sked_config = sked_client.load_sked_config()
+    if sked_config is None or not sked_client.is_fully_configured(sked_config):
+        sked_result = PushResultDetail(ok=False, detail="sked integration is not configured.")
+    else:
+        try:
+            period_id = f"{result.year:04d}-{result.month:02d}"
+            sked_client.push_schedule(sked_config, period_id, _result_to_sked_assignments(result))
+            sked_result = PushResultDetail(ok=True, detail=f"Pushed to sked period {period_id!r}.")
+        except sked_client.SkedApiError as exc:
+            sked_result = PushResultDetail(ok=False, detail=str(exc))
+
+    return PushToMasterSheetResponse(sheet=sheet_result, sked=sked_result, spreadsheet_url=spreadsheet_url)
+
+
+@app.get("/api/google-sheets/load-schedule", response_model=ScheduleResponse)
+def load_schedule_from_master_sheet(year: int, month: int) -> ScheduleResponse:
+    """Read a month's master Sheet and make it the active schedule — same apply path as /api/load-schedule."""
+    config = google_sheets_client.load_google_sheets_config()
+    if config is None or not google_sheets_client.is_fully_configured(config):
+        raise HTTPException(status_code=503, detail="Google Sheets integration is not configured.")
+
+    roster = _get_or_load_roster()
+    try:
+        result = sheets_schedule_reader.parse_schedule_from_sheet(config, year, month, roster)
+    except sheets_schedule_reader.ScheduleSheetParseError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return _apply_loaded_schedule(result, roster)
 
 
 # ---------------------------------------------------------------------------
@@ -2203,33 +2458,12 @@ def export_schedule() -> StreamingResponse:
     )
 
 
-# Shift rows in display order: (site_label, time_label, time_code, site_code)
-# time_code/site_code == None means it is an on-call row filled from result.on_calls.
-_EXPORT_SHIFTS = [
-    ("DOC",       "0500-1559",  None,    None),           # Day on call row — same hour range the human schedule uses
-    ("RAH A",     "0600-1200",  "0600h",  "RAH A side"),
-    ("RAH B",     "0600-1200",  "0600h",  "RAH B side"),
-    ("NECHC",     "0600-1400",  "0600h",  "NEHC"),
-    ("RAH I",     "0600-1400",  "0600h",  "RAH I side"),
-    ("NECHC",     "0900-1700",  "0900h",  "NEHC"),
-    ("RAH I",     "1000-1800",  "1000h",  "RAH I side"),
-    ("RAH A",     "1200-1800",  "1200h",  "RAH A side"),
-    ("RAH B",     "1200-1800",  "1200h",  "RAH B side"),
-    ("NECHC",     "1200-2000",  "1200h",  "NEHC"),
-    ("RAH I",     "1400-2200",  "1400h",  "RAH I side"),
-    ("NECHC",     "1500-2300",  "1500h",  "NEHC"),
-    ("NOC",       "1600-0459",  None,  None),           # Night on call row — same hour range the human schedule uses
-    ("RAH Float", "1600-0459",  "1600h",  "RAH F side"),
-    ("NECHC",     "1700-0100",  "1700h",  "NEHC"),
-    ("RAH A",     "1800-0000",  "1800h",  "RAH A side"),
-    ("RAH B",     "1800-0000",  "1800h",  "RAH B side"),
-    ("RAH I",     "1800-0200",  "1800h",  "RAH I side"),
-    ("NECHC",     "2000-0400",  "2000h",  "NEHC"),
-    ("RAH A",     "2400-0600",  "2400h",  "RAH A side"),
-    ("RAH B",     "2400-0600",  "2400h",  "RAH B side"),
-    ("NECHC",     "2400-0800",  "2400h",  "NEHC"),
-    ("RAH I",     "2400-0800",  "2400h",  "RAH I side"),
-]
+# Shift rows in display order, and their reverse lookup for re-parsing — now
+# defined in shifts.py (EXPORT_SHIFTS/EXPORT_SHIFT_LOOKUP/SHIFT_CODE_LOOKUP,
+# imported above as _EXPORT_SHIFTS/_EXPORT_SHIFT_LOOKUP/_SHIFT_CODE_LOOKUP)
+# so the master-Sheet reader/writer (sheets_schedule_reader.py,
+# google_sheets_client.py) can reuse the exact same grid shape without a
+# circular import back into this module.
 
 _HDR_FILL  = PatternFill("solid", fgColor="1E293B")
 _HDR_FONT  = Font(bold=True, color="FFFFFF", size=9)
@@ -2355,24 +2589,6 @@ def _build_export_workbook(result: ScheduleResult) -> openpyxl.Workbook:
         row += 1
 
     return wb
-
-
-# Reverse lookup: (site_label, time_label) -> (time_code, site_code)
-_EXPORT_SHIFT_LOOKUP: dict[tuple[str, str], tuple] = {
-    (site_label, time_label): (time_code, site_code)
-    for site_label, time_label, time_code, site_code in _EXPORT_SHIFTS
-}
-# Back-compat: files exported before on-call rows carried a real hour range
-# used the literal label as the time row. Keep these loadable.
-_EXPORT_SHIFT_LOOKUP[("DOC", "Day On Call")] = (None, None)
-_EXPORT_SHIFT_LOOKUP[("NOC", "Night On Call")] = (None, None)
-
-# Flat shift-code -> Shift object lookup (used by xlsx loader)
-_SHIFT_CODE_LOOKUP: dict[str, Shift] = {
-    shift.code: shift
-    for block in BLOCKS
-    for shift in block
-}
 
 
 def _parse_schedule_xlsx(path: Path, roster: dict) -> ScheduleResult:
@@ -2542,34 +2758,16 @@ def _parse_schedule_xlsx(path: Path, roster: dict) -> ScheduleResult:
     )
 
 
-@app.post("/api/load-schedule", response_model=ScheduleResponse)
-def load_schedule(body: LoadScheduleRequest) -> ScheduleResponse:
+def _apply_loaded_schedule(result: ScheduleResult, roster: dict) -> ScheduleResponse:
     """
-    Load a previously exported schedule xlsx and make it the active schedule.
+    Make a parsed ScheduleResult (from any source -- an xlsx file via
+    _parse_schedule_xlsx, or the master Google Sheet via
+    sheets_schedule_reader.parse_schedule_from_sheet) the active schedule.
 
     Builds synthetic PhysicianSubmission objects (all days available) so that
     manual assignment and swap endpoints work without re-importing preferences.
     Constraint violations will still be reported as warnings.
     """
-    fp = Path(body.file)
-    if not fp.is_file():
-        raise HTTPException(status_code=400, detail=f"File not found: {body.file}")
-    if fp.suffix.lower() != ".xlsx":
-        raise HTTPException(status_code=400, detail="File must be an .xlsx file.")
-
-    roster = _state.get("roster") or {}
-    if not roster:
-        try:
-            roster = load_roster()
-            _state["roster"] = roster
-        except Exception:
-            roster = {}
-
-    try:
-        result = _parse_schedule_xlsx(fp, roster)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Failed to parse schedule: {exc}")
-
     # Validate month consistency with already-imported preferences
     existing_subs: list[PhysicianSubmission] = _state.get("submissions") or []
     if existing_subs:
@@ -2602,6 +2800,36 @@ def load_schedule(body: LoadScheduleRequest) -> ScheduleResponse:
         _state["scheduler_config"] = cfg
 
     return _result_to_response(result)
+
+
+def _get_or_load_roster() -> dict:
+    roster = _state.get("roster") or {}
+    if not roster:
+        try:
+            roster = load_roster()
+            _state["roster"] = roster
+        except Exception:
+            roster = {}
+    return roster
+
+
+@app.post("/api/load-schedule", response_model=ScheduleResponse)
+def load_schedule(body: LoadScheduleRequest) -> ScheduleResponse:
+    """Load a previously exported schedule xlsx and make it the active schedule."""
+    fp = Path(body.file)
+    if not fp.is_file():
+        raise HTTPException(status_code=400, detail=f"File not found: {body.file}")
+    if fp.suffix.lower() != ".xlsx":
+        raise HTTPException(status_code=400, detail="File must be an .xlsx file.")
+
+    roster = _get_or_load_roster()
+
+    try:
+        result = _parse_schedule_xlsx(fp, roster)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to parse schedule: {exc}")
+
+    return _apply_loaded_schedule(result, roster)
 
 
 @app.post("/api/assign", response_model=ManualAssignResponse)

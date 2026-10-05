@@ -139,12 +139,25 @@ class CpsatScheduleGenerator:
         submissions: list[PhysicianSubmission],
         roster: dict[str, PhysicianConfig],
         config: dict,
+        trailing_assignments: dict[str, list[tuple[datetime.date, Shift]]] | None = None,
     ) -> None:
         self.submissions: dict[str, PhysicianSubmission] = {
             s.physician_id: s for s in submissions
         }
         self.roster = roster
         self.config = config
+        # Known, fixed (not solver-decided) regular shifts each physician
+        # actually worked at the end of the previous month, keyed by
+        # physician_id -- sourced from the master-Sheet reader (see
+        # server.py's /api/generate route) so HC-8/HC-9/HC-13 can enforce
+        # SIAR/NIAR/rest-spacing across the month boundary instead of
+        # treating day 0 as if every physician starts the month fully
+        # rested. Empty/None is the default and behaves exactly as before
+        # this was added -- no trailing data means no cross-month
+        # constraints, not an error. On-call (DOC/NOC) shifts are
+        # deliberately excluded by the caller before this is passed in;
+        # HC-8/HC-9/HC-13 only ever reason about regular shifts.
+        self._trailing: dict[str, list[tuple[datetime.date, Shift]]] = trailing_assignments or {}
 
         # Config shortcuts (mirrors ScheduleGenerator.__init__)
         anchor_cfg = config.get("anchor_shifts", {})
@@ -311,6 +324,24 @@ class CpsatScheduleGenerator:
         all_shifts_flat = _all_shifts()
         shift_by_code = _shift_by_code()
         pids = list(self.submissions.keys())
+
+        # (pid, negative d_idx) -> Shift actually worked that many days
+        # before day 0, from self._trailing (previous month's real
+        # assignments) -- or absent if nothing is on record for that day
+        # (no prior-month data at all, or that day was simply off).
+        # d_idx=-1 is the day immediately before day 0, d_idx=-2 the day
+        # before that, etc. Built once per solve and reused by HC-8/HC-9/
+        # HC-9a/HC-13's cross-boundary extensions below.
+        _trailing_by_offset: dict[tuple[str, int], Shift] = {}
+        for pid, entries in self._trailing.items():
+            for entry_date, entry_shift in entries:
+                offset = (entry_date - all_dates[0]).days  # negative for a day before day 0
+                if offset < 0:
+                    _trailing_by_offset[(pid, offset)] = entry_shift
+
+        def _trailing_shift(pid: str, d_idx: int) -> Shift | None:
+            """The fixed shift physician pid worked at virtual day d_idx (< 0), if any."""
+            return _trailing_by_offset.get((pid, d_idx))
 
         # Signal "solving" at 50% before blocking on the solver
         if progress_callback:
@@ -495,6 +526,25 @@ class CpsatScheduleGenerator:
                                 window_vars.append(shifts[(pid, d_idx, shift.code)])
                     model.add(sum(window_vars) <= mc)
 
+            # Cross-month-boundary windows: every window whose span starts
+            # before day 0 and reaches into the new month, using the fixed
+            # trailing-fact count (a plain int, not a BoolVar) for any
+            # d_idx < 0 -- there is nothing to decide about a day that
+            # already happened. No-op when self._trailing has nothing for
+            # this physician (every term below is just 0).
+            if mc >= 1:
+                for start in range(-mc, 0):
+                    window_total = 0
+                    window_vars = []
+                    for d_idx in range(start, start + window_size):
+                        if d_idx < 0:
+                            window_total += 1 if _trailing_shift(pid, d_idx) is not None else 0
+                        else:
+                            for block in BLOCKS:
+                                for shift in block:
+                                    window_vars.append(shifts[(pid, d_idx, shift.code)])
+                    model.add(sum(window_vars) + window_total <= mc)
+
         # ----------------------------------------------------------------
         # HC-9: 23h spacing between adjacent-day shifts
         # For each pair of shifts on consecutive days (or 2-days-apart with
@@ -605,6 +655,42 @@ class CpsatScheduleGenerator:
                                             + shifts[(pid, d_idx + gap, shift2.code)]
                                             <= 1 + between_day_worked
                                         )
+
+            # Cross-month-boundary spacing: a late shift from the previous
+            # month (a fixed fact from self._trailing, not a decision) can
+            # still force day 0/1/2 blocked, exactly as an in-month late
+            # shift forces the days after it above. The trailing side is a
+            # known 0/1, so a violation becomes a direct model.add(... == 0)
+            # / model.add(... <= between_day_worked) rather than the
+            # two-variable <=1(+slack) pattern used when both sides are
+            # BoolVars.
+            def _day_worked_expr(d_idx: int):
+                if d_idx < 0:
+                    return 1 if _trailing_shift(pid, d_idx) is not None else 0
+                return sum(shifts[(pid, d_idx, s.code)] for block in BLOCKS for s in block)
+
+            prev_shift = _trailing_shift(pid, -1)
+            if prev_shift is not None:
+                for block2 in BLOCKS:
+                    for shift2 in block2:
+                        if not is_next_shift_ok(prev_shift, 1, shift2):
+                            model.add(shifts[(pid, 0, shift2.code)] == 0)
+
+            for gap in (2, 3):
+                for d_idx in range(-gap, 0):
+                    target = d_idx + gap
+                    if not (0 <= target < len(all_dates)):
+                        continue
+                    prev_shift = _trailing_shift(pid, d_idx)
+                    if prev_shift is None or prev_shift.start_hour < _LATE_SHIFT_MIN_START_HOUR:
+                        continue
+                    between_day_worked = sum(
+                        _day_worked_expr(d_between) for d_between in range(d_idx + 1, target)
+                    )
+                    for block2 in BLOCKS:
+                        for shift2 in block2:
+                            if not is_next_shift_ok(prev_shift, gap, shift2):
+                                model.add(shifts[(pid, target, shift2.code)] <= between_day_worked)
 
         # ----------------------------------------------------------------
         # HC-9a: Linked-rest pairs (scheduler_config.yaml's
@@ -1232,6 +1318,21 @@ class CpsatScheduleGenerator:
                         window_night_vars.extend(night_vars_by_day[d_idx])
                     model.add(sum(window_night_vars) <= max_nights)
 
+                # Cross-month-boundary windows — same pattern as HC-8 above:
+                # a trailing day before day 0 contributes a fixed 0/1 (was it
+                # a 2400h night?) instead of a BoolVar.
+                if max_nights >= 1:
+                    for start in range(-max_nights, 0):
+                        window_total = 0
+                        window_night_vars = []
+                        for d_idx in range(start, start + window_size):
+                            if d_idx < 0:
+                                trailing = _trailing_shift(pid, d_idx)
+                                window_total += 1 if (trailing is not None and trailing.time == "2400h") else 0
+                            else:
+                                window_night_vars.extend(night_vars_by_day[d_idx])
+                        model.add(sum(window_night_vars) + window_total <= max_nights)
+
         # ----------------------------------------------------------------
         # Objective function
         # Maximize: filled slots (primary) + soft bonuses
@@ -1707,6 +1808,10 @@ class CpsatScheduleGenerator:
         # is fine for them, but two nights with exactly one empty day
         # between them is not allowed for anyone).
         # ----------------------------------------------------------------
+        def _is_trailing_night(pid: str, d_idx: int) -> bool:
+            trailing = _trailing_shift(pid, d_idx)
+            return trailing is not None and trailing.time == "2400h"
+
         for pid in pids:
             pid_cfg = _get_cfg(pid)
             if not (pid_cfg and pid_cfg.prefer_singleton_nights):
@@ -1719,6 +1824,17 @@ class CpsatScheduleGenerator:
                         for off in (-1, 1)
                         if (pid, d_idx + off) in night_bool
                     ]
+                    # A trailing (pre-month) neighbor that was itself a
+                    # 2400h night already satisfies "has an adjacent
+                    # night" as a fixed fact -- no constraint needed for
+                    # this day at all, same as if an in-month neighbor
+                    # were forced to 1. Confirmed as a real gap, not
+                    # theoretical: without this, a physician who ends
+                    # December on a 2400h night can never legally start a
+                    # new night run on day 1 of January, since this check
+                    # only ever looked at in-month neighbors.
+                    if any(_is_trailing_night(pid, d_idx + off) for off in (-1, 1) if d_idx + off < 0):
+                        continue
                     if neighbors:
                         model.add(curr <= sum(neighbors))
 
@@ -1728,6 +1844,18 @@ class CpsatScheduleGenerator:
                 d2 = night_bool.get((pid, d_idx + 2))
                 if d0 is not None and d1 is not None and d2 is not None:
                     model.add(d0 + d2 <= 1 + d1)
+
+            # Cross-month-boundary triplets (d_idx in {-2, -1}): the same
+            # "never night / day-off / night" rule, with any pre-month leg
+            # a fixed 0/1 fact instead of a BoolVar.
+            for d_idx in (-2, -1):
+                d0_val = 1 if _is_trailing_night(pid, d_idx) else 0
+                d1_idx, d2_idx = d_idx + 1, d_idx + 2
+                d1 = (1 if _is_trailing_night(pid, d1_idx) else 0) if d1_idx < 0 else night_bool.get((pid, d1_idx))
+                d2 = (1 if _is_trailing_night(pid, d2_idx) else 0) if d2_idx < 0 else night_bool.get((pid, d2_idx))
+                if d1 is None or d2 is None:
+                    continue
+                model.add(d0_val + d2 <= 1 + d1)
 
         clustering_bonus_terms = []
         for pid in pids:

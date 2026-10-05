@@ -1,0 +1,52 @@
+# ============================================================
+# Google Sheets (master schedule) Integration — TEMPLATE
+# ============================================================
+# Copy this file to "google_sheets.yaml" in this same directory and fill
+# in the real values. google_sheets.yaml is gitignored (it points at a
+# credential file) — only this template is committed.
+#
+# This lets "Push to Master Sheet" write an approved generated schedule
+# into the department's real shared Google Sheet (one spreadsheet file
+# per month, e.g. "2026-09 - September 2026 RAH NECHC Master Schedule"),
+# and lets "Open from master sheet" read one of those months back into
+# KEAsked as the active schedule with the same swap/edit tools available
+# as any other load. A separate person enters learner (resident) pairings
+# by hand into these same files — the push/read code never writes or
+# reads that data; see google_sheets_client.py / sheets_schedule_reader.py.
+#
+# One-time setup (do this once, by hand, in Google Cloud Console on the
+# project under the same Google account that already sends KEAsked's
+# emails — see email.yaml):
+#   1. Enable the "Google Sheets API" and "Google Drive API" for that
+#      project (APIs & Services -> Enable APIs and Services).
+#   2. Create a Service Account (APIs & Services -> Credentials -> Create
+#      Credentials -> Service Account). Any name is fine, e.g.
+#      "keasked-master-schedule".
+#   3. Generate a JSON key for that service account (Keys -> Add Key ->
+#      Create new key -> JSON) and save it as
+#      scheduler/config/google_service_account.json (gitignored — never
+#      commit this file).
+#   4. In Google Drive, share the folder that holds the monthly schedule
+#      spreadsheet files with the service account's email address (looks
+#      like ...@<project>.iam.gserviceaccount.com) as Editor. Start by
+#      sharing a COPY of a real month's file in a throwaway folder while
+#      this integration is new — point drive_folder_id at the real shared
+#      folder only once a push + read-back has been verified end to end.
+#   5. Copy that folder's id out of its Drive URL (the long id after
+#      /folders/ in the address bar) into drive_folder_id below.
+# ============================================================
+
+# Path to the service-account JSON key from setup step 3 above. Relative
+# paths resolve against this same config directory.
+service_account_key_path: "google_service_account.json"
+
+# The Drive folder id (from the folder's URL) containing one spreadsheet
+# file per month. See setup step 4/5 above.
+drive_folder_id: ""
+
+# How each month's spreadsheet file is named, for finding/creating it.
+# {year} is 4-digit, {month:02d} is zero-padded, {month_name} is the full
+# English month name — matches the real file's observed naming exactly
+# ("2026-09 - September 2026 RAH NECHC Master Schedule"). Adjust if the
+# department's convention ever changes.
+file_name_pattern: "{year}-{month:02d} - {month_name} {year} RAH NECHC Master Schedule"

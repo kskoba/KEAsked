@@ -1,5 +1,5 @@
-import React from 'react'
-import { getApiBaseUrl } from '../api'
+import React, { useState, useEffect } from 'react'
+import { getApiBaseUrl, getGoogleSheetsStatus, pushToMasterSheet } from '../api'
 
 async function downloadExport() {
   const res = await fetch(`${getApiBaseUrl()}/api/export`)
@@ -15,7 +15,121 @@ async function downloadExport() {
   URL.revokeObjectURL(url)
 }
 
+function PushToMasterSheetModal({ onClose }) {
+  const [confirmText, setConfirmText] = useState('')
+  const [pushing, setPushing] = useState(false)
+  const [result, setResult] = useState(null) // null | { sheet, sked, spreadsheet_url }
+  const [error, setError] = useState(null)
+  const canPush = !pushing && !result && confirmText === 'CONFIRM'
+
+  async function handlePush() {
+    setPushing(true)
+    setError(null)
+    try {
+      const res = await pushToMasterSheet(confirmText)
+      setResult(res)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setPushing(false)
+    }
+  }
+
+  function ResultRow({ label, detail }) {
+    return (
+      <div className={`text-sm rounded-md px-3 py-2 border ${
+        detail.ok
+          ? 'text-emerald-800 bg-emerald-50 border-emerald-200'
+          : 'text-red-800 bg-red-50 border-red-200'
+      }`}>
+        <div className="font-medium mb-0.5">{label}: {detail.ok ? 'OK' : 'Failed'}</div>
+        <div className="text-xs">{detail.detail}</div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+      <div
+        className="bg-white rounded-xl shadow-xl border border-slate-200 w-full max-w-lg mx-4"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+          <h2 className="font-semibold text-slate-800 text-sm">Push to Master Sheet</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-lg leading-none">✕</button>
+        </div>
+
+        <div className="px-5 py-4 space-y-4">
+          {error && <p className="text-sm text-red-600">{error}</p>}
+
+          {!result && (
+            <>
+              <p className="text-sm text-slate-700">
+                This writes the active schedule's physician assignments into the
+                department's real shared Google Sheet for this month, and pushes
+                the same schedule to every physician's personal calendar feed.
+                It does not touch learner (resident) pairing cells. This cannot
+                be undone from here. Type <span className="font-mono font-semibold">CONFIRM</span> below to proceed.
+              </p>
+              <input
+                type="text"
+                value={confirmText}
+                onChange={(e) => setConfirmText(e.target.value)}
+                placeholder="Type CONFIRM"
+                className="w-full px-3 py-2 text-sm border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              />
+            </>
+          )}
+
+          {result && (
+            <div className="space-y-2">
+              <ResultRow label="Master Sheet" detail={result.sheet} />
+              <ResultRow label="sked calendar feed" detail={result.sked} />
+              {result.spreadsheet_url && (
+                <a
+                  href={result.spreadsheet_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-sm text-sky-600 hover:underline block"
+                >
+                  Open the spreadsheet →
+                </a>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-3 px-5 py-3 border-t border-slate-200">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50 transition-colors"
+          >
+            {result ? 'Close' : 'Cancel'}
+          </button>
+          {!result && (
+            <button
+              onClick={handlePush}
+              disabled={!canPush}
+              className="px-4 py-2 text-sm font-medium text-white bg-emerald-600 rounded-md hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {pushing ? 'Pushing…' : 'Push'}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function Header({ view, onBack, hasSchedule, onViewSchedule, onOpenSettings, onOpenRoster, onOpenIndividualSchedules, onOpenMonthlyRequests, onOpenSchedulingRules }) {
+  const [sheetsConfigured, setSheetsConfigured] = useState(null) // null while checking
+  const [showPushModal, setShowPushModal] = useState(false)
+
+  useEffect(() => {
+    getGoogleSheetsStatus()
+      .then((s) => setSheetsConfigured(s.configured))
+      .catch(() => setSheetsConfigured(false))
+  }, [])
   return (
     <header
       className="flex items-center justify-between px-6 py-3 shadow-md flex-shrink-0"
@@ -58,6 +172,17 @@ export default function Header({ view, onBack, hasSchedule, onViewSchedule, onOp
                 <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3" />
               </svg>
               Export .xlsx
+            </button>
+            <button
+              onClick={() => setShowPushModal(true)}
+              disabled={!sheetsConfigured}
+              className="flex items-center gap-2 px-4 py-1.5 rounded-md bg-emerald-700 hover:bg-emerald-600 text-white text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-emerald-700"
+              title={sheetsConfigured ? 'Push the active schedule to the master Google Sheet' : 'Master Sheet not configured — see scheduler/config/google_sheets_template.yaml'}
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M12 12v9m0-9l-3 3m3-3l3 3" />
+              </svg>
+              Push to Master Sheet
             </button>
             <button
               onClick={onOpenIndividualSchedules}
@@ -137,6 +262,8 @@ export default function Header({ view, onBack, hasSchedule, onViewSchedule, onOp
           </svg>
         </button>
       </div>
+
+      {showPushModal && <PushToMasterSheetModal onClose={() => setShowPushModal(false)} />}
     </header>
   )
 }

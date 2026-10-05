@@ -58,6 +58,12 @@ scheduler/config/bytebloc.yaml
 scheduler/config/email.yaml
 scheduler/config/sked.yaml
 
+# Sensitive config — has the Google service-account key path and the
+# shared master-schedule Drive folder id; only google_sheets_template.yaml
+# is committed. The service-account JSON key itself is also gitignored.
+scheduler/config/google_sheets.yaml
+scheduler/config/google_service_account.json
+
 # Real physician names, aliases, and personal scheduling restrictions —
 # only physicians_template.yaml is committed. (This was tracked in git
 # until 2026-09-11; still present in history — see the pending

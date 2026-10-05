@@ -198,6 +198,46 @@ def push_physician_rules(config: SkedConfig, physician_id: str, items: list[str]
         raise SkedApiError(f"Could not push rules summary for {physician_id!r}: {res.text}")
 
 
+def push_schedule(config: SkedConfig, period_id: str, assignments: list[dict]) -> None:
+    """
+    Push a full month's generated schedule to sked's schedule_assignments
+    table, which backs each physician's personal .ics calendar subscription
+    feed and live-view page (see docs/physician-calendar-feed-design.md).
+
+    assignments: [{"physicianId", "date" (ISO yyyy-mm-dd), "kind" ("shift"|
+    "on_call"), "shiftTime"?, "shiftSite"?, "callType"? ("DOC"|"NOC"),
+    "isManual"?}, ...]. Always the FULL set for period_id -- sked replaces
+    everything for that period atomically on each call (full-replace-per-
+    publish, not a per-row merge), so a partial list here would silently
+    drop assignments rather than leave them alone.
+    """
+    with httpx.Client(timeout=60) as client:
+        res = client.put(
+            f"{config.base_url}/api/admin/schedule",
+            headers=_headers(config),
+            json={"periodId": period_id, "assignments": assignments},
+        )
+    if res.status_code != 200:
+        raise SkedApiError(f"Could not push schedule for period {period_id!r}: {res.text}")
+
+
+def get_calendar_link(config: SkedConfig, physician_id: str) -> str:
+    """
+    Mint (or re-mint -- deterministic, no persistence needed on either
+    side) this physician's permanent calendar-feed link. Safe to call
+    repeatedly; the same physicianId always signs to the identical URL.
+    """
+    with httpx.Client(timeout=15) as client:
+        res = client.post(
+            f"{config.base_url}/api/admin/calendar-link",
+            headers=_headers(config),
+            json={"physicianId": physician_id},
+        )
+    if res.status_code != 200:
+        raise SkedApiError(f"Could not mint calendar link for {physician_id!r}: {res.text}")
+    return res.json()["url"]
+
+
 def fetch_physician_export(config: SkedConfig, physician_id: str, period_id: str) -> bytes:
     """
     Rebuild and download one physician's filled-preferences .xlsx for a period,

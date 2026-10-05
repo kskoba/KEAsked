@@ -308,6 +308,37 @@ export async function loadScheduleFromFile(file) {
 }
 
 /**
+ * Whether the master Google Sheet connection is configured.
+ * @returns {{ configured: boolean }}
+ */
+export async function getGoogleSheetsStatus() {
+  return request('GET', '/api/google-sheets/status')
+}
+
+/**
+ * Push the active schedule to the department's real master Google Sheet
+ * for its month, and to sked's per-physician calendar feed, in one call.
+ * Refuses unless confirmationText is exactly "CONFIRM" — pass through
+ * whatever the human typed, do not hardcode it here.
+ * @param {string} confirmationText
+ * @returns {{ sheet: {ok: boolean, detail: string}, sked: {ok: boolean, detail: string}, spreadsheet_url: string|null }}
+ */
+export async function pushToMasterSheet(confirmationText) {
+  return request('POST', '/api/google-sheets/push-schedule', { confirmation_text: confirmationText })
+}
+
+/**
+ * Read a month's master Google Sheet and make it the active schedule —
+ * same edit/swap tools available afterward as any other load.
+ * @param {number} year
+ * @param {number} month  1-based
+ * @returns {ScheduleResponse}
+ */
+export async function loadScheduleFromMasterSheet(year, month) {
+  return request('GET', `/api/google-sheets/load-schedule?year=${year}&month=${month}`)
+}
+
+/**
  * Fetch fresh candidates for an unfilled slot.
  * Hard-violation physicians are excluded entirely; soft violations are returned
  * as warnings on each candidate.

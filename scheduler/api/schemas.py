@@ -528,6 +528,34 @@ class LoadScheduleRequest(BaseModel):
     file: str               # absolute path to a previously exported schedule .xlsx
 
 
+# ---------------------------------------------------------------------------
+# Master Google Sheet — push an approved schedule / reopen a prior month
+# ---------------------------------------------------------------------------
+
+class GoogleSheetsStatusResponse(BaseModel):
+    configured: bool
+
+
+class PushToMasterSheetRequest(BaseModel):
+    confirmation_text: str   # must equal google_sheets_client.CONFIRMATION_PHRASE
+
+
+class PushResultDetail(BaseModel):
+    ok: bool
+    detail: str
+
+
+class PushToMasterSheetResponse(BaseModel):
+    sheet: PushResultDetail
+    sked: PushResultDetail
+    spreadsheet_url: str | None = None
+
+
+class LoadFromMasterSheetRequest(BaseModel):
+    year: int
+    month: int
+
+
 class OnCallCandidateSchema(BaseModel):
     physician_id: str
     physician_name: str

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { importSubmissions, importFlatFile, importFromSked, resendMonthlyRequest, getSkedPeriods, getPhysicianLink, generateSchedule, cancelGenerate, detectFlatMonth, getGenerateProgress, loadScheduleFromFile, getApiBaseUrl } from '../api'
+import { importSubmissions, importFlatFile, importFromSked, resendMonthlyRequest, getSkedPeriods, getPhysicianLink, generateSchedule, cancelGenerate, detectFlatMonth, getGenerateProgress, loadScheduleFromFile, loadScheduleFromMasterSheet, getApiBaseUrl } from '../api'
 
 // Whether the active backend is this machine or a remote one (e.g. a Docker
 // container on Unraid). The native file/folder picker only browses this
@@ -32,6 +32,7 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
   const [cancelling, setCancelling] = useState(false)
   const [timeLimitMinutes, setTimeLimitMinutes] = useState(10)
   const [loading, setLoading] = useState(false)   // for 'load' mode
+  const [loadSource, setLoadSource] = useState('file')  // 'load' mode: 'file' | 'sheet'
   // Preferences sub-section in 'load' mode
   const [prefPath, setPrefPath] = useState('')
   const [prefMode, setPrefMode] = useState('flat')  // 'flat' | 'directory'
@@ -90,7 +91,7 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
   }
 
   async function handleLoadSchedule() {
-    if (!path) return
+    if (loadSource === 'file' && !path) return
     setLoading(true)
     setLoadError(null)
     try {
@@ -108,7 +109,9 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
         }
       }
       // Step 2: load the schedule (backend validates month consistency)
-      const result = await loadScheduleFromFile(path)
+      const result = loadSource === 'sheet'
+        ? await loadScheduleFromMasterSheet(year, month)
+        : await loadScheduleFromFile(path)
       onScheduleLoaded(result)
     } catch (err) {
       setLoadError(err.message)
@@ -265,8 +268,54 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
           ))}
         </div>
 
-        {/* Path row (sked mode: period picker instead) */}
-        {mode === 'sked' ? (
+        {/* Load-source toggle — only in 'load' mode */}
+        {mode === 'load' && (
+          <div className="flex gap-1 mb-5 p-1 bg-slate-100 rounded-lg w-fit">
+            {[['file', 'From file'], ['sheet', 'From master sheet']].map(([val, label]) => (
+              <button
+                key={val}
+                onClick={() => { setLoadSource(val); setPath(''); setLoadError(null) }}
+                disabled={loading}
+                className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                  loadSource === val ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Path row (sked mode: period picker instead; load+sheet mode: month/year instead) */}
+        {mode === 'load' && loadSource === 'sheet' ? (
+          <div className="flex gap-4 mb-5">
+            <div className="flex-1">
+              <label className="block text-sm font-medium text-slate-700 mb-1">Month</label>
+              <select
+                value={month}
+                onChange={e => setMonth(Number(e.target.value))}
+                disabled={loading}
+                className="w-full px-3 py-2 rounded-md border border-slate-300 bg-white text-slate-700 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400"
+              >
+                {MONTHS.map((name, idx) => (
+                  <option key={name} value={idx + 1}>{name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="w-36">
+              <label className="block text-sm font-medium text-slate-700 mb-1">Year</label>
+              <input
+                type="number"
+                value={year}
+                onChange={e => setYear(Number(e.target.value))}
+                min={2020}
+                max={2099}
+                disabled={loading}
+                className="w-full px-3 py-2 rounded-md border border-slate-300 bg-white text-slate-700 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400"
+              />
+            </div>
+          </div>
+        ) : mode === 'sked' ? (
           <div className="mb-5">
             <label className="block text-sm font-medium text-slate-700 mb-1">Sked Period</label>
             {skedPeriodsError && (

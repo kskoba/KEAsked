@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { importSubmissions, importFlatFile, importFromSked, resendMonthlyRequest, getSkedPeriods, generateSchedule, cancelGenerate, detectFlatMonth, getGenerateProgress, loadScheduleFromFile, getApiBaseUrl } from '../api'
+import { importSubmissions, importFlatFile, importFromSked, resendMonthlyRequest, getSkedPeriods, getPhysicianLink, generateSchedule, cancelGenerate, detectFlatMonth, getGenerateProgress, loadScheduleFromFile, getApiBaseUrl } from '../api'
 
 // Whether the active backend is this machine or a remote one (e.g. a Docker
 // container on Unraid). The native file/folder picker only browses this
@@ -24,6 +24,7 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
   const [skedPeriodId, setSkedPeriodId] = useState('')
   const [skedPeriodsError, setSkedPeriodsError] = useState(null)
   const [resendState, setResendState] = useState({}) // physicianId -> 'sending' | 'sent' | error message
+  const [linkState, setLinkState] = useState({}) // physicianId -> 'loading' | error message
   const [month, setMonth] = useState(currentDate.getMonth() + 1)   // 1-based
   const [year, setYear] = useState(currentDate.getFullYear())
   const [importing, setImporting] = useState(false)
@@ -143,6 +144,18 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
       setTimeout(() => setResendState((s) => ({ ...s, [physicianId]: undefined })), 2500)
     } catch (err) {
       setResendState((s) => ({ ...s, [physicianId]: err.message }))
+    }
+  }
+
+  async function handleViewPreferences(physicianId) {
+    if (!skedPeriodId || linkState[physicianId] === 'loading') return
+    setLinkState((s) => ({ ...s, [physicianId]: 'loading' }))
+    try {
+      const { url } = await getPhysicianLink(physicianId, skedPeriodId)
+      await window.electronAPI.openExternal(url)
+      setLinkState((s) => ({ ...s, [physicianId]: undefined }))
+    } catch (err) {
+      setLinkState((s) => ({ ...s, [physicianId]: err.message }))
     }
   }
 
@@ -495,6 +508,40 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
             </>
           )}
         </div>
+
+        {/* Submitted physicians (sked mode only) — each gets a "View Preferences"
+            button that opens their sked submission (same magic link RosterEditor
+            uses), instead of the "Send reminder" button shown for not-yet-submitted
+            physicians below. */}
+        {mode === 'sked' && importResult?.physicians?.length > 0 && (
+          <div className="mt-5 pt-5 border-t border-slate-200">
+            <h3 className="text-sm font-medium text-slate-700 mb-2">
+              Submitted <span className="text-slate-400 font-normal">({importResult.physicians.length})</span>
+            </h3>
+            <div className="border border-slate-200 bg-slate-50 rounded-md divide-y divide-slate-100 max-h-72 overflow-auto">
+              {importResult.physicians.map((p) => {
+                const state = linkState[p.physician_id]
+                const isLoading = state === 'loading'
+                const isError = state && !isLoading
+                return (
+                  <div key={p.physician_id} className="px-3 py-2 flex items-center justify-between gap-3 text-sm">
+                    <div className="min-w-0">
+                      <div className="font-medium text-slate-800 truncate">{p.physician_name}</div>
+                      {isError && <div className="text-xs text-red-600 truncate">{state}</div>}
+                    </div>
+                    <button
+                      onClick={() => handleViewPreferences(p.physician_id)}
+                      disabled={isLoading}
+                      className="flex-shrink-0 text-xs px-2.5 py-1 rounded-md border font-medium border-sky-300 bg-white text-sky-700 hover:bg-sky-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      {isLoading ? 'Opening…' : 'View Preferences'}
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
 
         {/* Not-submitted highlight (sked mode only) */}
         {mode === 'sked' && importResult?.not_submitted?.length > 0 && (

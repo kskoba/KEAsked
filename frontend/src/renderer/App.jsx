@@ -283,8 +283,6 @@ export default function App() {
         onOpenRoster={() => window.electronAPI.openRosterWindow()}
         onOpenIndividualSchedules={() => window.electronAPI.openScheduleViewerWindow()}
         onOpenMonthlyRequests={() => window.electronAPI.openMonthlyRequestsWindow()}
-        onOpenSurveyResponses={() => window.electronAPI.openSurveyResponsesWindow()}
-        onOpenByteBloc={() => window.electronAPI.openByteBlocWindow()}
         onOpenSchedulingRules={() => window.electronAPI.openSchedulingRulesWindow()}
       />
 

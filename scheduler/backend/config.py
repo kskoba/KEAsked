@@ -136,6 +136,21 @@ class PhysicianConfig:
     #   None    → no preference; scheduler distributes freely within Group B
     group_b_site_preference: str | None = None
 
+    # Minimum number of RAH F side ("float") shifts per month the scheduler
+    # actively tries to land for this physician, on top of the flat
+    # group_b_site_preference tie-break above. Float is a scarce site --
+    # exactly one F slot exists per day, shared across the whole roster --
+    # so the small +6 tie-break bonus isn't assertive enough by itself to
+    # reliably hit a specific target count; this adds a stronger, capped
+    # bonus (see generator_cpsat.py's float-floor block) so the solver
+    # actively pursues this many F shifts specifically, without a hard
+    # constraint (which could make some months infeasible given the
+    # 1-per-day scarcity). None (default) means no such target.
+    # Added for Rick Scheirer (2026-09-29): float is more desirable to him
+    # than RAH I, and whichever few non-2400h shifts he ends up with in a
+    # month should be float ones whenever the solver has to choose.
+    float_shift_target: Optional[int] = None
+
     # Sites this physician must never be assigned to.
     # Values must be canonical site names (see VALID_SITES).
     forbidden_sites: list[str] = field(default_factory=list)
@@ -381,6 +396,11 @@ def describe_physician_facing_rules(cfg: "PhysicianConfig") -> list[str]:
             cfg.group_b_site_preference, cfg.group_b_site_preference
         )
         items.append(f"Within the non-acute allocation, you're preferentially scheduled at {site_text}.")
+    if cfg.float_shift_target:
+        items.append(
+            f"The scheduler actively tries to give you at least {cfg.float_shift_target} RAH F (float) "
+            "shift(s) a month, since only one float slot exists per day."
+        )
     if cfg.forbidden_sites:
         items.append(f"You're never scheduled at: {', '.join(cfg.forbidden_sites)}.")
     if cfg.forbidden_shift_times:
@@ -515,6 +535,11 @@ def _parse_physician(raw: dict) -> PhysicianConfig:
         int(raw_max_same_site) if raw_max_same_site is not None else None
     )
 
+    raw_float_target = sched.get("float_shift_target")
+    parsed_float_target: Optional[int] = (
+        int(raw_float_target) if raw_float_target is not None else None
+    )
+
     return PhysicianConfig(
         id=str(raw["id"]),
         name=str(raw["name"]),
@@ -544,6 +569,7 @@ def _parse_physician(raw: dict) -> PhysicianConfig:
             else None
         ),
         group_b_site_preference=raw_pref,
+        float_shift_target=parsed_float_target,
         forbidden_sites=forbidden_sites,
         rule_overrides=overrides,
         only_2400h=bool(sched.get("only_2400h", False)),
@@ -645,6 +671,8 @@ def physician_config_to_raw(cfg: PhysicianConfig) -> dict:
         sched["typical_2400h_per_month"] = cfg.typical_2400h_per_month
     if cfg.group_b_site_preference:
         sched["group_b_site_preference"] = cfg.group_b_site_preference
+    if cfg.float_shift_target is not None:
+        sched["float_shift_target"] = cfg.float_shift_target
     if cfg.only_2400h:
         sched["only_2400h"] = True
     if cfg.only_0600h:

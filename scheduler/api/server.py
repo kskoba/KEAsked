@@ -934,11 +934,12 @@ def update_physician(physician_id: str, body: PhysicianUpdateRequest) -> Physici
             detail=f"Invalid avoid_weekday {body.avoid_weekday!r}. Valid values: {sorted(WEEKDAY_VALUES)}",
         )
 
-    # default_shifts_requested / combined_headcount / priority_weight aren't
-    # exposed in the roster editor's form, so they must be carried forward
-    # from the existing config rather than left to default away — otherwise
-    # any unrelated edit through the UI silently wipes them (confirmed: this
-    # is exactly what happened to MacGougan's default_shifts_requested).
+    # default_shifts_requested / combined_headcount / priority_weight /
+    # float_shift_target aren't exposed in the roster editor's form, so they
+    # must be carried forward from the existing config rather than left to
+    # default away — otherwise any unrelated edit through the UI silently
+    # wipes them (confirmed: this is exactly what happened to MacGougan's
+    # default_shifts_requested).
     existing = roster[physician_id]
 
     cfg = PhysicianConfig(
@@ -988,6 +989,7 @@ def update_physician(physician_id: str, body: PhysicianUpdateRequest) -> Physici
         combined_headcount=existing.combined_headcount,
         priority_weight=existing.priority_weight,
         anchor_preference=existing.anchor_preference,
+        float_shift_target=existing.float_shift_target,
     )
 
     try:

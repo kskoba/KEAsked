@@ -1557,6 +1557,32 @@ class CpsatScheduleGenerator:
                                 6 * shifts[(pid, d_idx, shift.code)]
                             )
 
+        # Step 1d: per-physician float-shift (RAH F) floor bonus.
+        # float_shift_target gives a stronger, capped bonus than the flat +6
+        # group_b_site_preference tie-break above -- RAH F is the scarcest
+        # site (exactly one slot per day, shared across the whole roster),
+        # so a flat tie-break isn't assertive enough to reliably land a
+        # specific target count for a physician who especially wants it.
+        # Capped at the target (not open-ended) so it stops competing once
+        # met, same pattern as the A-floor bonus above. No hard constraint,
+        # since 1-per-day scarcity could make a hard minimum infeasible in
+        # some months. Added for Rick Scheirer (2026-09-29).
+        for pid in pids:
+            cfg = _get_cfg(pid)
+            target_f = cfg.float_shift_target if cfg else None
+            if not target_f:
+                continue
+            f_total_expr = sum(
+                shifts[(pid, d_idx, shift.code)]
+                for d_idx in range(len(all_dates))
+                for block in BLOCKS
+                for shift in block
+                if shift.site == "RAH F side"
+            )
+            f_floor = model.new_int_var(0, target_f, f"ffloor_{pid}")
+            model.add(f_floor <= f_total_expr)
+            group_balance_terms.append(35 * f_floor)
+
         # Step 2: build objective terms for consecutive pairs
         for pid in pids:
             for d_idx in range(len(all_dates) - 1):

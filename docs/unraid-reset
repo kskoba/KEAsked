@@ -1,0 +1,10 @@
+cd /mnt/user/appdata/kea-scheduler/repo
+git status                      # confirm clean before pulling
+git pull origin master
+docker build -t kea-scheduler-backend .
+docker stop kea-scheduler-backend && docker rm kea-scheduler-backend
+docker run -d -p 5000:5000 \
+  -v /mnt/user/appdata/kea-scheduler/config:/config \
+  --name kea-scheduler-backend \
+  --restart unless-stopped \
+  kea-scheduler-backend

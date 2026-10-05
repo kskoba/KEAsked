@@ -54,8 +54,9 @@ _N_0600H_COL = 37      # Col AK  — requested 0600h shifts
 
 _Z_ROW = 5             # "Service Days" row
 _PREFERRED_ROW = 6     # "Preferred" row -- physician's specific pick for the day, if any
+_DATE_ROW = 3          # Day-of-month number row (e.g. "2", "3", ...)
 _DOW_ROW = 4           # Day-of-week abbreviation row
-_FIRST_DAY_COL = 2     # Col B = day 1
+_FIRST_DAY_COL = 2     # Col B = day 1 in the usual layout (see day_to_col below)
 
 _DOC_ROW = 7           # Day On Call — physician types "DOC" on days they're available
 _NOC_ROW = 19          # Night On Call — physician types "NOC" on days they're available
@@ -193,8 +194,29 @@ def _parse_worksheet(
     dow_labeled = 0
     dow_mismatched = 0
 
+    # Map day-number -> column from the sheet's own row-3 DATE labels,
+    # rather than assuming day 1 always sits in _FIRST_DAY_COL. Confirmed
+    # necessary, not theoretical: the January 2027 template starts at day
+    # 2 (column B), because day 1 was scheduled together with December --
+    # every physician's actual day-2..31 data was landing one column to
+    # the left of where a fixed day_num -> column formula expected it,
+    # shifting every date and tripping check_month_mismatch for every
+    # single January file. Falls back to the fixed-offset mapping for any
+    # day number the row doesn't label (e.g. a genuinely missing day 1),
+    # which then has no availability data and is correctly left as "not
+    # submitted" rather than guessed at.
+    max_col = min(ws.max_column or 1, _FIRST_DAY_COL + days_in_month + 10)
+    day_to_col: dict[int, int] = {}
+    for col in range(_FIRST_DAY_COL, max_col + 1):
+        try:
+            d = int(_cell(ws, _DATE_ROW, col))
+        except (TypeError, ValueError):
+            continue
+        if 1 <= d <= days_in_month and d not in day_to_col:
+            day_to_col[d] = col
+
     for day_num in range(1, days_in_month + 1):
-        col = _day_col(day_num)
+        col = day_to_col.get(day_num, _day_col(day_num))
         date = datetime.date(year, month, day_num)
 
         # --- Z marker (wants to work) ---

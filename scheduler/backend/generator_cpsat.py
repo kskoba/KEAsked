@@ -1128,6 +1128,12 @@ class CpsatScheduleGenerator:
 
         anchor_fill_vars_flat: list[tuple] = []
         anchor_requests_by_pid: dict[str, list[tuple[str, int]]] = {}
+        # pid -> (vars_2400, vars_0600, floor_ub) for the 0/0-stated minimum
+        # floor's own guaranteed lexicographic stage (built below, near the
+        # anchor-fulfillment stage A/B) -- NOT the same list as
+        # anchor_requests_by_pid, since this is a combined-type ("either
+        # anchor type counts") floor, not a per-type one.
+        zero_zero_floor_info: dict[str, tuple[list, list, int]] = {}
 
         for pid in pids:
             sub = self.submissions[pid]
@@ -1265,6 +1271,14 @@ class CpsatScheduleGenerator:
                         fill_min_anchor = model.new_int_var(0, floor_ub, f"anchorminfloor_{pid}")
                         model.add(fill_min_anchor <= sum(vars_2400) + sum(vars_0600))
                         anchor_fulfillment_bonus_terms.append(_ANCHOR_MIN_FLOOR_BONUS * fill_min_anchor)
+                        # Also feeds its own guaranteed stage below (real
+                        # multi-physician data confirmed this soft bonus
+                        # alone isn't reliable: 5 of 7 eligible physicians
+                        # still got 0 anchor shifts in a real January solve,
+                        # even at weight 400) -- same "give it a dedicated
+                        # solver pass + lock the result" treatment already
+                        # used for explicit per-physician anchor requests.
+                        zero_zero_floor_info[pid] = (vars_2400, vars_0600, floor_ub)
 
         # ----------------------------------------------------------------
         # Soft: Weekend limit
@@ -2449,6 +2463,72 @@ class CpsatScheduleGenerator:
             remaining_time_limit = max(30.0, remaining_time_limit)
             if progress_callback:
                 progress_callback(85, 100, stageB_cb.best_objective if stageB_cb.best_values else 0.0)
+
+        # ----------------------------------------------------------------
+        # 0/0-stated anchor minimum floor -- its own guaranteed stage, same
+        # treatment as the explicit-requester anchor floor above (dedicated
+        # solver pass + lock the result), NOT just a soft bonus term in the
+        # final objective. Confirmed necessary against real data: a real
+        # January joint solve with 7 eligible physicians left 5 of them at
+        # 0 anchor shifts despite the bonus (weight 400, well above every
+        # everyday secondary term) -- and that same deficit was exactly
+        # what concentrated anchor load onto whoever was cheapest to use
+        # instead (one physician alone, Wrubleski, ended up with 64% of
+        # his whole month as anchor shifts). Runs independently of whether
+        # the stage A/B block above even executed -- this is a different
+        # population (0/0-stated, not explicit-requesters).
+        #
+        # Breadth (>=1) and depth (the second unit, for a requester of 10+
+        # total shifts whose floor_target is 2) are combined into ONE
+        # maximize call rather than two sequential stages, using a weight
+        # split (1000 vs 10) wide enough that breadth across every eligible
+        # physician always wins before depth is ever considered -- cheaper
+        # (one solver pass, not two) while keeping the same priority order
+        # the explicit-requester stage A/B gets from being fully sequential.
+        # ----------------------------------------------------------------
+        if zero_zero_floor_info:
+            logger.info("CP-SAT lexicographic: 0/0-stated anchor minimum floor (guaranteed)")
+            floor_breadth_terms = []
+            floor_depth_terms = []
+            for pid, (vars_2400, vars_0600, floor_ub) in zero_zero_floor_info.items():
+                fill = model.new_int_var(0, floor_ub, f"zzfloor_{pid}")
+                model.add(fill <= sum(vars_2400) + sum(vars_0600))
+                got1 = model.new_bool_var(f"zzfloor_got1_{pid}")
+                model.add(got1 <= fill)
+                floor_breadth_terms.append(got1)
+                if floor_ub >= 2:
+                    floor_depth_terms.append(fill)
+
+            floor_tier_time_limit = min(60.0, max(5.0, time_limit * 0.1))
+            floor_expr = sum(1000 * b for b in floor_breadth_terms) + sum(10 * d for d in floor_depth_terms)
+            model.maximize(floor_expr)
+            floor_solver = _cp_model.CpSolver()
+            floor_solver.parameters.max_time_in_seconds = floor_tier_time_limit
+            floor_solver.parameters.num_search_workers = num_workers
+            floor_cb = _SolutionCallback(shifts, should_stop=cancel_check)
+            floor_status = floor_solver.solve(model, floor_cb)
+            if floor_status in (_cp_model.OPTIMAL, _cp_model.FEASIBLE) and floor_cb.best_values:
+                model.add(floor_expr >= int(floor_cb.best_objective))
+                # Lock each physician's own achieved combined count, not
+                # just the tier-wide sum -- a sum-only lock would let a
+                # later tier trade one physician's floor for another's of
+                # equal weight (same reasoning as _lock_anchor_floors).
+                for pid, (vars_2400, vars_0600, floor_ub) in zero_zero_floor_info.items():
+                    achieved = sum(
+                        floor_cb.best_values.get((pid, d_idx, shift.code), 0)
+                        for d_idx in range(len(all_dates))
+                        for block in BLOCKS
+                        for shift in block
+                        if shift.time in ("0600h", "2400h")
+                    )
+                    floor_lock = min(achieved, floor_ub)
+                    if floor_lock > 0:
+                        model.add(sum(vars_2400) + sum(vars_0600) >= floor_lock)
+                _apply_hint(floor_cb)
+            remaining_time_limit -= floor_solver.wall_time
+            remaining_time_limit = max(30.0, remaining_time_limit)
+            if progress_callback:
+                progress_callback(87, 100, floor_cb.best_objective if floor_cb.best_values else 0.0)
 
         model.maximize(sum(objective_terms))
 

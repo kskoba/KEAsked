@@ -1,13 +1,21 @@
 """
 Tests for the 0/0-stated minimum-anchor-shift floor in generator_cpsat.py:
 a physician who explicitly states they want ZERO 0600h AND ZERO 2400h
-shifts still gets a soft pull toward at least one anchor shift (scaled by
-their total requested count), so anchor coverage doesn't end up entirely
-concentrated on whoever happened to ask for it. Solo/uncontested synthetic
-models, same technique used for the Dickey/RScheirer singleton-night
-diagnosis -- full availability, nothing else competing for the slot, so
-the solver's choice directly reflects whether this specific soft term
-fired.
+shifts still gets a guaranteed floor of at least one anchor shift (scaled
+by their total requested count), so anchor coverage doesn't end up
+entirely concentrated on whoever happened to ask for it.
+
+This floor is its own lexicographic stage (dedicated solver pass + lock
+the result), not a soft bonus competing in the final objective -- a
+soft-bonus-only version of this shipped first and was confirmed broken
+against real January data: 5 of 7 eligible physicians still got 0 anchor
+shifts despite the bonus, and that deficit is exactly what concentrated
+anchor load onto whoever was cheapest to use instead (one physician alone
+ended up with 64% of his month as anchor shifts). The solo tests below
+use the same uncontested technique as the Dickey/RScheirer singleton-night
+diagnosis; test_floor_survives_contention below is the one that actually
+reproduces the real-data failure mode and proves the guaranteed stage
+holds up against it.
 """
 
 from __future__ import annotations
@@ -119,3 +127,31 @@ def test_floor_never_exceeds_the_existing_anchor_tolerance_cap():
     # Default anchor_target_tolerance is 1 per type -- so at most 1 of each.
     assert n2400 <= 1
     assert n0600 <= 1
+
+
+def test_floor_survives_contention_from_uncapped_blank_physicians():
+    """Reproduces the real-data failure mode this floor was redesigned to
+    fix: a 0/0-stated physician competing against physicians with blank
+    (unstated, uncapped) anchor fields -- exactly the shape that let one
+    real physician (Wrubleski, real January data) absorb 64% of his month
+    as anchor shifts while 5 of 7 0/0-stated physicians got zero. The
+    soft-bonus-only version of this floor failed this exact scenario in
+    production; the guaranteed lexicographic stage must not."""
+    sub_zz = _full_availability_submission(
+        "ZeroZero", shifts_requested=6,
+        shifts_2400h_stated=True, shifts_2400h_requested=0,
+        shifts_0600h_stated=True, shifts_0600h_requested=0,
+    )
+    # Both left fully unstated -- blank anchor fields, no cap at all,
+    # happy to take every shift going (the real "cheap filler" shape).
+    filler_a = _full_availability_submission("FillerA", shifts_requested=15)
+    filler_b = _full_availability_submission("FillerB", shifts_requested=15)
+    roster = {
+        "ZeroZero": PhysicianConfig(id="ZeroZero", name="ZeroZero"),
+        "FillerA": PhysicianConfig(id="FillerA", name="FillerA"),
+        "FillerB": PhysicianConfig(id="FillerB", name="FillerB"),
+    }
+    gen = CpsatScheduleGenerator([sub_zz, filler_a, filler_b], roster, {}, trailing_assignments=None)
+    result = gen.generate(YEAR, MONTH, time_limit=30.0, num_workers=4)
+
+    assert _anchor_total(result, "ZeroZero") >= 1

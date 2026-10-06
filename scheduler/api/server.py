@@ -953,6 +953,7 @@ def _physician_to_detail(cfg: PhysicianConfig) -> PhysicianDetail:
         cap_at_requested=cfg.cap_at_requested,
         special_provisions=cfg.special_provisions,
         casual=cfg.casual,
+        hire_year=cfg.hire_year,
         rule_overrides=dict(cfg.rule_overrides),
     )
 
@@ -1065,6 +1066,7 @@ def update_physician(physician_id: str, body: PhysicianUpdateRequest) -> Physici
         cap_at_requested=body.cap_at_requested,
         special_provisions=body.special_provisions,
         casual=body.casual,
+        hire_year=body.hire_year,
         rule_overrides=dict(body.rule_overrides),
         default_shifts_requested=existing.default_shifts_requested,
         combined_headcount=existing.combined_headcount,
@@ -2596,7 +2598,6 @@ def _parse_schedule_xlsx(path: Path, roster: dict) -> ScheduleResult:
     Parse a previously exported schedule xlsx back into a ScheduleResult.
 
     Reconstructs assignments, on-calls, unfilled slots, and stats.
-    Physician IDs are resolved from the roster by display name.
     Fields not stored in the xlsx (solver_status, optimality_gap_pct,
     candidate lists) are set to None / [].
     """
@@ -2613,18 +2614,29 @@ def _parse_schedule_xlsx(path: Path, roster: dict) -> ScheduleResult:
             "Expected format: YYYY-MM."
         )
 
-    # --- Name → ID reverse lookup (case-insensitive fallback) ---
-    name_to_id: dict[str, str] = {}
-    for pid, cfg in roster.items():
-        name_to_id[cfg.name] = pid
-        name_to_id[cfg.name.lower()] = pid
+    # Physician IDs resolved via the project's one real resolver (aliases,
+    # derived "Last I"/"First Last" forms, etc.) -- NOT the cell text
+    # matched only against cfg.name. Confirmed this used to be a real,
+    # live bug (2026-10, Jan): the xlsx export writes physician_name in
+    # "Last, F" display form (see _apply_roster), but the old local
+    # name_to_id dict here only ever checked against cfg.name ("First
+    # Last") or its lowercase, which never matches "Last, F" -- so every
+    # single reimported schedule silently fell back to using the raw
+    # display string itself as physician_id (e.g. "Lam, K" instead of
+    # "KLam"), corrupting every downstream stat keyed by physician_id.
+    # An unresolved name is now a hard error, matching every other import
+    # path in this file (_apply_roster, _resolve_submission_id) and
+    # physician_resolver's own documented intent -- never silently guess.
+    index = build_alias_index(roster)
 
     def _resolve_id(name: str) -> str:
-        return (
-            name_to_id.get(name)
-            or name_to_id.get(name.lower())
-            or name
-        )
+        pid = resolve_physician_id(name, index)
+        if pid is None:
+            raise ValueError(
+                f"Unresolved physician name {name!r} in schedule file {path.name!r}. "
+                "Add an alias to physicians.yaml or correct the file before loading."
+            )
+        return pid
 
     assignments: list[Assignment] = []
     on_calls: list[OnCallAssignment] = []

@@ -72,6 +72,19 @@ weekends:
   max_weekends_per_month: 2
 
 # ----------------------------------------------------------
+# Seniority weighting
+# ----------------------------------------------------------
+# Derives a multiplier from each physician's hire_year (physicians.yaml),
+# composed multiplicatively with their priority_weight -- see
+# config.py's seniority_multiplier() and generator_cpsat.py's single
+# priority_weight usage site. A physician with no hire_year set gets no
+# bonus at all (multiplier 1.0), regardless of these values.
+# ----------------------------------------------------------
+seniority:
+  per_year_rate: 0.02   # +2% priority weight per year since hire_year
+  cap: 1.3               # never more than 1.3x, regardless of tenure
+
+# ----------------------------------------------------------
 # Singleton shift rule
 # ----------------------------------------------------------
 # An isolated shift (no adjacent-day shifts in the same run)

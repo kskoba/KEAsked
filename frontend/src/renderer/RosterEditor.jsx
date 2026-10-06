@@ -328,6 +328,13 @@ export default function RosterEditor() {
                   <TextField label="First name" value={form.first_name} onChange={(v) => setField('first_name', v)} />
                   <TextField label="Last name" value={form.last_name} onChange={(v) => setField('last_name', v)} />
                 </div>
+                <IntegerField
+                  label="Hire year (blank = unknown)"
+                  value={form.hire_year}
+                  onChange={(v) => setField('hire_year', v)}
+                  nullable
+                  hint="Used to derive a seniority weight on top of this physician's requested-shift priority — see Scheduling Rules."
+                />
                 <TagListEditor
                   label="Aliases"
                   hint="Other names this physician appears under in imported submission files."

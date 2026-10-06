@@ -464,6 +464,7 @@ class PhysicianDetail(BaseModel):
     cap_at_requested: bool = False
     special_provisions: bool = False
     casual: bool = False
+    hire_year: Optional[int] = None
     rule_overrides: dict[str, Optional[int]] = {}
 
 

@@ -27,7 +27,7 @@ from typing import Callable, Optional
 
 _FROZEN = getattr(sys, 'frozen', False)
 
-from scheduler.backend.config import PhysicianConfig
+from scheduler.backend.config import PhysicianConfig, seniority_multiplier
 from scheduler.backend.generator import (
     Assignment,
     CandidateOption,
@@ -967,12 +967,22 @@ class CpsatScheduleGenerator:
                 clustered_nights_bonus_terms.append(_CLUSTERED_NIGHTS_BONUS * full_run)
 
         # ----------------------------------------------------------------
-        # HC-10: Same-shift-code on adjacent days forbidden
+        # HC-10: Same-shift-code on adjacent days forbidden -- except for a
+        # physician's own allow_repeat_shift_codes (PhysicianConfig), a
+        # narrow per-physician exception added for Dickey (2027-01): his
+        # submission only ever offers one 2400h site, so this rule
+        # otherwise made a 2+-night run structurally impossible for him
+        # (he could never repeat the only site he has), despite him
+        # explicitly preferring back-to-back nights at that one site.
         # ----------------------------------------------------------------
         for pid in pids:
+            pid_cfg = _get_cfg(pid)
+            allowed_repeats = set(pid_cfg.allow_repeat_shift_codes) if pid_cfg else set()
             for d_idx in range(len(all_dates) - 1):
                 for block in BLOCKS:
                     for shift in block:
+                        if shift.code in allowed_repeats:
+                            continue
                         model.add(
                             shifts[(pid, d_idx, shift.code)]
                             + shifts[(pid, d_idx + 1, shift.code)] <= 1
@@ -1030,6 +1040,26 @@ class CpsatScheduleGenerator:
         # site preference — each 20-35).
         anchor_fulfillment_bonus_terms = []
         _ANCHOR_FULFILLMENT_BONUS = 90
+        # Weight for the 0/0-stated minimum-anchor floor below. Empirically
+        # tuned against a solo/uncontested synthetic test (same technique
+        # used for the Dickey/RScheirer singleton-night diagnosis): 70-350
+        # all achieved ZERO effect even with full availability and nothing
+        # else competing for the slot -- an isolated anchor shift disrupts
+        # an otherwise-smooth personal schedule enough (stacked
+        # clustering/swing/variety/run terms) that it takes a much stronger
+        # pull than the 20-90 range used elsewhere to make it worthwhile.
+        # 400 was the first value that reliably produced the floor in that
+        # test. NOT yet validated against a real multi-physician solve --
+        # real joint contention could make this cheaper (someone else's
+        # slot, not a forced personal-schedule rearrangement) or could
+        # still need retuning either direction; check a real run before
+        # trusting this number the way _ANCHOR_FULFILLMENT_BONUS/
+        # _ANCHOR_OVERAGE_PENALTY already have been.
+        _ANCHOR_MIN_FLOOR_BONUS = 400
+        # Below this requested-shift-count threshold, the floor target is 1
+        # anchor shift; at or above it, 2 (see the floor logic further
+        # below). 10 per explicit user instruction.
+        _ANCHOR_MIN_FLOOR_FULL_THRESHOLD = 10
         _ANCHOR_OVERAGE_PENALTY = 500
         # A physician's stated numbers can themselves signal which anchor
         # type they'd rather absorb overage in — e.g. explicitly wanting 0
@@ -1198,6 +1228,43 @@ class CpsatScheduleGenerator:
                                 else _ANCHOR_OVERAGE_PENALTY
                             )
                             anchor_overage_penalty_terms.append(-weight_0600 * over_0600)
+
+                # Minimum anchor-shift floor for a physician who explicitly
+                # states they want ZERO of both anchor types (0600h AND
+                # 2400h) -- without this, every anchor slot ends up
+                # concentrated on whoever DID ask for one, which isn't
+                # sustainable across the whole roster since every anchor
+                # shift still has to be covered by somebody. A soft pull,
+                # not a hard floor: a physician with no real anchor-type
+                # availability that month is never forced infeasible over
+                # this. Bounded by the SAME per-type caps already set above
+                # (pid_cap_2400/pid_cap_0600, each anchor_tol -- 1 by
+                # default) -- an explicit "I want 0" still means "almost
+                # never", just not "literally never". Floor size scales
+                # with how much of a full month they're asking for at all --
+                # a dedicated threshold (_ANCHOR_MIN_FLOOR_FULL_THRESHOLD),
+                # deliberately kept separate from full_time_shifts_per_month
+                # (that one governs the weekend cap, a different rule) --
+                # matching the request: "at least 1 or 2 anchored shifts
+                # depending on total number of shifts requested and what is
+                # marked as available."
+                if (sub.shifts_2400h_stated and sub.shifts_2400h_requested == 0
+                        and sub.shifts_0600h_stated and sub.shifts_0600h_requested == 0
+                        and (vars_2400 or vars_0600)):
+                    floor_target = 2 if sub.shifts_requested >= _ANCHOR_MIN_FLOOR_FULL_THRESHOLD else 1
+                    combined_cap = (
+                        (self._anchor_tol if vars_2400 else 0)
+                        + (self._anchor_tol if vars_0600 else 0)
+                    )
+                    available = (
+                        _anchor_available_days(sub, "2400h")
+                        + _anchor_available_days(sub, "0600h")
+                    )
+                    floor_ub = min(floor_target, combined_cap, available)
+                    if floor_ub > 0:
+                        fill_min_anchor = model.new_int_var(0, floor_ub, f"anchorminfloor_{pid}")
+                        model.add(fill_min_anchor <= sum(vars_2400) + sum(vars_0600))
+                        anchor_fulfillment_bonus_terms.append(_ANCHOR_MIN_FLOOR_BONUS * fill_min_anchor)
 
         # ----------------------------------------------------------------
         # Soft: Weekend limit
@@ -1558,7 +1625,16 @@ class CpsatScheduleGenerator:
 
             if effective_requested > 0:
                 effective_requested_by_pid[pid] = effective_requested
-                priority = (cfg.priority_weight if cfg and not cfg.casual else 1.0)
+                # priority_weight is a manual per-physician override (e.g. a
+                # department chief); seniority_multiplier is derived from
+                # hire_year. The two compose multiplicatively, deliberately
+                # separate from honor_all_requests (a different mechanism
+                # entirely -- that's about honoring specific per-day picks,
+                # this is about the volume of the requested count met).
+                priority = (
+                    cfg.priority_weight * seniority_multiplier(cfg, year, self.config)
+                    if cfg and not cfg.casual else 1.0
+                )
                 high_span = (effective_requested + 1) // 2
                 low_span = effective_requested - high_span
 
@@ -1814,7 +1890,8 @@ class CpsatScheduleGenerator:
 
         for pid in pids:
             pid_cfg = _get_cfg(pid)
-            if not (pid_cfg and pid_cfg.prefer_singleton_nights):
+            _isolated_ok = pid_cfg and (pid_cfg.prefer_singleton_nights or pid_cfg.allow_isolated_nights)
+            if not _isolated_ok:
                 for d_idx in range(len(all_dates)):
                     curr = night_bool.get((pid, d_idx))
                     if curr is None:

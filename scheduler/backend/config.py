@@ -27,6 +27,7 @@ from ruamel.yaml.comments import CommentedMap
 from ruamel.yaml.scalarstring import LiteralScalarString
 
 from scheduler.backend.models import PhysicianSubmission
+from scheduler.backend.shifts import ALL_SHIFT_CODES
 
 
 # Location of the roster file — respects CONFIG_DIR env var set by Electron
@@ -201,6 +202,31 @@ class PhysicianConfig:
     # before assuming otherwise.
     prefer_clustered_nights: bool = False
 
+    # Decoupled half of prefer_singleton_nights' hard-constraint exemption:
+    # allows a genuinely lone 2400h night (no adjacent night) for this
+    # physician, WITHOUT also pulling in prefer_singleton_nights' -400
+    # anti-clustering penalty. For a physician who's happy either way
+    # (clustered OR solo) rather than one who specifically dislikes
+    # clustering -- see Dickey (2027-01), who prefers back-to-back nights
+    # but offered a one-off solo night as a fallback too.
+    # prefer_singleton_nights itself still implies this independently (kept
+    # for backward compat with physicians who truly want isolation, e.g.
+    # Brenneis) -- this flag just lets a physician get the same exemption
+    # on its own.
+    allow_isolated_nights: bool = False
+
+    # Per-physician exception to HC-10 ("never the same shift-code on
+    # adjacent days") for specific shift codes only, e.g. ["2400h RAH I
+    # side"]. Added for Dickey (2027-01): his submission only ever offers
+    # one 2400h site, so HC-10 made a 2+-night run (needed to satisfy
+    # HC-13b's "every night needs an adjacent night" without
+    # allow_isolated_nights/prefer_singleton_nights) structurally
+    # impossible -- he could never repeat the only site he has. He
+    # explicitly prefers doing his Intake quota via back-to-back 2400h RAH
+    # I side nights, so this lets that actually happen instead of routing
+    # around it with an isolation flag that fights his real preference.
+    allow_repeat_shift_codes: list[str] = field(default_factory=list)
+
     # Shift-time restrictions: physician may never be assigned shifts at these
     # start times (e.g. ["0600h", "2400h"]).
     forbidden_shift_times: list[str] = field(default_factory=list)
@@ -285,6 +311,17 @@ class PhysicianConfig:
     # a casual physician regardless of this value — casual physicians stay
     # in their own separate, strictly-lower priority tier (see `casual`).
     priority_weight: float = 1.0
+
+    # Calendar year this physician was hired — used to derive a seniority
+    # multiplier on top of priority_weight (see seniority_multiplier()
+    # below), so longer-tenured physicians get more pull on reaching their
+    # own requested shift count. None (default, most physicians today)
+    # means "unknown" and contributes no seniority bonus at all — never
+    # treated as "hired this year." Deliberately separate from
+    # honor_all_requests (MacGougan's flag, about honoring his *specific*
+    # per-day picks) — this is about the *volume* of his requested count
+    # getting met, a different axis entirely.
+    hire_year: Optional[int] = None
 
     # Post-block cool-down: if this physician works a stretch of at least
     # post_block_min_length consecutive days, they must have the following
@@ -372,6 +409,34 @@ _ANCHOR_PREFERENCE_TEXT = {
     "0600h": "If you go over your requested count of 0600h/2400h shifts, the extra ones are given as 0600h shifts.",
 }
 
+_DEFAULT_SENIORITY_PER_YEAR_RATE = 0.02
+_DEFAULT_SENIORITY_CAP = 1.3
+
+
+def seniority_multiplier(cfg: "PhysicianConfig", as_of_year: int, config: dict) -> float:
+    """
+    Multiplier derived from years since cfg.hire_year, meant to be
+    multiplied into priority_weight (see generator_cpsat.py's single
+    priority_weight usage site) -- never a replacement for it, so a
+    physician can have both a manually-set priority_weight (e.g. a
+    department chief) and seniority, composing multiplicatively.
+
+    1.0 (no bonus) when hire_year is unset -- unknown tenure is never
+    penalized, and most physicians have no hire_year on file yet -- or
+    when as_of_year predates hire_year (not yet hired). Otherwise
+    1.0 + per_year_rate * years, capped at `cap`. Both numbers come from
+    scheduler_config.yaml's "seniority" block (per_year_rate, cap), not
+    hardcoded, so they're tunable without a code change; the module-level
+    defaults here only apply when that block is missing entirely.
+    """
+    if cfg.hire_year is None:
+        return 1.0
+    years = max(0, as_of_year - cfg.hire_year)
+    seniority_cfg = config.get("seniority", {}) if config else {}
+    per_year_rate = seniority_cfg.get("per_year_rate", _DEFAULT_SENIORITY_PER_YEAR_RATE)
+    cap = seniority_cfg.get("cap", _DEFAULT_SENIORITY_CAP)
+    return min(cap, 1.0 + per_year_rate * years)
+
 
 def describe_physician_facing_rules(cfg: "PhysicianConfig") -> list[str]:
     """
@@ -446,6 +511,13 @@ def describe_physician_facing_rules(cfg: "PhysicianConfig") -> list[str]:
             f"You've indicated you prefer a full run of {cfg.max_consecutive_nights} 2400h (night) shifts "
             "in a row over shorter, separate clusters — the scheduler specifically rewards completing the full run."
         )
+    if cfg.allow_isolated_nights and not cfg.prefer_singleton_nights:
+        items.append("A single night shift with no adjacent night is also fine for you, as a fallback.")
+    if cfg.allow_repeat_shift_codes:
+        items.append(
+            f"You may be scheduled the same shift ({', '.join(cfg.allow_repeat_shift_codes)}) on back-to-back "
+            "days, unlike most physicians."
+        )
     if cfg.no_call:
         items.append("You're never assigned on-call (DOC/NOC) shifts.")
     if cfg.avoid_weekday:
@@ -516,6 +588,18 @@ def _parse_physician(raw: dict) -> PhysicianConfig:
                 f"Valid sites: {sorted(VALID_SITES)}"
             )
         forbidden_sites.append(site_str)
+
+    # allow_repeat_shift_codes
+    raw_repeat_codes: list = sched.get("allow_repeat_shift_codes") or []
+    allow_repeat_shift_codes: list[str] = []
+    for code in raw_repeat_codes:
+        code_str = str(code).strip()
+        if code_str not in ALL_SHIFT_CODES:
+            raise ValueError(
+                f"Physician {raw.get('id')!r}: unknown shift code {code_str!r} in "
+                f"allow_repeat_shift_codes. Valid codes: {sorted(ALL_SHIFT_CODES)}"
+            )
+        allow_repeat_shift_codes.append(code_str)
 
     raw_max_weekends = sched.get("max_weekends")
     parsed_max_weekends: Optional[int] = (
@@ -596,6 +680,8 @@ def _parse_physician(raw: dict) -> PhysicianConfig:
         honor_all_requests=bool(sched.get("honor_all_requests", False)),
         prefer_singleton_nights=bool(sched.get("prefer_singleton_nights", False)),
         prefer_clustered_nights=bool(sched.get("prefer_clustered_nights", False)),
+        allow_isolated_nights=bool(sched.get("allow_isolated_nights", False)),
+        allow_repeat_shift_codes=allow_repeat_shift_codes,
         forbidden_shift_times=forbidden_shift_times,
         no_call=bool(sched.get("no_call", False)),
         avoid_mondays=bool(sched.get("avoid_mondays", False)),
@@ -614,6 +700,9 @@ def _parse_physician(raw: dict) -> PhysicianConfig:
             str(sched["combined_with"]) if sched.get("combined_with") is not None else None
         ),
         priority_weight=float(sched.get("priority_weight", 1.0)),
+        hire_year=(
+            int(sched["hire_year"]) if sched.get("hire_year") is not None else None
+        ),
         anchor_preference=(
             sched["anchor_preference"]
             if sched.get("anchor_preference") in ("2400h", "0600h")
@@ -707,6 +796,10 @@ def physician_config_to_raw(cfg: PhysicianConfig) -> dict:
         sched["prefer_singleton_nights"] = True
     if cfg.prefer_clustered_nights:
         sched["prefer_clustered_nights"] = True
+    if cfg.allow_isolated_nights:
+        sched["allow_isolated_nights"] = True
+    if cfg.allow_repeat_shift_codes:
+        sched["allow_repeat_shift_codes"] = list(cfg.allow_repeat_shift_codes)
     if cfg.forbidden_shift_times:
         sched["forbidden_shift_times"] = list(cfg.forbidden_shift_times)
     if cfg.no_call:
@@ -731,6 +824,8 @@ def physician_config_to_raw(cfg: PhysicianConfig) -> dict:
         sched["combined_with"] = cfg.combined_with
     if cfg.priority_weight != 1.0:
         sched["priority_weight"] = cfg.priority_weight
+    if cfg.hire_year is not None:
+        sched["hire_year"] = cfg.hire_year
     if cfg.anchor_preference in ("2400h", "0600h"):
         sched["anchor_preference"] = cfg.anchor_preference
     if cfg.post_block_rest_days:

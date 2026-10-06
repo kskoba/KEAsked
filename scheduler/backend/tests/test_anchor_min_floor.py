@@ -155,3 +155,42 @@ def test_floor_survives_contention_from_uncapped_blank_physicians():
     result = gen.generate(YEAR, MONTH, time_limit=30.0, num_workers=4)
 
     assert _anchor_total(result, "ZeroZero") >= 1
+
+
+def test_floor_eligible_physician_is_automatically_isolation_exempt():
+    """Reproduces a second real failure (Lung, real January data): an
+    explicit "0 2400h" caps total 2400h at requested(0) + anchor_tol(1) =
+    1 -- but HC-13b normally requires >=2 (an adjacent pair) for ANY
+    2400h at all, which 1 can never satisfy. That combination was always
+    latently infeasible for an explicit-0-2400h physician with no
+    isolation exemption; it only surfaced once the floor started trying
+    to push such a physician toward getting one. Floor-eligible
+    physicians must be automatically isolation-exempt (without needing
+    allow_isolated_nights set), or this floor can silently force 0 total
+    shifts for anyone whose only real anchor avenue is 2400h."""
+    days_with_pairs = {1, 2, 8, 9, 15, 16}  # Lung's real shape: adjacent pairs, 2400h only
+    days = []
+    for d in range(1, DAYS_IN_MONTH + 1):
+        if d in days_with_pairs:
+            days.append(DayAvailability(
+                date=datetime.date(YEAR, MONTH, d), wants_to_work=True,
+                available_blocks=frozenset({4}),
+                requested_shifts=frozenset(["2400h NEHC", "2400h RAH A side", "2400h RAH B side", "2400h RAH I side"]),
+            ))
+        else:
+            days.append(DayAvailability(
+                date=datetime.date(YEAR, MONTH, d), wants_to_work=False,
+                available_blocks=frozenset(), requested_shifts=frozenset(),
+            ))
+    sub = PhysicianSubmission(
+        physician_id="Lung", physician_name="Lung", year=YEAR, month=MONTH,
+        shifts_requested=10, shifts_min=0, shifts_max=10,
+        shifts_2400h_stated=True, shifts_2400h_requested=0,
+        shifts_0600h_stated=True, shifts_0600h_requested=0,
+        days=days,
+    )
+    roster = {"Lung": PhysicianConfig(id="Lung", name="Lung", max_consecutive_nights=2)}
+    gen = CpsatScheduleGenerator([sub], roster, {}, trailing_assignments=None)
+    result = gen.generate(YEAR, MONTH, time_limit=20.0, num_workers=4)
+
+    assert _anchor_total(result, "Lung") >= 1

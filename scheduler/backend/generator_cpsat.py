@@ -1904,7 +1904,34 @@ class CpsatScheduleGenerator:
 
         for pid in pids:
             pid_cfg = _get_cfg(pid)
-            _isolated_ok = pid_cfg and (pid_cfg.prefer_singleton_nights or pid_cfg.allow_isolated_nights)
+            # Also exempt 0/0-stated anchor-floor-eligible physicians
+            # automatically, even without the flag set. Found via Lung
+            # (real January data): an explicit "0 2400h" caps him at
+            # requested(0) + anchor_tol(1) = 1 total -- but without this
+            # exemption, HC-13b requires >=2 (an adjacent pair) for ANY
+            # 2400h at all, which 1 can never satisfy. That combination
+            # was always latently infeasible for an explicit-0 2400h
+            # stater; it was invisible before because nothing tried to
+            # push such a physician toward getting one at all. The floor
+            # mechanism's whole intent is a light single-shift nudge, not
+            # a forced 2-night commitment, so isolation (not clustering)
+            # is the right shape here regardless.
+            # Also exempt anyone whose own max_consecutive_nights is 1 --
+            # a cap that low makes a 2+-night run (what HC-13b otherwise
+            # requires for any 2400h at all) mathematically impossible
+            # regardless of availability, full stop. Found via Breton,
+            # McKinnon, and Schindler (real January data, all three with
+            # genuine unmet 2400h demand and real availability, all
+            # structurally blocked at 0 even solo): max_consecutive_nights
+            # == 1 is itself an unambiguous signal multi-night runs were
+            # never happening for this physician, so forcing the
+            # contradiction instead of exempting it serves no one. Checked
+            # roster-wide: 6 physicians share this combination; 3 have
+            # real 2400h demand this month (Breton, McKinnon, Schindler).
+            _max_nights_forces_isolation = pid_cfg and pid_cfg.max_consecutive_nights == 1
+            _isolated_ok = pid_cfg and (
+                pid_cfg.prefer_singleton_nights or pid_cfg.allow_isolated_nights
+            ) or pid in zero_zero_floor_info or _max_nights_forces_isolation
             if not _isolated_ok:
                 for d_idx in range(len(all_dates)):
                     curr = night_bool.get((pid, d_idx))

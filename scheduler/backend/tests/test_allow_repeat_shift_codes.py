@@ -102,3 +102,35 @@ def test_prefer_singleton_nights_physicians_unaffected():
     assert len(dates) == 2
     for i in range(len(dates) - 1):
         assert (dates[i + 1] - dates[i]).days > 1
+
+
+def test_max_consecutive_nights_of_one_is_automatically_isolation_exempt():
+    """Reproduces a third real failure (Breton/McKinnon/Schindler, real
+    January data): max_consecutive_nights=1 hard-caps any night run at 1
+    (via HC-13 itself), but HC-13b otherwise requires >=2 adjacent nights
+    for ANY 2400h at all -- a contradiction that's mathematically
+    impossible regardless of availability, with no per-physician flag
+    needed to trigger it (the cap value itself is the signal). Full
+    multi-site availability here specifically to isolate this exemption
+    from the separate single-site/HC-10 deadlock Dickey's fix covers."""
+    days = [
+        DayAvailability(
+            date=datetime.date(YEAR, MONTH, d),
+            wants_to_work=True,
+            available_blocks=frozenset(range(5)),
+            requested_shifts=frozenset(ALL_SHIFT_CODES),
+        )
+        for d in range(1, DAYS_IN_MONTH + 1)
+    ]
+    sub = PhysicianSubmission(
+        physician_id="OneNight", physician_name="OneNight", year=YEAR, month=MONTH,
+        shifts_requested=10, shifts_min=0, shifts_max=10,
+        shifts_2400h_stated=True, shifts_2400h_requested=2,
+        days=days,
+    )
+    cfg = PhysicianConfig(id="OneNight", name="OneNight", max_consecutive_nights=1)
+    gen = CpsatScheduleGenerator([sub], {"OneNight": cfg}, {}, trailing_assignments=None)
+    result = gen.generate(YEAR, MONTH, time_limit=15.0, num_workers=4)
+
+    n2400 = sum(1 for a in result.assignments if a.physician_id == "OneNight" and a.shift.time == "2400h")
+    assert n2400 >= 1

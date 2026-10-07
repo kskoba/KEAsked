@@ -86,6 +86,22 @@ def test_zero_zero_physician_with_eight_shifts_reaches_floor_of_two():
     assert _anchors(res, "Wittmeier") >= 2
 
 
+def test_blank_blank_physician_gets_the_same_floor_as_an_explicit_zero_zero():
+    """MacGougan shape (jan2): both anchor cells blank, 10 shifts, 0 anchors
+    while explicit 0/0 physicians carried 2. A blank is "no preference" and
+    must not rank below "I'd rather not": same floor of 2 at >= 8 shifts."""
+    sub = _sub("MacGougan", 10, s0600=False, s2400=False)
+    res = _solve([sub], {"MacGougan": _cfg("MacGougan")})
+    assert _anchors(res, "MacGougan") >= 2
+
+
+def test_blank_0600h_with_explicit_zero_nights_gets_the_floor_too():
+    """Rosenblum shape (jan2): 0600h blank, 2400h explicit 0, 8 shifts, 0 anchors."""
+    sub = _sub("Rosenblum", 8, s0600=False, r2400=0, s2400=True)
+    res = _solve([sub], {"Rosenblum": _cfg("Rosenblum")})
+    assert _anchors(res, "Rosenblum") >= 2
+
+
 def test_excess_anchors_spread_to_fair_share_before_anyone_goes_over():
     """Three identical physicians, 10 shifts each, available Jan 1-16 only,
     offering the four 0600h slots plus a single 1200h NEHC slot per day: 16

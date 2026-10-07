@@ -1380,16 +1380,26 @@ class CpsatScheduleGenerator:
                 # matching the request: "at least 1 or 2 anchored shifts
                 # depending on total number of shifts requested and what is
                 # marked as available."
-                if (sub.shifts_2400h_stated and sub.shifts_2400h_requested == 0
-                        and sub.shifts_0600h_stated and sub.shifts_0600h_requested == 0
-                        and (vars_2400 or vars_0600)):
+                # Extended 2026-10-07 (user decision) from "explicit 0 AND
+                # explicit 0" to "no positive anchor request of either
+                # type" -- a blank cell, an explicit 0, or one of each. In
+                # the real jan2 solve, blank/blank physicians with 7-10
+                # shifts (MacGougan, Gunawan, Rawe, Rosenblum) carried ZERO
+                # anchors while the explicit-0/0 physicians carried their
+                # floor of 2: a blank means "no preference", and no
+                # preference shouldn't rank below "I'd rather not".
+                if req_anchors == 0 and (vars_2400 or vars_0600):
                     floor_target = 2 if sub.shifts_requested >= _ANCHOR_MIN_FLOOR_FULL_THRESHOLD else 1
                     # Bounded by the real per-type caps above (fair-share
                     # based now, so a physician who can only work one
-                    # anchor type is no longer stuck at a floor of 1).
+                    # anchor type is no longer stuck at a floor of 1). A
+                    # blank type has no hard cap; its soft ceiling is the
+                    # fair-share target (0600h) or the unstated-nights cap.
+                    cap_2400_eff = pid_cap_2400 if pid_cap_2400 is not None else self._default_2400h_cap_unstated
+                    cap_0600_eff = pid_cap_0600 if pid_cap_0600 is not None else anchor_target
                     combined_cap = (
-                        (pid_cap_2400 if (vars_2400 and pid_cap_2400 is not None) else 0)
-                        + (pid_cap_0600 if (vars_0600 and pid_cap_0600 is not None) else 0)
+                        (cap_2400_eff if vars_2400 else 0)
+                        + (cap_0600_eff if vars_0600 else 0)
                     )
                     available = (
                         _anchor_available_days(sub, "2400h")

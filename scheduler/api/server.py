@@ -142,6 +142,7 @@ except Exception:  # pragma: no cover
 from scheduler.backend.importer import import_directory, import_single_file
 from scheduler.backend.importer_flat import import_flat_file
 from scheduler.backend.models import DayAvailability, PhysicianSubmission, ValidationIssue
+from scheduler.backend.shifts import CALL_TYPE_BY_LABEL, normalize_label
 from scheduler.backend.shifts import (
     ALL_SHIFT_CODES,
     BLOCKS,
@@ -2721,9 +2722,10 @@ def _parse_schedule_xlsx(path: Path, roster: dict) -> ScheduleResult:
         while i < len(rows):
             site_row = rows[i]
 
-            # Gap row (col A is None/empty) → end of week
+            # Gap row (col A is None/empty) → end of week. Not consumed:
+            # a sheet without spacer rows puts the next week's header
+            # right here (see sheets_schedule_reader.parse_schedule_grid).
             if site_row[0] is None or str(site_row[0]).strip() == "":
-                i += 1
                 break
 
             # site_row is Row A of a shift pair; next row is Row B (time label)
@@ -2733,8 +2735,8 @@ def _parse_schedule_xlsx(path: Path, roster: dict) -> ScheduleResult:
             time_row = rows[i]
             i += 1
 
-            site_label = str(site_row[0]).strip()
-            time_label = str(time_row[0]).strip() if time_row[0] is not None else ""
+            site_label = normalize_label(site_row[0])
+            time_label = normalize_label(time_row[0])
 
             entry = _EXPORT_SHIFT_LOOKUP.get((site_label, time_label))
             if not entry:
@@ -2750,7 +2752,7 @@ def _parse_schedule_xlsx(path: Path, roster: dict) -> ScheduleResult:
                     if name and name not in ("", "---", "None"):
                         on_calls.append(OnCallAssignment(
                             date=d,
-                            call_type=site_label,
+                            call_type=CALL_TYPE_BY_LABEL.get(site_label, site_label),
                             physician_id=_resolve_id(name),
                             physician_name=name,
                         ))

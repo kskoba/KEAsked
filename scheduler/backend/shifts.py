@@ -283,7 +283,7 @@ EXPORT_SHIFTS: list[tuple[str, str, str | None, str | None]] = [
     ("RAH I",     "1400-2200",  "1400h",  "RAH I side"),
     ("NECHC",     "1500-2300",  "1500h",  "NEHC"),
     ("NOC",       "1600-0459",  None,     None),           # Night on call row — same hour range the human schedule uses
-    ("RAH Float", "1600-0459",  "1600h",  "RAH F side"),
+    ("RAH Float", "1600-2400",  "1600h",  "RAH F side"),  # Float runs 1600-2400 (corrected 2026-10-07; 0459 is the on-call end time)
     ("NECHC",     "1700-0100",  "1700h",  "NEHC"),
     ("RAH A",     "1800-0000",  "1800h",  "RAH A side"),
     ("RAH B",     "1800-0000",  "1800h",  "RAH B side"),
@@ -304,6 +304,24 @@ EXPORT_SHIFT_LOOKUP: dict[tuple[str, str], tuple[str | None, str | None]] = {
 # used the literal label as the time row. Keep these loadable.
 EXPORT_SHIFT_LOOKUP[("DOC", "Day On Call")] = (None, None)
 EXPORT_SHIFT_LOOKUP[("NOC", "Night On Call")] = (None, None)
+# Back-compat: schedules exported before 2026-10-07 carried the on-call end
+# time on the Float row by mistake. Keep those files loadable.
+EXPORT_SHIFT_LOOKUP[("RAH Float", "1600-0459")] = ("1600h", "RAH F side")
+# The real department master sheet labels the on-call rows "AM CALL" /
+# "PM CALL" rather than DOC / NOC. Same rows, same hours.
+EXPORT_SHIFT_LOOKUP[("AM CALL", "0500-1559")] = (None, None)
+EXPORT_SHIFT_LOOKUP[("PM CALL", "1600-0459")] = (None, None)
+
+# Canonical on-call type for every on-call row label the readers accept.
+CALL_TYPE_BY_LABEL: dict[str, str] = {
+    "DOC": "DOC", "AM CALL": "DOC",
+    "NOC": "NOC", "PM CALL": "NOC",
+}
+
+
+def normalize_label(value) -> str:
+    """Collapse the stray whitespace hand-edited sheets accumulate ('NECHC ', '  1800-0000')."""
+    return " ".join(str(value).split()) if value is not None else ""
 
 # Flat shift-code -> Shift object lookup (used by the xlsx loader and the
 # master-sheet reader).

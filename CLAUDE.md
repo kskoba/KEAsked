@@ -8,7 +8,7 @@ it's written for a session with zero memory of prior conversations.
 **Cross-month continuity is now wired end-to-end (2026-10-07, uncommitted
 as of this writing — check `git status`).** The remaining step before a
 60-minute run is to get a *real* finalized December schedule as a local
-xlsx and load it; everything else is built and tested (71/71 backend tests).
+xlsx and load it; everything else is built and tested (76/76 backend tests).
 
 **What was built 2026-10-07 (this session):**
 - `scheduler/backend/trailing.py` (new, pure functions): `previous_month`,
@@ -69,6 +69,45 @@ xlsx and load it; everything else is built and tested (71/71 backend tests).
   and sked sources, and the fully-automatic fallback) and
   `test_carryover.py` (10: summaries, and *contested mirrored* solver tests
   where two identical physicians differ only in last month's record).
+
+**Also 2026-10-07 (afternoon), while preparing real December data:**
+- **Float shift hours corrected**: the app's `EXPORT_SHIFTS` row said
+  `RAH Float 1600-0459` (the on-call END time, copied from NOC). Real hours
+  are **1600-2400** (user-confirmed). Export now writes 1600-2400; the old
+  label is kept as a read-only back-compat alias so pre-fix exports still
+  load.
+- **Master-sheet reader fixed for the REAL department sheet** (found by
+  parsing `Tests/2026-12 - December 2026 RAH NECHC Master Schedule.xlsx`,
+  an export of the real sheet): (a) no blank spacer row between weeks ->
+  the old parser swallowed every other week (got 320 of 651 slots); (b) a
+  blank date cell on Dec 1 and a wrong-year datetime on the spill-over
+  Jan 1 cell -> dates now inferred from neighbours by column offset; (c)
+  on-call rows are labelled `AM CALL`/`PM CALL`, not DOC/NOC -> aliases +
+  `CALL_TYPE_BY_LABEL` canonicalisation; (d) stray whitespace in labels.
+  Same week-boundary fix applied to `_parse_schedule_xlsx`. Now parses all
+  651 slots (630 filled, 21 unfilled, 50 on-calls). Tests in
+  `test_master_sheet_reader.py`. Full suite 76/76.
+- **`Lam-Rico` alias added to KLam** in `physicians.yaml` (gitignored real
+  config -- needs `./scripts/sync-config-to-unraid.sh` to reach Unraid).
+  The master sheet records the shared Lam/Rico position under that name
+  and the reader hard-errors on an unresolved name.
+- **December preference folder**: Zhang's submission was the anonymous
+  Numbers-exported `.xls`; converted (values only, via xlrd) to
+  `Zhang - December 2026.xlsx`, imports cleanly (10/9/10). Still **no
+  December preference sheet** for 7 physicians who worked December per the
+  master sheet: Deol (6 shifts), Johnston (9), Mason (7), Rawe (6),
+  Rozmahel (1), Sharma (9), Thirsk (6, PDF-only). Their requested counts
+  are unknown, so the repeat-overage carry-over is inert for them; the
+  acute-debt term still works (needs only the schedule).
+- **`scripts/kea.sh`** -- terminal control of the dev stack
+  (`kea up|down|backend|status|logs|test`); alias
+  `kea='/home/cid/Dropbox/KEAclaude/KEAsked/scripts/kea.sh'`. Refuses to
+  stop a backend with a solve in flight unless `--force`.
+- **Unraid is stale**: `http://192.168.0.5:5000/api/trailing-schedule`
+  returns 404 (container predates this session). Needs: user `git push`,
+  then the `update-unraid-backend` procedure (SSH -- ask first), plus
+  config sync for the KLam alias, plus `sync-preferences-to-unraid.sh` for
+  whichever month folder is used as `/config/<Month>`.
 
 **Still to do:**
 1. Before the January solve, in the app: open "Previous month (December

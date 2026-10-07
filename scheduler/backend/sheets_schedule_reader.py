@@ -40,7 +40,7 @@ from scheduler.backend.google_sheets_client import (
     read_range,
 )
 from scheduler.backend.physician_resolver import build_alias_index, resolve_physician_id
-from scheduler.backend.shifts import EXPORT_SHIFT_LOOKUP, SHIFT_CODE_LOOKUP
+from scheduler.backend.shifts import CALL_TYPE_BY_LABEL, EXPORT_SHIFT_LOOKUP, SHIFT_CODE_LOOKUP, normalize_label
 
 # Generous enough for a 6-week month view (header + date row + ~23 shift
 # pairs * 6 weeks + gap rows); read the whole used range in one call rather
@@ -127,6 +127,49 @@ def download_public_sheet_grid(spreadsheet_id: str, timeout: float = 30.0) -> li
     return [list(row) for row in ws.iter_rows(min_row=1, max_row=_MAX_ROWS, max_col=9, values_only=True)]
 
 
+def _week_dates(date_row: list, year: int, month: int, cell) -> dict[int, datetime.date]:
+    """
+    Column (1..7 = SUN..SAT) -> date for one week's date row. Cells may be
+    ints, floats, digit strings, real datetimes, or blank; the real sheet
+    has had a blank date cell on a worked day (Dec 1 2026) and a datetime
+    with the wrong year on the spill-over Jan 1 cell. So: take every cell
+    that parses to a day of THIS month, then fill the blanks from a known
+    neighbour by column offset (SUN..SAT are consecutive days), keeping
+    only days that exist in this month.
+    """
+    import calendar as _cal
+
+    days_in_month = _cal.monthrange(year, month)[1]
+    known: dict[int, int] = {}
+    for c in range(1, 8):
+        val = cell(date_row, c)
+        if val in (None, ""):
+            continue
+        day = None
+        if isinstance(val, datetime.datetime):
+            if (val.year, val.month) == (year, month):
+                day = val.day
+        elif isinstance(val, datetime.date):
+            if (val.year, val.month) == (year, month):
+                day = val.day
+        else:
+            try:
+                day = int(float(str(val).strip()))
+            except (ValueError, TypeError):
+                day = None
+        if day is not None and 1 <= day <= days_in_month:
+            known[c] = day
+    if not known:
+        return {}
+    anchor_col, anchor_day = next(iter(known.items()))
+    out: dict[int, datetime.date] = {}
+    for c in range(1, 8):
+        day = known.get(c, anchor_day + (c - anchor_col))
+        if 1 <= day <= days_in_month:
+            out[c] = datetime.date(year, month, day)
+    return out
+
+
 def parse_schedule_grid(
     grid: list[list], year: int, month: int, roster: dict[str, PhysicianConfig]
 ) -> ScheduleResult:
@@ -166,22 +209,19 @@ def parse_schedule_grid(
         i += 1
         if i >= n:
             break
-        date_row = grid[i]
-        col_to_date: dict[int, datetime.date] = {}
-        for c in range(1, 8):
-            val = cell(date_row, c)
-            if val not in (None, ""):
-                try:
-                    col_to_date[c] = datetime.date(year, month, int(val))
-                except (ValueError, TypeError):
-                    pass
+        col_to_date = _week_dates(grid[i], year, month, cell)
 
         i += 1
         while i < n:
             site_row = grid[i]
             site_label_raw = cell(site_row, 0)
             if site_label_raw is None or str(site_label_raw).strip() == "":
-                i += 1
+                # End of this week's block. Do NOT consume the row: in the
+                # real department sheet there is no blank spacer row between
+                # weeks, so this empty-col-A row IS the next week's SUN
+                # header, and the outer loop must get to see it. (Swallowing
+                # it here silently dropped every other week -- confirmed on
+                # the real December 2026 sheet, 2026-10-07.)
                 break
 
             i += 1
@@ -190,9 +230,8 @@ def parse_schedule_grid(
             time_row = grid[i]
             i += 1  # skip the time-range/learner row entirely -- never read its day columns
 
-            site_label = str(site_label_raw).strip()
-            time_label_raw = cell(time_row, 0)
-            time_label = str(time_label_raw).strip() if time_label_raw is not None else ""
+            site_label = normalize_label(site_label_raw)
+            time_label = normalize_label(cell(time_row, 0))
 
             entry = EXPORT_SHIFT_LOOKUP.get((site_label, time_label))
             if not entry:
@@ -213,7 +252,8 @@ def parse_schedule_grid(
                 if time_code is None:
                     on_calls.append(
                         OnCallAssignment(
-                            date=d, call_type=site_label, physician_id=resolve_id(name), physician_name=name
+                            date=d, call_type=CALL_TYPE_BY_LABEL.get(site_label, site_label),
+                            physician_id=resolve_id(name), physician_name=name,
                         )
                     )
                 else:

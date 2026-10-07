@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import PreviousMonthPanel from './PreviousMonthPanel'
-import { importSubmissions, importFlatFile, importFromSked, resendMonthlyRequest, getSkedPeriods, getPhysicianLink, generateSchedule, cancelGenerate, detectFlatMonth, getGenerateProgress, loadScheduleFromFile, loadScheduleFromMasterSheet, getApiBaseUrl } from '../api'
+import { importSubmissions, importFromSked, resendMonthlyRequest, getSkedPeriods, getPhysicianLink, generateSchedule, cancelGenerate, getGenerateProgress, loadScheduleFromFile, loadScheduleFromMasterSheet, getApiBaseUrl } from '../api'
 
 // Whether the active backend is this machine or a remote one (e.g. a Docker
 // container on Unraid). The native file/folder picker only browses this
@@ -19,7 +19,7 @@ const MONTHS = [
 const currentDate = new Date()
 
 export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onScheduleLoaded, importResult }) {
-  const [mode, setMode] = useState('flat')        // 'flat' | 'directory' | 'sked' | 'load'
+  const [mode, setMode] = useState('directory')   // 'directory' | 'sked' | 'load'  (the old single-flat-file import was retired 2026-10-07)
   const [path, setPath] = useState('')
   const [skedPeriods, setSkedPeriods] = useState(null)
   const [skedPeriodId, setSkedPeriodId] = useState('')
@@ -36,7 +36,7 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
   const [loadSource, setLoadSource] = useState('file')  // 'load' mode: 'file' | 'sheet'
   // Preferences sub-section in 'load' mode
   const [prefPath, setPrefPath] = useState('')
-  const [prefMode, setPrefMode] = useState('flat')  // 'flat' | 'directory'
+  const [prefMode, setPrefMode] = useState('directory')  // 'directory' | 'sked'
   const [progress, setProgress] = useState(null)   // { current, total, best_unfilled, solver, time_limit }
   const [countdown, setCountdown] = useState(null)  // seconds remaining for CP-SAT
   const [importError, setImportError] = useState(null)
@@ -48,14 +48,15 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
   const remote = isRemoteBackend()
 
   useEffect(() => {
-    if (mode !== 'sked' || skedPeriods !== null) return
+    const wantsSked = mode === 'sked' || (mode === 'load' && prefMode === 'sked')
+    if (!wantsSked || skedPeriods !== null) return
     getSkedPeriods('shift_request')
       .then((r) => {
         setSkedPeriods(r.periods)
         if (r.periods.length > 0 && !skedPeriodId) setSkedPeriodId(r.periods[0].id)
       })
       .catch((err) => setSkedPeriodsError(err.message))
-  }, [mode, skedPeriods, skedPeriodId])
+  }, [mode, prefMode, skedPeriods, skedPeriodId])
 
   async function handleBrowse() {
     let selected = null
@@ -68,25 +69,14 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
     }
     if (!selected) return
     setPath(selected)
-    if (mode === 'flat') {
-      try {
-        const detected = await detectFlatMonth(selected)
-        setYear(detected.year)
-        setMonth(detected.month)
-      } catch {
-        // ignore — user can set manually
-      }
-    }
   }
 
   async function handleBrowsePref() {
     let selected = null
     if (window.electronAPI) {
-      selected = prefMode === 'directory'
-        ? await window.electronAPI.openDirectory()
-        : await window.electronAPI.openFile()
+      selected = await window.electronAPI.openDirectory()
     } else {
-      selected = prompt(`Enter ${prefMode === 'directory' ? 'directory' : 'file'} path:`)
+      selected = prompt('Enter the submissions directory path:')
     }
     if (selected) setPrefPath(selected)
   }
@@ -98,10 +88,11 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
     try {
       // Step 1: import preferences if provided
       let prefResult = null
-      if (prefPath.trim()) {
+      const wantPrefs = prefMode === 'sked' ? Boolean(skedPeriodId) : Boolean(prefPath.trim())
+      if (wantPrefs) {
         try {
-          prefResult = prefMode === 'flat'
-            ? await importFlatFile(prefPath, year, month)
+          prefResult = prefMode === 'sked'
+            ? await importFromSked(skedPeriodId, year, month)
             : await importSubmissions(prefPath, year, month)
           onImportDone(prefResult)
         } catch (err) {
@@ -128,9 +119,7 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
     try {
       const result = mode === 'sked'
         ? await importFromSked(skedPeriodId, year, month)
-        : mode === 'flat'
-          ? await importFlatFile(path, year, month)
-          : await importSubmissions(path, year, month)
+        : await importSubmissions(path, year, month)
       onImportDone(result)
     } catch (err) {
       setImportError(err.message)
@@ -253,7 +242,7 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
 
         {/* Mode toggle */}
         <div className="flex gap-1 mb-5 p-1 bg-slate-100 rounded-lg w-fit">
-          {[['flat', 'Single flat file'], ['directory', 'Directory'], ['sked', 'From Web (sked)'], ['load', 'Load Saved Schedule']].map(([val, label]) => (
+          {[['directory', 'Directory'], ['sked', 'From Web (sked)'], ['load', 'Load Saved Schedule']].map(([val, label]) => (
             <button
               key={val}
               onClick={() => { setMode(val); setPath(''); setPrefPath(''); setImportError(null); setGenerateError(null); setLoadError(null) }}
@@ -338,7 +327,7 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
         ) : (
           <div className="mb-5">
             <label className="block text-sm font-medium text-slate-700 mb-1">
-              {mode === 'flat' ? 'Preferences File (.xlsx)' : mode === 'directory' ? 'Submissions Directory' : 'Schedule File (.xlsx)'}
+              {mode === 'directory' ? 'Submissions Directory' : 'Schedule File (.xlsx)'}
             </label>
             <div className="flex gap-2">
               <input
@@ -347,8 +336,7 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
                 value={path}
                 onChange={remote ? (e) => setPath(e.target.value) : undefined}
                 placeholder={
-                  remote ? 'Type the path as it exists on the remote backend, e.g. /config/request-imports/october' :
-                  mode === 'flat' ? 'Select the flat preferences Excel file…' :
+                  remote ? 'Type the path as it exists on the remote backend, e.g. /config/January' :
                   mode === 'directory' ? 'Select the folder containing per-physician request files…' :
                   'Select a previously exported schedule .xlsx…'
                 }
@@ -414,7 +402,7 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
 
             {/* Pref mode toggle */}
             <div className="flex gap-1 mb-3 p-1 bg-slate-200 rounded-md w-fit">
-              {[['flat', 'Flat file'], ['directory', 'Directory']].map(([val, label]) => (
+              {[['directory', 'Directory'], ['sked', 'From Web (sked)']].map(([val, label]) => (
                 <button
                   key={val}
                   onClick={() => { setPrefMode(val); setPrefPath('') }}
@@ -457,14 +445,37 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
               </div>
             </div>
 
-            {/* Pref path row */}
+            {/* Pref source row: directory path, or a sked period */}
+            {prefMode === 'sked' ? (
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Sked Period</label>
+                {skedPeriodsError && (
+                  <p className="mb-1.5 text-xs text-red-600">{skedPeriodsError}</p>
+                )}
+                <select
+                  value={skedPeriodId}
+                  onChange={(e) => setSkedPeriodId(e.target.value)}
+                  disabled={loading || !skedPeriods || skedPeriods.length === 0}
+                  className="w-full px-2 py-1.5 rounded border border-slate-300 bg-white text-slate-700 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400"
+                >
+                  {skedPeriods === null && <option>Loading periods…</option>}
+                  {skedPeriods && skedPeriods.length === 0 && <option>No periods found on sked</option>}
+                  {skedPeriods?.map((p) => (
+                    <option key={p.id} value={p.id}>{p.label}</option>
+                  ))}
+                </select>
+                <p className="mt-1.5 text-xs text-slate-500">
+                  Pulls each physician's submitted preferences for this period straight from sked — no Excel folder needed.
+                </p>
+              </div>
+            ) : (
             <div className="flex gap-2">
               <input
                 type="text"
                 readOnly={!remote}
                 value={prefPath}
                 onChange={remote ? (e) => setPrefPath(e.target.value) : undefined}
-                placeholder={remote ? 'Type the path as it exists on the remote backend…' : (prefMode === 'flat' ? 'Select flat preferences file…' : 'Select submissions directory…')}
+                placeholder={remote ? 'Type the path as it exists on the remote backend…' : 'Select submissions directory…'}
                 className={`flex-1 px-3 py-1.5 rounded border border-slate-300 text-slate-700 text-sm focus:outline-none ${remote ? 'focus:ring-2 focus:ring-sky-400' : 'cursor-default'} bg-white`}
               />
               <button
@@ -486,7 +497,8 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
                 </button>
               )}
             </div>
-            {remote && (
+            )}
+            {remote && prefMode === 'directory' && (
               <p className="mt-1.5 text-xs text-amber-600">
                 Backend is remote — paths are resolved on the backend's filesystem, not this computer.
               </p>
@@ -511,7 +523,7 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
           {mode === 'load' ? (
             <button
               onClick={handleLoadSchedule}
-              disabled={!path.trim() || loading}
+              disabled={loading || (loadSource === 'file' && !path.trim())}
               className="flex items-center gap-2 px-5 py-2.5 bg-sky-600 hover:bg-sky-500 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-medium text-sm rounded-md transition-colors"
             >
               {loading ? (

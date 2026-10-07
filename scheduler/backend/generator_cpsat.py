@@ -52,6 +52,8 @@ from scheduler.backend.shifts import (
     is_next_shift_ok,
     violates_max_spacing,
     _LATE_SHIFT_MIN_START_HOUR,
+    _EVENING_SHIFT_MIN_START_HOUR,
+    _POST_EVENING_MIN_NEXT_START_HOUR,
 )
 
 logger = logging.getLogger(__name__)
@@ -648,7 +650,7 @@ class CpsatScheduleGenerator:
                     )
                     for block1 in BLOCKS:
                         for shift1 in block1:
-                            if shift1.start_hour < _LATE_SHIFT_MIN_START_HOUR:
+                            if shift1.start_hour < _EVENING_SHIFT_MIN_START_HOUR:
                                 continue
                             for block2 in BLOCKS:
                                 for shift2 in block2:
@@ -685,7 +687,7 @@ class CpsatScheduleGenerator:
                     if not (0 <= target < len(all_dates)):
                         continue
                     prev_shift = _trailing_shift(pid, d_idx)
-                    if prev_shift is None or prev_shift.start_hour < _LATE_SHIFT_MIN_START_HOUR:
+                    if prev_shift is None or prev_shift.start_hour < _EVENING_SHIFT_MIN_START_HOUR:
                         continue
                     between_day_worked = sum(
                         _day_worked_expr(d_between) for d_between in range(d_idx + 1, target)
@@ -777,7 +779,7 @@ class CpsatScheduleGenerator:
                     for d_idx in range(len(all_dates) - gap):
                         for block1 in BLOCKS:
                             for shift1 in block1:
-                                if shift1.start_hour < _LATE_SHIFT_MIN_START_HOUR:
+                                if shift1.start_hour < _EVENING_SHIFT_MIN_START_HOUR:
                                     continue
                                 for block2 in BLOCKS:
                                     for shift2 in block2:
@@ -2236,6 +2238,79 @@ class CpsatScheduleGenerator:
                 model.add(w0 + w1 + w2 + w3 <= 3 + run4)
                 run_penalty_terms.append(-_RUN4_PENALTY * run4)
 
+        # Soft: site variety within a run of consecutive days (2026-10-07).
+        # Two parts, per the scheduler's stated rule:
+        #   (a) never two shifts at the same site in one run, for every site
+        #       except NEHC -- RAH A, RAH B, RAH I, and RAH F (float is
+        #       non-acute but scarce, so nobody should get several together).
+        #       Different start times at the same site still count; HC-10
+        #       already hard-bans the identical shift CODE on adjacent days.
+        #   (b) a run of 2+ days with no acute (RAH A/B) shift anywhere in
+        #       it is penalized -- e.g. Velji's Jan 1-3 0900h/1200h/1500h
+        #       NEHC, which the time-variety penalty above (time only, by
+        #       design) and the A->A alternation penalty (acute only) both
+        #       saw as fine.
+        # "Run" = a maximal stretch of consecutive worked days; a day off
+        # ends it (a 5th/7th pair is two runs, confirmed OK). Shift codes in
+        # allow_repeat_shift_codes (Dickey's single-site nights) are exempt
+        # from (a). Days before the 1st are treated as off (the previous
+        # month's trailing run isn't considered). Weight matches the
+        # weekend-split penalty: above the per-day shape tie-breaks, below
+        # the near-hard rest rules.
+        _CLUSTER_SITE_REPEAT_PENALTY = 150
+        _CLUSTER_NO_ACUTE_PENALTY = 150
+        _NO_REPEAT_SITES = ("RAH A side", "RAH B side", "RAH I side", "RAH F side")
+        _ACUTE_SITES = ("RAH A side", "RAH B side")
+        cluster_site_penalty_terms = []
+        n_days = len(all_dates)
+        for pid in pids:
+            cl_cfg = _get_cfg(pid)
+            max_run = _max_consec(pid)
+            allowed_repeat = set(cl_cfg.allow_repeat_shift_codes) if cl_cfg else set()
+
+            def _site_expr(d_idx, site):
+                return sum(
+                    shifts[(pid, d_idx, s.code)]
+                    for block in BLOCKS for s in block
+                    if s.site == site and s.code not in allowed_repeat
+                )
+
+            def _acute_expr(d_idx):
+                return sum(
+                    shifts[(pid, d_idx, s.code)]
+                    for block in BLOCKS for s in block
+                    if s.site in _ACUTE_SITES
+                )
+
+            # (a) same site on days d and d+k with every day between worked
+            for site in _NO_REPEAT_SITES:
+                for k in range(1, max_run):
+                    for d_idx in range(n_days - k):
+                        mids = [worked_bool.get((pid, m)) for m in range(d_idx + 1, d_idx + k)]
+                        if any(m is None for m in mids):
+                            continue
+                        rep = model.new_bool_var(f"siterep_{pid}_{site[4:5]}_{d_idx}_{k}")
+                        model.add(_site_expr(d_idx, site) + _site_expr(d_idx + k, site) + sum(mids) <= k + rep)
+                        cluster_site_penalty_terms.append(-_CLUSTER_SITE_REPEAT_PENALTY * rep)
+
+            # (b) a maximal run of L>=2 worked days containing no acute shift
+            for L in range(2, max_run + 1):
+                for d_idx in range(n_days - L + 1):
+                    days_w = [worked_bool.get((pid, m)) for m in range(d_idx, d_idx + L)]
+                    if any(w is None for w in days_w):
+                        continue
+                    before = worked_bool.get((pid, d_idx - 1))
+                    after = worked_bool.get((pid, d_idx + L))
+                    expr = sum(days_w) - L
+                    expr += (1 - before) if before is not None else 1
+                    expr += (1 - after) if after is not None else 1
+                    expr += 1 - sum(_acute_expr(m) for m in range(d_idx, d_idx + L))
+                    # expr == 3 exactly when: all L days worked, both
+                    # neighbours off (maximal run), zero acute shifts in it.
+                    noac = model.new_bool_var(f"noacute_{pid}_{d_idx}_{L}")
+                    model.add(noac >= expr - 2)
+                    cluster_site_penalty_terms.append(-_CLUSTER_NO_ACUTE_PENALTY * noac)
+
         # No avoid_weekday / avoid_mondays objective term (removed
         # 2026-10-06): at -5 per shift it was outweighed by a single
         # site-preference tie-break (+6), i.e. a no-op, and the real
@@ -2260,6 +2335,7 @@ class CpsatScheduleGenerator:
         objective_terms.extend(anchor_fulfillment_bonus_terms)
         objective_terms.extend(weekend_clump_penalty_terms)
         objective_terms.extend(variety_penalty_terms)
+        objective_terms.extend(cluster_site_penalty_terms)
         objective_terms.extend(weekend_overage_penalty_terms)
         objective_terms.extend(prefer_weekend_bonus_terms)
         objective_terms.extend(prefer_weekend_gap_penalty_terms)
@@ -2975,6 +3051,15 @@ class CpsatScheduleGenerator:
                             f"must start at noon or later (requested: {shift.time})"
                         ),
                     ))
+                elif prev_shift.start_hour >= _EVENING_SHIFT_MIN_START_HOUR and gap == 2:
+                    v.append(ViolationReason(
+                        rule="post_evening_shift_rest",
+                        description=(
+                            f"After {prev_shift.time} on {prev_date:%b %d} (1600h-1800h start, ending "
+                            f"0000h-0200h), the day after next must start at "
+                            f"{_POST_EVENING_MIN_NEXT_START_HOUR:02d}00h or later (requested: {shift.time})"
+                        ),
+                    ))
                 else:
                     actual_h = (shift.start_hour + gap * 24) - prev_shift.start_hour
                     v.append(ViolationReason(
@@ -2996,6 +3081,15 @@ class CpsatScheduleGenerator:
                             f"After {shift.time} on {d:%b %d} (2000h or later), the next "
                             f"day must be off entirely, and the day after that must start "
                             f"at noon or later (have: {nxt_shift.time} on {nxt_date:%b %d})"
+                        ),
+                    ))
+                elif shift.start_hour >= _EVENING_SHIFT_MIN_START_HOUR and fwd_gap == 2:
+                    v.append(ViolationReason(
+                        rule="post_evening_shift_rest",
+                        description=(
+                            f"After {shift.time} on {d:%b %d} (1600h-1800h start, ending 0000h-0200h), "
+                            f"the day after next must start at {_POST_EVENING_MIN_NEXT_START_HOUR:02d}00h "
+                            f"or later (have: {nxt_shift.time} on {nxt_date:%b %d})"
                         ),
                     ))
                 else:

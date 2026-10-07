@@ -138,6 +138,14 @@ def is_spacing_ok(prev_shift: Shift, next_shift: Shift) -> bool:
 
 
 _LATE_SHIFT_MIN_START_HOUR = 20  # 2000h or later triggers the extended-rest rules below
+# 1600h-1800h starts (ending 0000-0200 under the 8h shift length) get a
+# narrower rule: the day after next may not start before 0900h. Added
+# 2026-10-07 after a real solve put K Smith on 1800h -> day off -> 0600h:
+# home around 0400h, then an 0600h start the following morning. 0900h and
+# later on that day are fine; the day in between is already governed by
+# the plain 23h rule (after an 1800h only 1700h+ fits the next day).
+_EVENING_SHIFT_MIN_START_HOUR = 16
+_POST_EVENING_MIN_NEXT_START_HOUR = 9
 
 
 def is_next_shift_ok(prev_shift: Shift, days_gap: int, next_shift: Shift) -> bool:
@@ -184,6 +192,9 @@ def is_next_shift_ok(prev_shift: Shift, days_gap: int, next_shift: Shift) -> boo
             return False
         if days_gap == 3:
             return next_shift.start_hour >= 12
+    elif prev_shift.start_hour >= _EVENING_SHIFT_MIN_START_HOUR:
+        if days_gap == 2:
+            return next_shift.start_hour >= _POST_EVENING_MIN_NEXT_START_HOUR
     return True
 
 

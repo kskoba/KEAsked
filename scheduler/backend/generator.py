@@ -27,6 +27,8 @@ from scheduler.backend.shifts import (
     is_next_shift_ok,
     is_spacing_ok,
     _LATE_SHIFT_MIN_START_HOUR,
+    _EVENING_SHIFT_MIN_START_HOUR,
+    _POST_EVENING_MIN_NEXT_START_HOUR,
 )
 
 # Shift start times treated as "evening" for call_linkage="doc_before_evening"
@@ -72,6 +74,7 @@ _HARD_VIOLATION_RULES: frozenset[str] = frozenset({
     "consecutive_limit",        # safety: max consecutive days
     "spacing_23h",              # safety: 23 h minimum gap between shifts
     "post_late_shift_rest",     # safety: mandatory rest after a 2000h-or-later shift
+    "post_evening_shift_rest",  # safety: no 0600h two days after a 1600h-1800h shift
     "shift_type_restriction",   # competency: e.g. only_2400h physicians
     "forbidden_site",           # competency: site they cannot work
     "availability",             # physician said they cannot work this day/block
@@ -867,6 +870,15 @@ class ScheduleGenerator:
                             f"must start at noon or later (requested: {shift.time})"
                         ),
                     ))
+                elif prev_shift.start_hour >= _EVENING_SHIFT_MIN_START_HOUR and gap == 2:
+                    v.append(ViolationReason(
+                        rule="post_evening_shift_rest",
+                        description=(
+                            f"After {prev_shift.time} on {prev_date:%b %d} (1600h-1800h start, ending "
+                            f"0000h-0200h), the day after next must start at "
+                            f"{_POST_EVENING_MIN_NEXT_START_HOUR:02d}00h or later (requested: {shift.time})"
+                        ),
+                    ))
                 else:
                     actual_h = (shift.start_hour + gap * 24) - prev_shift.start_hour
                     v.append(ViolationReason(
@@ -891,6 +903,15 @@ class ScheduleGenerator:
                             f"After {shift.time} on {d:%b %d} (2000h or later), the next "
                             f"day must be off entirely, and the day after that must start "
                             f"at noon or later (have: {nxt_shift.time} on {nxt_date:%b %d})"
+                        ),
+                    ))
+                elif shift.start_hour >= _EVENING_SHIFT_MIN_START_HOUR and fwd_gap == 2:
+                    v.append(ViolationReason(
+                        rule="post_evening_shift_rest",
+                        description=(
+                            f"After {shift.time} on {d:%b %d} (1600h-1800h start, ending 0000h-0200h), "
+                            f"the day after next must start at {_POST_EVENING_MIN_NEXT_START_HOUR:02d}00h "
+                            f"or later (have: {nxt_shift.time} on {nxt_date:%b %d})"
                         ),
                     ))
                 else:

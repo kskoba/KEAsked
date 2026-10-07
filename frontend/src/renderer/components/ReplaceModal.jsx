@@ -31,12 +31,14 @@ export default function ReplaceModal({ slot, scheduleData, importResult, onAssig
   const [assigning, setAssigning] = useState(null)  // physicianId being assigned
   const [error, setError] = useState(null)
 
-  // Live candidate list fetched fresh from the server on mount. The server
-  // temporarily unassigns the current occupant so the check reflects the
-  // slot being genuinely open, then restores it. Hard-rule violations
-  // (unavailable, already working that day, consecutive limit, spacing,
-  // etc.) exclude a physician entirely; only soft-rule violations come
-  // back as warnings on an otherwise-assignable candidate.
+  // Live list of EVERY physician with a submission this month, fetched fresh
+  // on mount. The server temporarily unassigns the current occupant so each
+  // check reflects the slot being genuinely open, then restores it. Each
+  // entry carries its full violation list; hard-rule failures (unavailable,
+  // already working that day, consecutive limit, spacing, forbidden site...)
+  // mark it is_hard_blocked. Blocked physicians are still listed and
+  // searchable -- someone who marked a day unavailable may have agreed to a
+  // trade since -- but assigning one is an explicit override.
   const [liveCandidates, setLiveCandidates] = useState(null)   // null = loading
   const [fetchError, setFetchError] = useState(null)
 
@@ -51,7 +53,7 @@ export default function ReplaceModal({ slot, scheduleData, importResult, onAssig
     setFetchError(null)
     setLiveCandidates(null)
 
-    getCandidates(slot.date, slot.shift.code)
+    getCandidates(slot.date, slot.shift.code, { includeAll: true })
       .then(data => {
         if (!cancelled) setLiveCandidates(data.candidates || [])
       })
@@ -71,8 +73,11 @@ export default function ReplaceModal({ slot, scheduleData, importResult, onAssig
     const list = liveCandidates || []
     const q = search.toLowerCase().trim()
     if (!q) return list
-    return list.filter(c => (c.physician_name || '').toLowerCase().includes(q))
+    return list.filter(c => (c.physician_name || '').toLowerCase().includes(q) || (c.physician_id || '').toLowerCase().includes(q))
   }, [liveCandidates, search])
+  const eligible = useMemo(() => filtered.filter(c => !c.is_hard_blocked), [filtered])
+  const blocked = useMemo(() => filtered.filter(c => c.is_hard_blocked), [filtered])
+  const [showBlocked, setShowBlocked] = useState(false)
 
   const handleAssign = useCallback(async (candidate) => {
     setAssigning(candidate.physician_id)
@@ -150,7 +155,7 @@ export default function ReplaceModal({ slot, scheduleData, importResult, onAssig
             type="text"
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="Search physician name…"
+            placeholder="Search any physician — blocked ones appear too…"
             className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400 placeholder-slate-300"
             autoFocus
             disabled={assigning !== null}
@@ -181,24 +186,25 @@ export default function ReplaceModal({ slot, scheduleData, importResult, onAssig
             </div>
           ) : filtered.length === 0 ? (
             <div className="py-8 text-center text-slate-400 text-sm">
-              {search ? 'No matching physicians.' : 'No eligible physicians for this slot.'}
-              {!search && (
-                <p className="text-xs mt-1 text-slate-300">
-                  Everyone else is either unavailable, already working that day, or would violate a hard rule (consecutive limit, spacing, forbidden site, etc.).
-                </p>
-              )}
+              {search ? 'No physician matches that search.' : 'No physicians have a submission this month.'}
             </div>
           ) : (
             <div className="space-y-2">
               <p className="text-xs text-slate-500 mb-1">
-                {filtered.length} eligible.
-                {filtered.some(c => c.violations && c.violations.length > 0) && (
+                {eligible.length} eligible{blocked.length > 0 ? `, ${blocked.length} blocked by a hard rule` : ''}.
+                {eligible.some(c => c.violations && c.violations.length > 0) && (
                   <span> Warnings indicate soft-rule conflicts — you may still assign.</span>
                 )}
               </p>
-              {filtered.map(candidate => {
+              {eligible.length === 0 && !search && (
+                <p className="text-xs text-slate-400">
+                  Nobody is cleanly eligible; the blocked list below shows why for each physician.
+                </p>
+              )}
+              {[...eligible, ...((showBlocked || search) ? blocked : [])].map(candidate => {
                 const isAssigning = assigning === candidate.physician_id
                 const hasWarnings = candidate.violations && candidate.violations.length > 0
+                const isBlocked = Boolean(candidate.is_hard_blocked)
                 const isCurrent = candidate.physician_name === currentName || candidate.physician_id === slot.physician_id
 
                 return (
@@ -207,9 +213,11 @@ export default function ReplaceModal({ slot, scheduleData, importResult, onAssig
                     className={`flex items-start gap-3 p-3 rounded-lg border ${
                       isCurrent
                         ? 'border-slate-200 bg-slate-50'
-                        : hasWarnings
-                          ? 'border-amber-200 bg-amber-50'
-                          : 'border-emerald-200 bg-emerald-50'
+                        : isBlocked
+                          ? 'border-red-200 bg-red-50/60'
+                          : hasWarnings
+                            ? 'border-amber-200 bg-amber-50'
+                            : 'border-emerald-200 bg-emerald-50'
                     }`}
                   >
                     <div className="flex-1 min-w-0">
@@ -250,10 +258,13 @@ export default function ReplaceModal({ slot, scheduleData, importResult, onAssig
                       <button
                         onClick={() => handleAssign(candidate)}
                         disabled={assigning !== null}
+                        title={isBlocked ? 'Overrides a hard rule — only do this if the physician has agreed to take the shift' : undefined}
                         className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                          hasWarnings
-                            ? 'bg-amber-500 hover:bg-amber-400 text-white disabled:bg-slate-300'
-                            : 'bg-emerald-500 hover:bg-emerald-400 text-white disabled:bg-slate-300'
+                          isBlocked
+                            ? 'bg-white hover:bg-red-50 text-red-700 border border-red-300 disabled:bg-slate-100 disabled:text-slate-400'
+                            : hasWarnings
+                              ? 'bg-amber-500 hover:bg-amber-400 text-white disabled:bg-slate-300'
+                              : 'bg-emerald-500 hover:bg-emerald-400 text-white disabled:bg-slate-300'
                         } disabled:cursor-not-allowed`}
                       >
                         {isAssigning ? (
@@ -265,13 +276,24 @@ export default function ReplaceModal({ slot, scheduleData, importResult, onAssig
                             Assigning…
                           </>
                         ) : (
-                          hasWarnings ? 'Assign (override)' : 'Assign'
+                          isBlocked ? 'Assign anyway' : hasWarnings ? 'Assign (override)' : 'Assign'
                         )}
                       </button>
                     )}
                   </div>
                 )
               })}
+              {blocked.length > 0 && !search && (
+                <button
+                  type="button"
+                  onClick={() => setShowBlocked(v => !v)}
+                  className="w-full mt-1 py-2 text-xs font-medium text-slate-500 hover:text-slate-700 border border-dashed border-slate-300 rounded-lg"
+                >
+                  {showBlocked
+                    ? 'Hide physicians blocked by a hard rule'
+                    : `Show ${blocked.length} physician${blocked.length === 1 ? '' : 's'} blocked by a hard rule (unavailable, already working, rest/consecutive limits…)`}
+                </button>
+              )}
             </div>
           )}
         </div>

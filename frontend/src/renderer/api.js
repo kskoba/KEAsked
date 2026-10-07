@@ -365,8 +365,9 @@ export async function loadScheduleFromMasterSheet(year, month) {
  * @param {string} shiftCode  e.g. "RAH_A_D1"
  * @returns {{ date: string, shift_code: string, candidates: CandidateSchema[] }}
  */
-export async function getCandidates(date, shiftCode) {
+export async function getCandidates(date, shiftCode, { includeAll = false } = {}) {
   const params = new URLSearchParams({ date, shift_code: shiftCode })
+  if (includeAll) params.set('include_all', 'true')
   return request('GET', `/api/candidates?${params}`)
 }
 

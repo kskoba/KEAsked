@@ -216,6 +216,35 @@ the human November schedule (user asked for options 1 and 3, not the cap):**
   `/api/generate` after the A/B pass (which previously left `_slot_to_pid`
   stale for later /api/swap and on-call checks).
 
+- UI (evening): the single-flat-file import is retired; Load Saved Schedule
+  can pull preferences from a sked period; the Validate page has an
+  open-submission-xlsx button beside each physician (`shell:openPath` IPC,
+  xlsx-only; disabled when the app points at a remote backend).
+
+- **Spill-over days (evening, user decision)**: the department's master
+  sheet staffs the partial last-week row for SOME months -- "just for
+  nov/dec/jan there are strange spillovers to help people with
+  vacation/holiday planning" (the December 2026 sheet staffs Jan 1: 21
+  shifts + both calls). Those days belong to the sheet's month; the next
+  month is solved from the day after (January = Jan 2-31) with the
+  spill-over enforced as already-worked trailing days. Fully data-driven:
+  `trailing.spillover_start_day()` only moves the start when the prior
+  sheet actually staffs a contiguous run of days from the 1st, so months
+  with no spill-over are untouched. `ScheduleResult.spillover` /
+  `spillover_on_calls`, `generate(start_day=)`, push skips unscheduled
+  days, on-call skips them too; Previous-month panel shows it.
+  `test_spillover.py` (8).
+- **Replace dialog lists everyone** (`/api/candidates?include_all=true`):
+  every physician with a submission, searchable, hard-blocked ones (incl.
+  "unavailable") shown last in red with an "Assign anyway" override -- a
+  physician who marked a day off may have agreed to a trade since.
+- **Verdict badge is convergence-first** (`Sidebar.jsx`): stats now carry
+  `solve_seconds` / `stalled_seconds` (final tier wall time, time since the
+  last improving solution). Optimal > Converged (no improvement in the last
+  10 min, or last quarter of a shorter run; gap shown as context) >
+  Near-optimal (<3%) > Still improving when time ran out (amber) > Good
+  (<8%) > Sub-optimal (>=8% and not converged, red).
+
 **Still to do:**
 1. Before the January solve, in the app: open "Previous month (December
    2026)" in the solver card, paste the December master-sheet link, Browse

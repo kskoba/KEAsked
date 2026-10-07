@@ -137,6 +137,7 @@ from scheduler.backend.generator import (
     ScheduleStats,
     UnfilledSlot,
     _HARD_VIOLATION_RULES,
+    CandidateOption,
     generate_schedule,
 )
 try:
@@ -2484,6 +2485,8 @@ async def generate(body: GenerateCachedRequest) -> ScheduleResponse:
         # a fresh ScheduleStats that loses these, so we save and restore them.
         _solver_status = result.stats.solver_status if result.stats else None
         _optimality_gap_pct = result.stats.optimality_gap_pct if result.stats else None
+        _solve_seconds = result.stats.solve_seconds if result.stats else None
+        _stalled_seconds = result.stats.stalled_seconds if result.stats else None
         # Post-solve repair: juggle adjacent assignments to fill remaining gaps
         if result.unfilled:
             result = await asyncio.to_thread(gen.repair_pass, result, 50)
@@ -2515,6 +2518,8 @@ async def generate(body: GenerateCachedRequest) -> ScheduleResponse:
         if result.stats and _solver_status:
             result.stats.solver_status = _solver_status
             result.stats.optimality_gap_pct = _optimality_gap_pct
+            result.stats.solve_seconds = _solve_seconds
+            result.stats.stalled_seconds = _stalled_seconds
     except Exception as exc:
         _state["progress"]["running"] = False
         raise HTTPException(status_code=500, detail=f"Generation failed: {exc}\n{traceback.format_exc()}")
@@ -3494,9 +3499,16 @@ def swap_assignments(body: SwapRequest) -> SwapResponse:
 
 
 @app.get("/api/candidates", response_model=CandidatesResponse)
-def get_candidates(date: str, shift_code: str) -> CandidatesResponse:
+def get_candidates(date: str, shift_code: str, include_all: bool = False) -> CandidatesResponse:
     """
     Recalculate fresh candidates for an unfilled slot.
+
+    ``include_all=true`` returns EVERY physician with a submission this
+    month, each with the full violation list for this slot and
+    is_hard_blocked set when any hard rule fails -- so the replace dialog
+    can be searched for a specific person. Someone who marked themselves
+    unavailable can still end up taking a shift in a real-life trade, so
+    "unavailable" must be visible and overridable, not silently hidden.
 
     Unlike the candidates embedded in the schedule response (which are computed
     at generation time and can become stale after manual assignments), this
@@ -3538,7 +3550,20 @@ def get_candidates(date: str, shift_code: str) -> CandidatesResponse:
     if existing:
         gen._unassign(existing.physician_id, d, shift_obj)
 
-    candidates = gen._near_miss_candidates(d, shift_obj, max_n=20)
+    if include_all:
+        candidates = []
+        for pid in gen.submissions:
+            viol = gen._check_constraints(pid, d, shift_obj) or []
+            candidates.append(CandidateOption(
+                physician_id=pid,
+                physician_name=gen.submissions[pid].physician_name,
+                violations=list(viol),
+                is_hard_blocked=any(v.rule in _HARD_VIOLATION_RULES for v in viol),
+            ))
+        # Clean first, then soft warnings, then hard-blocked; names within.
+        candidates.sort(key=lambda c: (c.is_hard_blocked, bool(c.violations), (c.physician_name or "").lower()))
+    else:
+        candidates = gen._near_miss_candidates(d, shift_obj, max_n=20)
 
     if existing:
         gen._assign(existing.physician_id, d, shift_obj)

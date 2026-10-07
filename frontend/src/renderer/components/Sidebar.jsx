@@ -80,6 +80,8 @@ export default function Sidebar({ scheduleData, importResult = null, physicianVi
     physician_singletons = {},
     solver_status = null,
     optimality_gap_pct = null,
+    solve_seconds = null,
+    stalled_seconds = null,
   } = stats
 
   const fillPct = total_slots > 0 ? Math.round((filled_slots / total_slots) * 100) : 0
@@ -121,26 +123,52 @@ export default function Sidebar({ scheduleData, importResult = null, physicianVi
               {/* Solution quality badge + shift swap toggle */}
               <div className="flex items-center gap-2 flex-wrap">
                 {solver_status && (() => {
+                // Verdict (2026-10-07): convergence first, gap second. The
+                // objective now carries many step/indicator penalty terms
+                // whose LP relaxation leaves the proven bound several
+                // percent above any reachable schedule, so a fully
+                // converged run reads ~6% and the old "<5% good, else
+                // sub-optimal" cutoffs mislabelled it. What actually tells
+                // you whether more solver time would help is whether the
+                // search was still finding better schedules at the end.
                 const isOptimal = solver_status === 'optimal'
                 const gap = optimality_gap_pct ?? 0
-                const label = isOptimal
-                  ? 'Optimal solution'
-                  : gap < 1
-                    ? `Near-optimal (${gap.toFixed(2)}% gap)`
-                    : gap < 5
-                      ? `Good solution (${gap.toFixed(1)}% gap)`
-                      : `Sub-optimal (${gap.toFixed(1)}% gap)`
-                const colors = isOptimal
-                  ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
-                  : gap < 1
-                    ? 'bg-sky-50 border-sky-300 text-sky-700'
-                    : gap < 5
-                      ? 'bg-amber-50 border-amber-300 text-amber-700'
-                      : 'bg-red-50 border-red-300 text-red-700'
-                const dotColor = isOptimal ? 'bg-emerald-500' : gap < 1 ? 'bg-sky-500' : gap < 5 ? 'bg-amber-500' : 'bg-red-500'
-                const tooltip = isOptimal
-                  ? 'CP-SAT proved this is the mathematically best possible schedule'
-                  : `Best solution found is within ${gap.toFixed(2)}% of the proven upper bound. More solver time may improve this.`
+                const gapText = optimality_gap_pct != null ? `${gap < 1 ? gap.toFixed(2) : gap.toFixed(1)}% gap` : 'gap unknown'
+                const stalled = solve_seconds != null && stalled_seconds != null ? stalled_seconds : null
+                // "Converged": no better schedule for the last 10 minutes, or
+                // the last quarter of the run for shorter runs.
+                const convergeAfter = solve_seconds != null ? Math.min(600, Math.max(60, solve_seconds * 0.25)) : null
+                const converged = stalled !== null && stalled >= convergeAfter
+                const stillImproving = stalled !== null && stalled < 30
+                const mins = (s) => s >= 90 ? `${Math.round(s / 60)} min` : `${Math.round(s)} s`
+                let label, colors, dotColor, tooltip
+                if (isOptimal) {
+                  label = 'Optimal solution'
+                  colors = 'bg-emerald-50 border-emerald-300 text-emerald-700'; dotColor = 'bg-emerald-500'
+                  tooltip = 'CP-SAT proved this is the mathematically best possible schedule'
+                } else if (converged) {
+                  label = `Converged (${gapText})`
+                  colors = 'bg-sky-50 border-sky-300 text-sky-700'; dotColor = 'bg-sky-500'
+                  tooltip = `No better schedule was found in the last ${mins(stalled)} of a ${mins(solve_seconds)} run. The ${gapText} is the distance to a bound the solver could not tighten further, not evidence of a better schedule. More time is unlikely to help.`
+                } else if (gap < 3) {
+                  label = `Near-optimal (${gapText})`
+                  colors = 'bg-sky-50 border-sky-300 text-sky-700'; dotColor = 'bg-sky-500'
+                  tooltip = `Best schedule is within ${gapText} of the proven bound.`
+                } else if (stillImproving) {
+                  label = `Still improving when time ran out (${gapText})`
+                  colors = 'bg-amber-50 border-amber-300 text-amber-700'; dotColor = 'bg-amber-500'
+                  tooltip = `The solver found a better schedule in the last ${mins(stalled)} of the run — a longer time limit would likely improve this.`
+                } else if (gap < 8) {
+                  label = `Good solution (${gapText})`
+                  colors = 'bg-amber-50 border-amber-300 text-amber-700'; dotColor = 'bg-amber-500'
+                  tooltip = stalled !== null
+                    ? `Last improvement ${mins(stalled)} before the end of a ${mins(solve_seconds)} run; ${gapText} to the proven bound.`
+                    : `Best schedule is within ${gapText} of the proven bound. More solver time may improve this.`
+                } else {
+                  label = `Sub-optimal (${gapText})`
+                  colors = 'bg-red-50 border-red-300 text-red-700'; dotColor = 'bg-red-500'
+                  tooltip = `Best schedule is ${gapText} from the proven bound and the run had not converged. More solver time should help.`
+                }
                 return (
                   <div className={`flex items-center gap-2 px-3 py-2 rounded-md border text-xs font-medium ${colors}`} title={tooltip}>
                     <span className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${dotColor}`} />

@@ -363,6 +363,8 @@ class ScheduleStatsSchema(BaseModel):
     physician_singletons: dict[str, int]
     solver_status: str | None = None
     optimality_gap_pct: float | None = None
+    solve_seconds: float | None = None      # final-tier wall time
+    stalled_seconds: float | None = None    # seconds from the last improving solution to the end of the run
 
 
 class OnCallAssignmentSchema(BaseModel):

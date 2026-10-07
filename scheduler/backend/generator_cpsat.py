@@ -91,6 +91,7 @@ class _SolutionCallback(_cp_model.CpSolverSolutionCallback if _ORTOOLS_AVAILABLE
         self.best_values: dict = {}            # (pid, d_idx, shift_code) -> 0 or 1
         self.best_objective: float = float('-inf')
         self.best_bound: float = 0.0
+        self.best_time: float = 0.0            # solver wall-clock seconds when the incumbent was found
 
     def on_solution_callback(self) -> None:
         obj = self.objective_value
@@ -98,6 +99,7 @@ class _SolutionCallback(_cp_model.CpSolverSolutionCallback if _ORTOOLS_AVAILABLE
             self.best_objective = obj
             self.best_values = {k: self.value(v) for k, v in self._shift_vars.items()}
             self.best_bound = self.best_objective_bound
+            self.best_time = self.wall_time
             if self._live_progress is not None:
                 self._live_progress(self.best_objective, self.best_bound)
         if self._should_stop is not None and self._should_stop():
@@ -2993,6 +2995,8 @@ class CpsatScheduleGenerator:
                     gap_pct = max(0.0, (bound - obj) / max(abs(bound), 1.0) * 100.0)
                 result.stats.solver_status = "optimal" if is_optimal else "feasible"
                 result.stats.optimality_gap_pct = round(gap_pct, 2)
+                result.stats.solve_seconds = round(wall_time, 1)
+                result.stats.stalled_seconds = round(max(0.0, wall_time - solution_cb.best_time), 1)
                 logger.info(
                     "CP-SAT quality: status=%s  obj=%.0f  bound=%.0f  gap=%.2f%%",
                     result.stats.solver_status, obj, bound, gap_pct,

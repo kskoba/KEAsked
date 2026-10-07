@@ -105,6 +105,13 @@ class ScheduleStats:
     # CP-SAT quality fields (None when greedy solver used)
     solver_status: str | None = None       # "optimal" | "feasible" | None
     optimality_gap_pct: float | None = None  # % gap to proven upper bound; 0.0 = optimal
+    # Convergence evidence for the final solver tier (CP-SAT only): how long
+    # it ran, and how long before the end it last found a better schedule.
+    # A run that stopped improving well before time ran out has converged
+    # for practical purposes whatever the (LP-bound-limited) gap says; one
+    # still improving at the buzzer would genuinely benefit from more time.
+    solve_seconds: float | None = None
+    stalled_seconds: float | None = None
 
 
 @dataclass

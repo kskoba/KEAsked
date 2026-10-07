@@ -247,7 +247,7 @@ def test_load_trailing_route_rejects_missing_or_non_xlsx(server, tmp_path):
 
 def test_resolver_degrades_to_none_with_no_source(server):
     out = server._resolve_trailing_assignments(YEAR, MONTH, {})
-    assert out == (None, None)
+    assert out == (None, None, 1)
     assert "No cross-month data" in server._state["trailing_last_used"]
 
 
@@ -257,7 +257,8 @@ def test_resolver_uses_loaded_source_and_reports_it(server):
         "result": _december([("Test", d, DAY) for d in (28, 29, 30, 31)]),
         "source": "xlsx", "file": "/x/dec.xlsx",
     }
-    trailing, prior = server._resolve_trailing_assignments(YEAR, MONTH, roster)
+    trailing, prior, start_day = server._resolve_trailing_assignments(YEAR, MONTH, roster)
+    assert start_day == 1
     assert [d.day for d, _ in trailing["Test"]] == [28, 29, 30, 31]
     assert prior["Test"].shifts_worked == 4 and prior["Test"].shifts_requested is None
     assert "2026-12" in server._state["trailing_last_used"]
@@ -270,7 +271,7 @@ def test_resolver_ignores_a_loaded_source_for_the_wrong_month(server):
     }
     # Solving March: December is not its predecessor -> None, with a reason.
     out = server._resolve_trailing_assignments(2027, 3, {"Test": _cfg("Test")})
-    assert out == (None, None)
+    assert out == (None, None, 1)
     assert "2027-02" in server._state["trailing_last_used"]
 
 
@@ -283,13 +284,13 @@ def test_resolver_one_shot_file_overrides_loaded_source(server, tmp_path):
     path = tmp_path / "dec.xlsx"
     server._build_export_workbook(dec).save(path)
 
-    trailing, _prior = server._resolve_trailing_assignments(YEAR, MONTH, roster, trailing_file=str(path))
+    trailing, _prior, _start = server._resolve_trailing_assignments(YEAR, MONTH, roster, trailing_file=str(path))
     assert [d.day for d, _ in trailing["Test"]] == [30, 31]
 
 
 def test_resolver_one_shot_file_that_is_unreadable_degrades_to_none(server, tmp_path):
     out = server._resolve_trailing_assignments(YEAR, MONTH, {}, trailing_file=str(tmp_path / "missing.xlsx"))
-    assert out == (None, None)
+    assert out == (None, None, 1)
     assert "could not read" in server._state["trailing_last_used"]
 
 
@@ -318,7 +319,7 @@ def test_load_trailing_with_preferences_directory_feeds_overage_carryover(server
     assert status.overage_physicians == ["Test"]
     assert status.acute_debt_physicians == []      # all 11 were RAH A side: no debt
 
-    _trailing, prior = server._resolve_trailing_assignments(YEAR, MONTH, roster)
+    _trailing, prior, _start = server._resolve_trailing_assignments(YEAR, MONTH, roster)
     assert prior["Test"].overage == 3
 
 
@@ -411,7 +412,7 @@ def test_load_trailing_route_from_sheet_link_without_credentials_uses_public_exp
 
     assert status.loaded and status.source == "google_sheets_public_link"
     assert (status.year, status.month) == (DEC_YEAR, 12) and status.assignment_count == 3
-    trailing, _prior = server._resolve_trailing_assignments(YEAR, MONTH, roster)
+    trailing, _prior, _start = server._resolve_trailing_assignments(YEAR, MONTH, roster)
     assert [d.day for d, _ in trailing["Test"]] == [29, 30, 31]
 
 
@@ -459,7 +460,7 @@ def test_load_trailing_route_pulls_requested_counts_from_a_sked_period(server, t
 
     assert status.requests_source == "sked" and status.requested_known_count == 1
     assert status.overage_physicians == ["Test"]
-    _trailing, prior = server._resolve_trailing_assignments(YEAR, MONTH, roster)
+    _trailing, prior, _start = server._resolve_trailing_assignments(YEAR, MONTH, roster)
     assert prior["Test"].overage == 3
 
 
@@ -478,7 +479,7 @@ def test_resolver_fallback_reads_master_sheet_and_sked_when_both_configured(serv
     monkeypatch.setattr(server.sheets_schedule_reader, "parse_schedule_from_sheet", fake_parse)
     _fake_sked(monkeypatch, server, {"Test": 8}, expect_period="2026-12")
 
-    trailing, prior = server._resolve_trailing_assignments(YEAR, MONTH, roster)
+    trailing, prior, _start = server._resolve_trailing_assignments(YEAR, MONTH, roster)
 
     assert [d.day for d, _ in trailing["Test"]] == [28, 29, 30, 31]
     assert prior["Test"].shifts_requested == 8 and prior["Test"].overage == 2
@@ -498,6 +499,6 @@ def test_resolver_fallback_keeps_sheet_data_when_sked_fails(server, monkeypatch)
         raise server.sked_client.SkedApiError("sked down")
     monkeypatch.setattr(server, "_fetch_sked_period_submissions", boom)
 
-    trailing, prior = server._resolve_trailing_assignments(YEAR, MONTH, roster)
+    trailing, prior, _start = server._resolve_trailing_assignments(YEAR, MONTH, roster)
     assert [d.day for d, _ in trailing["Test"]] == [31]
     assert prior["Test"].shifts_requested is None          # overage term simply stays inert

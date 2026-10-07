@@ -2127,6 +2127,12 @@ def _push_result_to_master_sheet(
         ])
         d += datetime.timedelta(days=7)
 
+    # Days the result actually scheduled. A month solved from the 2nd (its
+    # 1st staffed on the previous month's sheet, e.g. Jan 1 2027) has no
+    # slots at all on the 1st -- writing "" there would wipe what the
+    # department already entered in that column.
+    covered_days = {a.date for a in result.assignments} | {u.date for u in result.unfilled}
+
     col_letters = ["B", "C", "D", "E", "F", "G", "H"]
     data: list[dict] = []
     row = 1
@@ -2135,7 +2141,7 @@ def _push_result_to_master_sheet(
         for site_label, time_label, time_code, site_code in _EXPORT_SHIFTS:
             is_oncall = time_code is None
             for col_letter, day in zip(col_letters, week_dates):
-                if day is None:
+                if day is None or day not in covered_days:
                     continue
                 if is_oncall:
                     name = call_index.get((day, site_label), "")
@@ -2455,7 +2461,7 @@ async def generate(body: GenerateCachedRequest) -> ScheduleResponse:
     # and consecutive-shift rules across the boundary. Always degrades to
     # None (today's behavior) rather than failing the solve -- not every
     # month has a predecessor available.
-    trailing_assignments, prior_month = _resolve_trailing_assignments(
+    trailing_assignments, prior_month, start_day = _resolve_trailing_assignments(
         body.year, body.month, roster, body.trailing_file, scheduler_cfg=cfg,
     )
 
@@ -2467,7 +2473,7 @@ async def generate(body: GenerateCachedRequest) -> ScheduleResponse:
             )
             result = await asyncio.to_thread(
                 gen.generate, body.year, body.month, cpsat_time_limit,
-                progress_callback=progress_cb, cancel_check=cancel_check,
+                progress_callback=progress_cb, cancel_check=cancel_check, start_day=start_day,
             )
         else:
             gen = ScheduleGenerator(submissions, roster, cfg)
@@ -2953,7 +2959,7 @@ def _trailing_status(last_used: str | None = None) -> TrailingScheduleStatusResp
     roster = _state.get("roster") or {}
     cfg = _state.get("scheduler_config") or {}
     group_a_target = cfg.get("site_distribution", {}).get("group_a_target", 0.40)
-    summaries = trailing_mod.build_prior_month_summaries(result, src.get("submissions"))
+    summaries = trailing_mod.build_prior_month_summaries(result, src.get("submissions"))  # includes spill-over days
     return TrailingScheduleStatusResponse(
         loaded=True,
         year=result.year,
@@ -2969,6 +2975,9 @@ def _trailing_status(last_used: str | None = None) -> TrailingScheduleStatusResp
             if s_.acute_debt(group_a_target) > 0 and trailing_mod.acute_eligible(roster.get(pid))
         ),
         overage_physicians=sorted(pid for pid, s_ in summaries.items() if s_.overage > 0),
+        spillover_dates=sorted({a.date.isoformat() for a in result.spillover}),
+        spillover_count=len(result.spillover),
+        solve_start_day=trailing_mod.spillover_start_day(result, *trailing_mod.next_month(result.year, result.month)),
         last_used=last_used,
     )
 
@@ -3114,19 +3123,23 @@ def _resolve_trailing_assignments(
     roster: dict,
     trailing_file: str | None = None,
     scheduler_cfg: dict | None = None,
-) -> tuple[dict[str, list[tuple[datetime.date, Shift]]] | None, dict[str, trailing_mod.PriorMonthSummary] | None]:
+) -> tuple[dict[str, list[tuple[datetime.date, Shift]]] | None, dict[str, trailing_mod.PriorMonthSummary] | None, int]:
     """
     Find the previous calendar month's finalized schedule and turn it into
     (a) the generator's trailing_assignments dict (last-few-days rest /
-    consecutive-shift facts) and (b) its prior_month summaries (whole-month
-    acute-debt / overage carry-over). Sources, in priority order:
+    consecutive-shift facts), (b) its prior_month summaries (whole-month
+    acute-debt / overage carry-over), and (c) the first day of this month
+    the solver should schedule -- later than the 1st when the prior sheet's
+    partial last week already staffs the leading day(s) (Jan 1 on the
+    December sheet; by convention January is then solved for Jan 2-31 and
+    Jan 1 is enforced as an already-worked day). Sources, in priority order:
 
       1. ``trailing_file`` passed in the /api/generate body (one-shot xlsx).
       2. The schedule loaded via POST /api/trailing-schedule.
       3. The master Google Sheet, if that integration is configured.
 
     Any failure -- no source, unparseable file, wrong month, Sheets not set
-    up -- yields (None, None) and a note in _state["trailing_last_used"],
+    up -- yields (None, None, 1) and a note in _state["trailing_last_used"],
     never an exception: cross-month data is an enhancement to the solve, not
     a prerequisite, and a missing predecessor month must not block generating.
     """
@@ -3150,7 +3163,7 @@ def _resolve_trailing_assignments(
             source_desc = f"xlsx {fp.name}"
         except Exception as exc:
             _note(f"No cross-month data: could not read trailing_file {trailing_file!r}: {exc}")
-            return None, None
+            return None, None, 1
     elif _state.get("trailing_source"):
         src = _state["trailing_source"]
         prior = src["result"]
@@ -3164,7 +3177,7 @@ def _resolve_trailing_assignments(
                 source_desc = "google_sheets"
             except Exception as exc:
                 _note(f"No cross-month data: master Sheet for {want} unavailable: {exc}")
-                return None, None
+                return None, None, 1
             # Requested counts for the same month from sked, if it's set up
             # (period ids are "YYYY-MM", the same convention push_schedule
             # uses). Best-effort: a sked hiccup must not cost us the
@@ -3178,27 +3191,36 @@ def _resolve_trailing_assignments(
                     print(f"[trailing] prior-month requests from sked unavailable: {exc.detail}")
         else:
             _note(f"No cross-month data: no trailing schedule loaded for {want} and Google Sheets is not configured.")
-            return None, None
+            return None, None, 1
 
+    # Leading day(s) of this month already staffed on the prior sheet.
+    start_day = trailing_mod.spillover_start_day(prior, year, month)
+    first_day = datetime.date(year, month, start_day)
     try:
-        trailing = trailing_mod.build_trailing_assignments(prior, roster, year, month)
+        trailing = trailing_mod.build_trailing_assignments(prior, roster, year, month, first_day=first_day)
     except ValueError as exc:
         _note(f"No cross-month data: {exc} (source: {source_desc})")
-        return None, None
+        return None, None, 1
 
     summaries = trailing_mod.build_prior_month_summaries(prior, prior_submissions)
     group_a_target = (scheduler_cfg or {}).get("site_distribution", {}).get("group_a_target", 0.40)
 
     if not trailing and not summaries:
         _note(f"Cross-month data from {source_desc} for {want} contained no regular shifts.")
-        return None, None
+        return None, None, start_day
 
+    spill_note = ""
+    if start_day > 1:
+        spill_note = (
+            f"; {year}-{month:02d}-01..{start_day - 1:02d} already staffed on the {want} sheet "
+            f"({len(prior.spillover)} shifts) -> solving from day {start_day}"
+        )
     _note(
         f"Cross-month data from {source_desc} for {want}: "
         f"trailing window {trailing_mod.summarize_trailing(trailing)}; "
-        f"carry-over {trailing_mod.summarize_prior_month(summaries, roster, group_a_target)}"
+        f"carry-over {trailing_mod.summarize_prior_month(summaries, roster, group_a_target)}{spill_note}"
     )
-    return (trailing or None), (summaries or None)
+    return (trailing or None), (summaries or None), start_day
 
 
 @app.post("/api/assign", response_model=ManualAssignResponse)

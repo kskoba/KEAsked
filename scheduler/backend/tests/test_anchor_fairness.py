@@ -140,7 +140,7 @@ def test_excess_anchors_spread_to_fair_share_before_anyone_goes_over():
         sub("ZeroB", r0600=0, s0600=True, r2400=0, s2400=True),
     ]
     roster = {p: _cfg(p, max_consecutive_nights=0, forbidden_shift_times=["2400h"]) for p in ("Blank", "ZeroA", "ZeroB")}
-    res = _solve(subs, roster, time_limit=40.0)
+    res = _solve(subs, roster, time_limit=75.0)   # contested; flaked once at 40s under a full-suite CPU load
     got = {p: _anchors(res, p) for p in roster}
     assert sum(got.values()) >= 14, got
     assert min(got.values()) >= 4, got     # everyone reaches their fair share first

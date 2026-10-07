@@ -43,6 +43,13 @@ def previous_month(year: int, month: int) -> tuple[int, int]:
     return year, month - 1
 
 
+def next_month(year: int, month: int) -> tuple[int, int]:
+    """(year, month) of the calendar month immediately after the given one."""
+    if month == 12:
+        return year + 1, 1
+    return year, month + 1
+
+
 def trailing_window_days(cfg: PhysicianConfig | None) -> int:
     """
     How many days back from the start of the target month a physician's
@@ -62,15 +69,48 @@ def trailing_window_days(cfg: PhysicianConfig | None) -> int:
     )
 
 
+def spillover_start_day(prior: ScheduleResult, year: int, month: int) -> int:
+    """
+    First day of ``year``/``month`` the solver should schedule, given that
+    the prior month's sheet may already staff the leading day(s) of this
+    month (its partial last week row -- e.g. the December 2026 sheet staffs
+    Jan 1; by department convention Jan 1 is December's and January is
+    solved for Jan 2-31). Only a contiguous run of staffed days from the
+    1st counts; anything else leaves the start at 1.
+    """
+    staffed = sorted({a.date.day for a in prior.spillover if (a.date.year, a.date.month) == (year, month)})
+    start = 1
+    for day in staffed:
+        if day == start:
+            start += 1
+        else:
+            break
+    return start
+
+
+def with_spillover_merged(prior: ScheduleResult) -> ScheduleResult:
+    """A shallow copy of ``prior`` whose assignments include its spill-over days (for tallies)."""
+    return ScheduleResult(
+        year=prior.year, month=prior.month,
+        assignments=list(prior.assignments) + list(prior.spillover),
+        unfilled=list(prior.unfilled), issues=list(prior.issues), stats=prior.stats,
+        on_calls=list(prior.on_calls) + list(prior.spillover_on_calls),
+    )
+
+
 def build_trailing_assignments(
     prior: ScheduleResult,
     roster: dict[str, PhysicianConfig],
     year: int,
     month: int,
+    first_day: datetime.date | None = None,
 ) -> dict[str, list[tuple[datetime.date, Shift]]]:
     """
     Build the ``trailing_assignments`` mapping for a solve of ``year``/``month``
     from the finalized ``ScheduleResult`` of the month immediately before it.
+    ``first_day`` is the first day the solver will schedule (default the
+    1st); the prior sheet's spill-over days before it (e.g. Jan 1 when
+    January is solved from Jan 2) count as already-worked trailing days.
 
     - Only *regular* shifts are included. On-call (DOC/NOC) lives in
       ``prior.on_calls`` and is never consulted: HC-8/HC-9/HC-13 only ever
@@ -92,9 +132,10 @@ def build_trailing_assignments(
             f"{year}-{month:02d} solve needs {exp_year}-{exp_month:02d}."
         )
 
-    first_day = datetime.date(year, month, 1)
+    if first_day is None:
+        first_day = datetime.date(year, month, 1)
     out: dict[str, list[tuple[datetime.date, Shift]]] = {}
-    for a in sorted(prior.assignments, key=lambda a: a.date):
+    for a in sorted(list(prior.assignments) + list(prior.spillover), key=lambda a: a.date):
         # Defensive: an Assignment should always be a regular shift, but a
         # foreign/odd Shift with no start hour would blow up HC-9 later.
         if a.shift is None or not _looks_like_regular_shift(a.shift):
@@ -187,7 +228,9 @@ def build_prior_month_summaries(
     """
     worked: dict[str, int] = {}
     acute: dict[str, int] = {}
-    for a in prior.assignments:
+    # Spill-over days are scheduled with this month by convention, so they
+    # count toward its tallies.
+    for a in list(prior.assignments) + list(prior.spillover):
         if a.shift is None or not _looks_like_regular_shift(a.shift):
             continue
         worked[a.physician_id] = worked.get(a.physician_id, 0) + 1

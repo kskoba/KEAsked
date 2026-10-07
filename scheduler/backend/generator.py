@@ -124,6 +124,15 @@ class ScheduleResult:
     issues: list[str] = field(default_factory=list)
     stats: Optional[ScheduleStats] = None
     on_calls: list[OnCallAssignment] = field(default_factory=list)
+    # Assignments the source sheet carries for days AFTER this month (the
+    # department's master sheet fills the partial last week row, e.g. the
+    # December 2026 sheet staffs Jan 1). By department convention those days
+    # are scheduled WITH this month, so the next month's solve starts after
+    # them and treats them as already-worked (see trailing.py). Kept apart
+    # from `assignments` so every in-month consumer (stats, grid, export)
+    # stays month-bound.
+    spillover: list[Assignment] = field(default_factory=list)
+    spillover_on_calls: list[OnCallAssignment] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -1679,6 +1688,11 @@ class ScheduleGenerator:
 
         # Build per-physician on-call availability:
         # pid -> [(date, call_type)] sorted weekdays first, then by date
+        # Only days this result actually scheduled get on-call assigned. A
+        # month solved from its 2nd (its 1st staffed on the previous month's
+        # sheet, e.g. Jan 1 2027 on the December sheet, call included) has no
+        # regular slots on the 1st, and must not get a 2nd DOC/NOC there.
+        scheduled_days = {a.date for a in result.assignments} | {u.date for u in result.unfilled}
         avail: dict[str, list[tuple[datetime.date, str]]] = {}
         for pid, sub in self.submissions.items():
             # Skip physicians who cannot do call shifts -- casual staff are
@@ -1692,6 +1706,8 @@ class ScheduleGenerator:
                 continue
             days_list: list[tuple[datetime.date, str]] = []
             for day in sub.days:
+                if day.date not in scheduled_days:
+                    continue
                 if day.doc_available:
                     days_list.append((day.date, "DOC"))
                 if day.noc_available:

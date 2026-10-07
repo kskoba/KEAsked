@@ -252,6 +252,13 @@ function LoadedSummary({ status, loadedOtherMonth }) {
         <span className="font-medium">{monthLabel}</span> from {sourceLabel}: {status.assignment_count} shifts across {status.physician_count} physicians.
         {loadedOtherMonth && ' This is not the month before the one being generated, so it will be ignored.'}
       </div>
+      {status.spillover_count > 0 && (
+        <div className="text-sky-800">
+          <span className="font-medium">Spill-over:</span>{' '}
+          {status.spillover_dates.map(d => new Date(d + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' })).join(', ')}
+          {' '}already staffed on this sheet ({status.spillover_count} shifts) — the next month will be solved from day {status.solve_start_day}, treating {status.spillover_dates.length === 1 ? 'that day' : 'those days'} as worked.
+        </div>
+      )}
       <div>
         <span className="font-medium">Requested counts:</span>{' '}
         {status.requested_known_count > 0

@@ -280,9 +280,17 @@ class CpsatScheduleGenerator:
         num_workers: Optional[int] = None,
         progress_callback: Optional[Callable] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
+        start_day: int = 1,
     ) -> ScheduleResult:
         """
         Solve the scheduling problem with CP-SAT and return a ScheduleResult.
+
+        ``start_day``: first day of the month to schedule (default 1). The
+        department's master sheet staffs the partial last week of each month,
+        so e.g. Jan 1 2027 is on the December sheet and January is solved for
+        Jan 2-31. Days before start_day get NO slots in this result; what was
+        worked on them arrives through trailing_assignments and is enforced
+        by the cross-boundary rest/consecutive rules exactly like Dec 31.
 
         If any physician in the roster is flagged `casual`, the single model
         built here adds two extra "lexicographic" solves before the final
@@ -305,7 +313,7 @@ class CpsatScheduleGenerator:
         consecutive-shift history wouldn't carry over between them.
         """
         return self._generate_single_phase(
-            year, month, time_limit, num_workers, progress_callback, cancel_check
+            year, month, time_limit, num_workers, progress_callback, cancel_check, start_day=start_day,
         )
 
     def _generate_single_phase(
@@ -316,6 +324,7 @@ class CpsatScheduleGenerator:
         num_workers: Optional[int] = None,
         progress_callback: Optional[Callable] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
+        start_day: int = 1,
     ) -> ScheduleResult:
         """
         Solve the scheduling problem with CP-SAT and return a ScheduleResult.
@@ -367,7 +376,8 @@ class CpsatScheduleGenerator:
             progress_callback(0, 100, 0.0)
 
         days_in_month = calendar.monthrange(year, month)[1]
-        all_dates = [datetime.date(year, month, d) for d in range(1, days_in_month + 1)]
+        start_day = max(1, min(int(start_day), days_in_month))
+        all_dates = [datetime.date(year, month, d) for d in range(start_day, days_in_month + 1)]
         all_shifts_flat = _all_shifts()
         shift_by_code = _shift_by_code()
         pids = list(self.submissions.keys())

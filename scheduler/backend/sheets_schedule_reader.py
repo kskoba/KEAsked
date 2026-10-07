@@ -129,27 +129,28 @@ def download_public_sheet_grid(spreadsheet_id: str, timeout: float = 30.0) -> li
 
 def _week_dates(date_row: list, year: int, month: int, cell) -> dict[int, datetime.date]:
     """
-    Column (1..7 = SUN..SAT) -> date for one week's date row. Cells may be
-    ints, floats, digit strings, real datetimes, or blank; the real sheet
+    Column (1..7 = SUN..SAT) -> real date for one week's date row. Cells may
+    be ints, floats, digit strings, real datetimes, or blank; the real sheet
     has had a blank date cell on a worked day (Dec 1 2026) and a datetime
-    with the wrong year on the spill-over Jan 1 cell. So: take every cell
-    that parses to a day of THIS month, then fill the blanks from a known
-    neighbour by column offset (SUN..SAT are consecutive days), keeping
-    only days that exist in this month.
+    with the WRONG year on the spill-over Jan 1 cell. So: anchor on every
+    cell that parses to a day of THIS month, then derive every column from
+    a known neighbour by offset (SUN..SAT are consecutive days). Columns
+    that land AFTER the month end are returned as real next-month dates --
+    the department schedules the partial last week with this month, so the
+    caller files those as spill-over. Columns before the month start are
+    dropped (they belong to the previous month's sheet).
     """
     import calendar as _cal
 
     days_in_month = _cal.monthrange(year, month)[1]
+    first = datetime.date(year, month, 1)
     known: dict[int, int] = {}
     for c in range(1, 8):
         val = cell(date_row, c)
         if val in (None, ""):
             continue
         day = None
-        if isinstance(val, datetime.datetime):
-            if (val.year, val.month) == (year, month):
-                day = val.day
-        elif isinstance(val, datetime.date):
+        if isinstance(val, (datetime.datetime, datetime.date)):
             if (val.year, val.month) == (year, month):
                 day = val.day
         else:
@@ -164,9 +165,9 @@ def _week_dates(date_row: list, year: int, month: int, cell) -> dict[int, dateti
     anchor_col, anchor_day = next(iter(known.items()))
     out: dict[int, datetime.date] = {}
     for c in range(1, 8):
-        day = known.get(c, anchor_day + (c - anchor_col))
-        if 1 <= day <= days_in_month:
-            out[c] = datetime.date(year, month, day)
+        d = first + datetime.timedelta(days=anchor_day - 1 + (c - anchor_col))
+        if d >= first:
+            out[c] = d
     return out
 
 
@@ -196,6 +197,11 @@ def parse_schedule_grid(
     assignments: list[Assignment] = []
     on_calls: list[OnCallAssignment] = []
     unfilled: list[UnfilledSlot] = []
+    spillover: list[Assignment] = []
+    spillover_on_calls: list[OnCallAssignment] = []
+
+    def _in_month(d: datetime.date) -> bool:
+        return (d.year, d.month) == (year, month)
 
     i = 0
     n = len(grid)
@@ -242,7 +248,7 @@ def parse_schedule_grid(
                 cell_val = cell(site_row, c)
                 name = str(cell_val).strip() if cell_val is not None else ""
                 if not name or name in ("---", "None"):
-                    if time_code is not None:
+                    if time_code is not None and _in_month(d):
                         shift_code = f"{time_code} {site_code}"
                         shift = SHIFT_CODE_LOOKUP.get(shift_code)
                         if shift is not None:
@@ -250,20 +256,18 @@ def parse_schedule_grid(
                     continue
 
                 if time_code is None:
-                    on_calls.append(
-                        OnCallAssignment(
-                            date=d, call_type=CALL_TYPE_BY_LABEL.get(site_label, site_label),
-                            physician_id=resolve_id(name), physician_name=name,
-                        )
+                    oc = OnCallAssignment(
+                        date=d, call_type=CALL_TYPE_BY_LABEL.get(site_label, site_label),
+                        physician_id=resolve_id(name), physician_name=name,
                     )
+                    (on_calls if _in_month(d) else spillover_on_calls).append(oc)
                 else:
                     shift_code = f"{time_code} {site_code}"
                     shift = SHIFT_CODE_LOOKUP.get(shift_code)
                     if shift is None:
                         continue
-                    assignments.append(
-                        Assignment(date=d, shift=shift, physician_id=resolve_id(name), physician_name=name)
-                    )
+                    a = Assignment(date=d, shift=shift, physician_id=resolve_id(name), physician_name=name)
+                    (assignments if _in_month(d) else spillover).append(a)
 
     filled = len(assignments)
     total = filled + len(unfilled)
@@ -312,4 +316,6 @@ def parse_schedule_grid(
         issues=[],
         stats=stats,
         on_calls=on_calls,
+        spillover=spillover,
+        spillover_on_calls=spillover_on_calls,
     )

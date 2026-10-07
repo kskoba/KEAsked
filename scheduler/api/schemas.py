@@ -609,6 +609,11 @@ class TrailingScheduleStatusResponse(BaseModel):
     requested_known_count: int = 0      # physicians whose prior requested count is known (preferences_directory given)
     acute_debt_physicians: list[str] = []      # will get the extra-acute push next solve
     overage_physicians: list[str] = []         # went over requested last month -> discouraged from repeating
+    # Days of the NEXT month the prior sheet already staffs (its partial last
+    # week row, e.g. ["2027-01-01"]); the next solve starts after them.
+    spillover_dates: list[str] = []
+    spillover_count: int = 0                   # regular shifts on those days
+    solve_start_day: int = 1                   # first day the next month's solve will schedule
     # Set after a solve: what /api/generate actually handed the solver, or
     # why it ran without cross-month data.
     last_used: str | None = None

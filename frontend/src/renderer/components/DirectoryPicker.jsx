@@ -727,6 +727,31 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
                       }}
                     />
                   </div>
+                  {/* Live optimality gap -- updates on every improving solution
+                      the solver finds, including mid-solve during the final
+                      (by far longest) tier. Stays put between improvements,
+                      which is correct: that IS the gap until something better
+                      is found. "stalled" coloring gives a visual cue for when
+                      Cancel Run (keeps the best result found so far) is worth
+                      considering instead of waiting out the full time limit. */}
+                  {(progress.gap_pct != null || progress.last_improved_at) && (() => {
+                    const secsSince = progress.last_improved_at
+                      ? Math.max(0, Math.round((Date.now() - new Date(progress.last_improved_at).getTime()) / 1000))
+                      : null
+                    const stalled = secsSince !== null && secsSince >= 120
+                    return (
+                      <div className="flex justify-between text-xs mt-1">
+                        <span className={stalled ? 'text-amber-600 font-medium' : 'text-slate-500'}>
+                          {progress.gap_pct != null ? `Optimality gap: ${progress.gap_pct}%` : 'Optimality gap: —'}
+                        </span>
+                        {secsSince !== null && (
+                          <span className={stalled ? 'text-amber-600 font-medium' : 'text-slate-400'}>
+                            {secsSince < 5 ? 'improving…' : `no improvement in ${secsSince}s`}
+                          </span>
+                        )}
+                      </div>
+                    )
+                  })()}
                 </>
               ) : (
                 <>

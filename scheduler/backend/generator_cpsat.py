@@ -77,11 +77,17 @@ except Exception as _ortools_err:
 class _SolutionCallback(_cp_model.CpSolverSolutionCallback if _ORTOOLS_AVAILABLE else object):
     """Saves the best solution's shift-variable values on each improving solution."""
 
-    def __init__(self, shift_vars: dict, should_stop: Optional[Callable[[], bool]] = None):
+    def __init__(
+        self,
+        shift_vars: dict,
+        should_stop: Optional[Callable[[], bool]] = None,
+        live_progress: Optional[Callable[[float, float], None]] = None,
+    ):
         if _ORTOOLS_AVAILABLE:
             super().__init__()
         self._shift_vars = shift_vars          # (pid, d_idx, shift_code) -> IntVar
         self._should_stop = should_stop        # polled on each improving solution
+        self._live_progress = live_progress    # called (best_objective, best_bound) on each improvement
         self.best_values: dict = {}            # (pid, d_idx, shift_code) -> 0 or 1
         self.best_objective: float = float('-inf')
         self.best_bound: float = 0.0
@@ -92,6 +98,8 @@ class _SolutionCallback(_cp_model.CpSolverSolutionCallback if _ORTOOLS_AVAILABLE
             self.best_objective = obj
             self.best_values = {k: self.value(v) for k, v in self._shift_vars.items()}
             self.best_bound = self.best_objective_bound
+            if self._live_progress is not None:
+                self._live_progress(self.best_objective, self.best_bound)
         if self._should_stop is not None and self._should_stop():
             self.StopSearch()
 
@@ -2493,6 +2501,25 @@ class CpsatScheduleGenerator:
             for k, v in cb.best_values.items():
                 model.add_hint(shifts[k], v)
 
+        def _make_live_reporter(pct: int) -> Optional[Callable[[float, float], None]]:
+            # Live, mid-solve progress -- unlike the existing end-of-tier
+            # progress_callback(pct, 100, objective) calls below (which only
+            # fire once, after a tier's solver.solve() already returned),
+            # this fires on EVERY improving solution CP-SAT finds, including
+            # during the long final tier (previously silent for its entire
+            # multi-minute/hour duration -- confirmed via real Unraid runs
+            # that /api/generate-progress just froze at whatever pct the
+            # last-completed tier left it at). best_bound is the raw
+            # CP-SAT maximization bound (same convention as best_objective,
+            # NOT the legacy -unfilled*1000 sign flip the final 3rd-arg
+            # "reported_score" below uses) -- so the caller can compute a
+            # genuine (bound-best)/best optimality-gap percentage live.
+            if progress_callback is None:
+                return None
+            def _report(obj: float, bound: float) -> None:
+                progress_callback(pct, 100, obj, bound)
+            return _report
+
         def _run_priority_tier(tier_label: str, terms: list, progress_pct: int) -> None:
             nonlocal remaining_time_limit
             if not terms:
@@ -2504,7 +2531,7 @@ class CpsatScheduleGenerator:
             tier_solver = _cp_model.CpSolver()
             tier_solver.parameters.max_time_in_seconds = tier_time_limit
             tier_solver.parameters.num_search_workers = num_workers
-            tier_cb = _SolutionCallback(shifts, should_stop=cancel_check)
+            tier_cb = _SolutionCallback(shifts, should_stop=cancel_check, live_progress=_make_live_reporter(progress_pct))
             tier_status = tier_solver.solve(model, tier_cb)
             if tier_status in (_cp_model.OPTIMAL, _cp_model.FEASIBLE) and tier_cb.best_values:
                 model.add(tier_expr >= int(tier_cb.best_objective))
@@ -2651,7 +2678,7 @@ class CpsatScheduleGenerator:
             stageA_solver = _cp_model.CpSolver()
             stageA_solver.parameters.max_time_in_seconds = anchor_tier_time_limit
             stageA_solver.parameters.num_search_workers = num_workers
-            stageA_cb = _SolutionCallback(shifts, should_stop=cancel_check)
+            stageA_cb = _SolutionCallback(shifts, should_stop=cancel_check, live_progress=_make_live_reporter(80))
             stageA_status = stageA_solver.solve(model, stageA_cb)
             if stageA_status in (_cp_model.OPTIMAL, _cp_model.FEASIBLE) and stageA_cb.best_values:
                 model.add(stageA_expr >= int(stageA_cb.best_objective))
@@ -2668,7 +2695,7 @@ class CpsatScheduleGenerator:
             stageB_solver = _cp_model.CpSolver()
             stageB_solver.parameters.max_time_in_seconds = anchor_tier_time_limit
             stageB_solver.parameters.num_search_workers = num_workers
-            stageB_cb = _SolutionCallback(shifts, should_stop=cancel_check)
+            stageB_cb = _SolutionCallback(shifts, should_stop=cancel_check, live_progress=_make_live_reporter(85))
             stageB_status = stageB_solver.solve(model, stageB_cb)
             if stageB_status in (_cp_model.OPTIMAL, _cp_model.FEASIBLE) and stageB_cb.best_values:
                 model.add(stageB_expr >= int(stageB_cb.best_objective))
@@ -2720,7 +2747,7 @@ class CpsatScheduleGenerator:
             floor_solver = _cp_model.CpSolver()
             floor_solver.parameters.max_time_in_seconds = floor_tier_time_limit
             floor_solver.parameters.num_search_workers = num_workers
-            floor_cb = _SolutionCallback(shifts, should_stop=cancel_check)
+            floor_cb = _SolutionCallback(shifts, should_stop=cancel_check, live_progress=_make_live_reporter(87))
             floor_status = floor_solver.solve(model, floor_cb)
             if floor_status in (_cp_model.OPTIMAL, _cp_model.FEASIBLE) and floor_cb.best_values:
                 model.add(floor_expr >= int(floor_cb.best_objective))
@@ -2758,7 +2785,7 @@ class CpsatScheduleGenerator:
         # Solution callback: saves variable values on each improving solution so
         # we use the saved dict in _build_result instead of calling solver.value()
         # after solve() returns (avoids potential thread-state issues in frozen binaries).
-        solution_cb = _SolutionCallback(shifts, should_stop=cancel_check)
+        solution_cb = _SolutionCallback(shifts, should_stop=cancel_check, live_progress=_make_live_reporter(90))
 
         logger.info(
             "CP-SAT: starting solve for %d-%02d with time_limit=%.0fs, workers=%d",
@@ -2779,7 +2806,16 @@ class CpsatScheduleGenerator:
             # never fired) — report 0.0 rather than passing inf through to a
             # caller that may round()/int() it (e.g. server.py's progress_cb).
             reported_score = -solution_cb.best_objective if solution_cb.best_values else 0.0
-            progress_callback(100, 100, reported_score)
+            # solver.best_objective_bound (the solver object, post-solve), NOT
+            # solution_cb.best_bound -- the callback only updates its own
+            # bound snapshot when a NEW incumbent is found, so it misses any
+            # bound-only tightening in the final moments of the solve (CP-SAT
+            # has no separate Python callback for "the bound alone just
+            # improved"). Confirmed as a real, pre-existing under-report via
+            # a real run: callback-frozen bound said 5.80% gap, the solver's
+            # own final bound said 4.60% -- a full extra tightening pass that
+            # landed 1.3s after the last incumbent, with no new best to carry it.
+            progress_callback(100, 100, reported_score, solver.best_objective_bound if solution_cb.best_values else None)
 
         # ----------------------------------------------------------------
         # Extract solution
@@ -2792,7 +2828,11 @@ class CpsatScheduleGenerator:
             if result.stats:
                 is_optimal = status == _cp_model.OPTIMAL
                 obj = solution_cb.best_objective
-                bound = solution_cb.best_bound
+                # solver.best_objective_bound, not solution_cb.best_bound --
+                # see the matching comment on the progress_callback call
+                # above for why the callback's own snapshot can be stale by
+                # one final bound-only tightening pass.
+                bound = solver.best_objective_bound
                 if is_optimal or abs(bound) < 1e-6:
                     gap_pct = 0.0
                 else:

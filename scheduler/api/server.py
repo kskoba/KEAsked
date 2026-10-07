@@ -319,7 +319,7 @@ _state: dict[str, Any] = {
     "month": None,
     "directory": None,
     "source_file": None,
-    "progress": {"current": 0, "total": 0, "running": False, "best_unfilled": None},
+    "progress": {"current": 0, "total": 0, "running": False, "best_unfilled": None, "gap_pct": None, "last_improved_at": None},
     "cancel_requested": False,
     # physician_id -> set of rule ids the user has manually overridden this
     # session (see /api/override*). Reset on every fresh import.
@@ -2410,11 +2410,15 @@ async def generate(body: GenerateCachedRequest) -> ScheduleResponse:
 
     if use_cpsat:
         # CP-SAT: indeterminate progress — show 50% "Solving…" until done.
-        _state["progress"] = {"current": 50, "total": 100, "running": True, "best_unfilled": None, "solver": "cpsat", "time_limit": int(cpsat_time_limit)}
+        _state["progress"] = {
+            "current": 50, "total": 100, "running": True, "best_unfilled": None,
+            "solver": "cpsat", "time_limit": int(cpsat_time_limit),
+            "gap_pct": None, "last_improved_at": None,
+        }
     else:
         _state["progress"] = {"current": 0, "total": n_iterations, "running": True, "best_unfilled": None, "solver": "greedy"}
 
-    def progress_cb(current: int, total: int, best_score: float) -> None:
+    def progress_cb(current: int, total: int, best_score: float, best_bound: float | None = None) -> None:
         _state["progress"]["current"] = current
         # Derive approximate unfilled count from score: score = -unfilled*1000 + ...
         # Just show the raw best score for now. best_score can be +/-inf if
@@ -2424,6 +2428,18 @@ async def generate(body: GenerateCachedRequest) -> ScheduleResponse:
             _state["progress"]["best_unfilled"] = round(-best_score / 1000)
         else:
             _state["progress"]["best_unfilled"] = None
+        # Live optimality gap, from the RAW (non-negated) CP-SAT best/bound
+        # pair -- a separate convention from best_score/best_unfilled above
+        # (see generator_cpsat.py's _make_live_reporter). Called on every
+        # improving solution, including mid-solve during the long final
+        # tier, not just once per lexicographic stage -- that's what makes
+        # this live rather than frozen until the whole generate() call
+        # returns. last_improved_at lets the UI show "stalled for Ns" even
+        # though the gap number itself only changes when CP-SAT actually
+        # finds something better.
+        if best_bound is not None and math.isfinite(best_score) and best_score != 0:
+            _state["progress"]["gap_pct"] = round(abs(best_bound - best_score) / abs(best_score) * 100, 2)
+            _state["progress"]["last_improved_at"] = datetime.datetime.utcnow().isoformat() + "Z"
 
     # Cross-month continuity: fixed facts about what each physician worked
     # at the end of the previous month, so HC-8/HC-9/HC-13 can enforce rest
@@ -2474,7 +2490,12 @@ async def generate(body: GenerateCachedRequest) -> ScheduleResponse:
         raise HTTPException(status_code=500, detail=f"Generation failed: {exc}\n{traceback.format_exc()}")
 
     final_total = 100 if use_cpsat else n_iterations
-    _state["progress"] = {"current": final_total, "total": final_total, "running": False, "best_unfilled": len(result.unfilled)}
+    _state["progress"] = {
+        "current": final_total, "total": final_total, "running": False,
+        "best_unfilled": len(result.unfilled),
+        "gap_pct": result.stats.optimality_gap_pct if result.stats else None,
+        "last_improved_at": None,
+    }
     _state["generator"] = gen
     _state["result"] = result
 

@@ -333,8 +333,11 @@ from all real data, but should be deleted once you're done poking at it):
 - `periods` row: `id='calendar-test-period'`
 - `schedule_assignments` rows for `calendar-test` (4 rows, Oct 31–Nov 2 2026,
   deliberately spanning the Nov 1 2026 DST fall-back transition)
-- Cleanup: `DELETE FROM schedule_assignments WHERE physician_id =
-  'calendar-test'; DELETE FROM periods WHERE id = 'calendar-test-period';
+- `submissions` row for `calendar-test` / `calendar-test-period` (a draft
+  written 2026-10-06 while verifying the whole-number answer validation)
+- Cleanup: `DELETE FROM submissions WHERE physician_id = 'calendar-test';
+  DELETE FROM schedule_assignments WHERE physician_id = 'calendar-test';
+  DELETE FROM periods WHERE id = 'calendar-test-period';
   DELETE FROM physicians WHERE id = 'calendar-test';` via `wrangler d1
   execute sked-db --remote --command "..."`
 

@@ -59,6 +59,16 @@ consecutive:
 anchor_shifts:
   anchor_target_tolerance: 1        # ±1 from physician's stated target
   default_2400h_cap_unstated: 4     # 2400h ceiling when a physician states no 2400h preference at all
+  # Fair share of anchor (0600h + 2400h) shifts everyone is expected to
+  # carry, as a fraction of their own requested shift count, before anyone
+  # is pushed past their own share (an explicit larger anchor request is
+  # that physician's target instead). Anchors a physician didn't ask for
+  # cost a little within this share and a lot beyond it -- for everyone,
+  # including physicians who left an anchor cell blank.
+  anchor_share_target: 0.40
+  # 0/0-stated physicians get a guaranteed floor of 1 anchor shift below
+  # this requested-shift count, 2 at or above it.
+  anchor_min_floor_full_threshold: 8
 
 # ----------------------------------------------------------
 # Weekend limits

@@ -109,6 +109,39 @@ xlsx and load it; everything else is built and tested (76/76 backend tests).
   config sync for the KLam alias, plus `sync-preferences-to-unraid.sh` for
   whichever month folder is used as `/config/<Month>`.
 
+**Also 2026-10-07 (afternoon, from the user's review of `Tests/cpsatv2-jan1.xlsx`):**
+- **Anchor-share fairness** (`generator_cpsat.py`, config `anchor_shifts.
+  anchor_share_target: 0.40`, `anchor_min_floor_full_threshold: 8`). Root
+  cause found in that solve: a BLANK 0600h cell was free (no cap, no
+  penalty) while an explicit 0 cost 500/unit -- so Garcea (blank) got 8 of
+  8 shifts as 0600h, Bacon 60% anchors, while 0/0 physicians with 8 shifts
+  (Wittmeier, Thirsk) sat at 1. Now every physician has `anchor_target =
+  max(stated anchor requests, floor(0.40 x requested))`: unrequested
+  anchors within it cost 150 (60 for their preferred type), anchors beyond
+  it cost 500/800/1100 escalating -- for everyone, blank or stated. Stated
+  per-type hard caps are `max(request + tolerance, anchor_target)` (an
+  explicit 0 no longer means "almost never"; it means "no preference, I
+  carry my share"). The 0/0 floor is 2 at >= 8 requested (was 10) and uses
+  the new caps, so a no-nights physician can actually reach 2.
+- **Exactly-one-night requests** are exempt from HC-13b (no isolated
+  nights): Grishin asked for 1 2400h and got 0 because the rule demanded a
+  2nd, penalised night. (The user's note said "1x 0600h"; the data shows
+  it was the 2400h -- his 6 requested 0600h were all granted, all on RAH B.)
+- **Post-solve RAH A <-> RAH B balance pass** (`scheduler/backend/
+  acute_balance.py`, called in `/api/generate` after repair, before
+  on-calls): trades same date+time A/B pairs between two physicians when it
+  lowers total |A-B|, respecting forbidden_sites, HC-10 adjacent same code,
+  max_consecutive_same_site, and never introducing a same-site repeat in a
+  run. In that solve ~15 physicians were 0 on one acute side (N Lam 0/4,
+  Grishin 0/5, Schindler 4/0, Whiteside 4/0 ...).
+- Tests: `test_anchor_fairness.py` (8). **Open question for the user**: N
+  Lam's "NEHC, RAH B, NEHC" run -- the site-variety rule deliberately
+  excludes NEHC from the no-repeat-in-a-run penalty (7 NEHC slots/day);
+  should NEHC repeats within a run be penalised too (at a lower weight)?
+- A separate agent was spawned for the manual same-day swap bug (swapping
+  two physicians who both already work that day reports double-booking) --
+  see its commit/notes.
+
 **Still to do:**
 1. Before the January solve, in the app: open "Previous month (December
    2026)" in the solver card, paste the December master-sheet link, Browse

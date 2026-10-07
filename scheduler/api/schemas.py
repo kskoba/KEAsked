@@ -405,6 +405,41 @@ class ManualAssignResponse(BaseModel):
     message: str
 
 
+class SwapSlotRef(BaseModel):
+    """A filled regular-shift slot, identified by its date and shift code."""
+    date: str           # "YYYY-MM-DD"
+    shift_code: str     # e.g. "0600h RAH A side"
+
+
+class SwapRequest(BaseModel):
+    """
+    Exchange the physicians in two filled slots. Both physicians are lifted
+    out of their current slots BEFORE either is checked against the other's
+    slot, so a same-day A-side/B-side exchange does not read as a double
+    booking. ``dry_run`` reports the post-swap violations without applying.
+    """
+    a: SwapSlotRef
+    b: SwapSlotRef
+    dry_run: bool = False
+
+
+class SwapSideSchema(BaseModel):
+    """One physician's half of a swap, evaluated in their DESTINATION slot."""
+    physician_id: str
+    physician_name: str
+    date: str                           # destination date
+    shift_code: str                     # destination shift code
+    violations: list[ViolationSchema]   # rules the final state breaks for this physician
+
+
+class SwapResponse(BaseModel):
+    success: bool
+    applied: bool                       # False for a dry run
+    a: SwapSideSchema                   # the physician who was in slot ``a``, now in slot ``b``
+    b: SwapSideSchema                   # the physician who was in slot ``b``, now in slot ``a``
+    message: str
+
+
 # ---------------------------------------------------------------------------
 # Physician list
 # ---------------------------------------------------------------------------

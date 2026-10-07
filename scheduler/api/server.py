@@ -40,6 +40,9 @@ from scheduler.api.schemas import (
     ImportRequest,
     ManualAssignRequest,
     ManualAssignResponse,
+    SwapRequest,
+    SwapResponse,
+    SwapSideSchema,
     PhysicianImportResult,
     AssignOnCallRequest,
     OnCallAssignmentSchema,
@@ -111,6 +114,7 @@ from scheduler.backend import sked_client
 from scheduler.backend import google_sheets_client
 from scheduler.backend import sheets_schedule_reader
 from scheduler.backend import trailing as trailing_mod
+from scheduler.backend import acute_balance
 from scheduler.backend.config import (
     CALL_LINKAGE_VALUES,
     GROUP_B_PREFS,
@@ -2479,6 +2483,11 @@ async def generate(body: GenerateCachedRequest) -> ScheduleResponse:
         }
         result.issues = [i for i in result.issues if any(k in i for k in unfilled_keys)] \
             if result.unfilled else []
+        # Final pass: trade RAH A <-> RAH B same-slot pairs so nobody ends
+        # the month lopsided on one acute side (see acute_balance.py).
+        result, _ab_trades = acute_balance.balance_acute_sides(result, roster)
+        if _ab_trades:
+            print(f"[acute-balance] {_ab_trades} A/B side trade(s) applied")
         # Assign on-call shifts after the regular schedule is complete
         result = await asyncio.to_thread(gen.assign_on_calls, result)
         # Restore solver quality fields lost by repair_pass/_compute_stats
@@ -3313,6 +3322,138 @@ def check_violations(body: ManualAssignRequest):
             _v(v) for v in violations
         ]
     }
+
+
+def _shift_by_code(code: str) -> Shift:
+    for block in BLOCKS:
+        for s in block:
+            if s.code == code:
+                return s
+    raise HTTPException(status_code=400, detail=f"Unknown shift code: {code!r}")
+
+
+@app.post("/api/swap", response_model=SwapResponse)
+def swap_assignments(body: SwapRequest) -> SwapResponse:
+    """
+    Exchange the physicians in two filled slots, evaluating rules against the
+    POST-swap state.
+
+    This exists because a swap cannot be composed from /api/check-violations +
+    /api/assign: those only vacate the *target slot's* occupant and leave the
+    moving physician's own shift in place, so two physicians trading A-side
+    and B-side on the same day each looked double-booked (HC-2) and the first
+    /api/assign refused outright. Here both physicians are lifted out of their
+    current slots first, then each is checked and placed in the other's slot.
+    Genuine conflicts still surface: a third shift on the destination day that
+    is not part of the swap, or a 2400h -> 0600h spacing clash the swap creates.
+
+    With ``dry_run`` the violations are reported and the generator state is
+    restored untouched; otherwise the swap is force-applied (like /api/assign)
+    and both records are marked ``is_manual``.
+    """
+    gen, result = _require_generator()
+
+    def _slot(ref) -> tuple[datetime.date, Shift, Assignment]:
+        shift = _shift_by_code(ref.shift_code)
+        try:
+            d = datetime.date.fromisoformat(ref.date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid date: {ref.date!r}")
+        current = next(
+            (a for a in result.assignments if a.date == d and a.shift.code == shift.code),
+            None,
+        )
+        if current is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{ref.shift_code} on {ref.date} is unfilled. A swap needs two filled "
+                    f"slots; use Assign to fill an empty one."
+                ),
+            )
+        return d, shift, current
+
+    d_a, shift_a, cur_a = _slot(body.a)
+    d_b, shift_b, cur_b = _slot(body.b)
+    if (d_a, shift_a.code) == (d_b, shift_b.code):
+        raise HTTPException(status_code=400, detail="Pick two different slots to swap.")
+    if cur_a.physician_id == cur_b.physician_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Both slots belong to the same physician ({cur_a.physician_name}); nothing to swap.",
+        )
+
+    pid_a = _resolve_pid(gen, cur_a.physician_id)
+    pid_b = _resolve_pid(gen, cur_b.physician_id)
+    # _require_generator keys the rebuilt state by the result's raw ids while
+    # manual edits key by the resolved submission id; lift each physician out
+    # under whichever id their slot is actually recorded with.
+    state_a = gen._slot_to_pid.get((d_a, shift_a.code), pid_a)
+    state_b = gen._slot_to_pid.get((d_b, shift_b.code), pid_b)
+
+    # 1. Both physicians leave their current slots ...
+    gen._unassign(state_a, d_a, shift_a)
+    gen._unassign(state_b, d_b, shift_b)
+    # 2. ... then A is evaluated and placed in B's slot, and B in A's. Each
+    #    physician's rules depend only on their own shifts, so both checks
+    #    see exactly the final schedule.
+    viol_a = gen._check_constraints(pid_a, d_b, shift_b) or []
+    gen._assign(pid_a, d_b, shift_b)
+    viol_b = gen._check_constraints(pid_b, d_a, shift_a) or []
+    gen._assign(pid_b, d_a, shift_a)
+
+    name_a = gen.submissions[pid_a].physician_name
+    name_b = gen.submissions[pid_b].physician_name
+    raw_id_a, raw_name_a = cur_a.physician_id, cur_a.physician_name
+    raw_id_b, raw_name_b = cur_b.physician_id, cur_b.physician_name
+
+    if body.dry_run:
+        gen._unassign(pid_a, d_b, shift_b)
+        gen._unassign(pid_b, d_a, shift_a)
+        gen._assign(state_a, d_a, shift_a)
+        gen._assign(state_b, d_b, shift_b)
+    else:
+        # Exchange the two records in place, keeping each in the result's own
+        # id namespace (the same ids /api/assign writes).
+        cur_a.physician_id, cur_a.physician_name, cur_a.is_manual = raw_id_b, raw_name_b, True
+        cur_b.physician_id, cur_b.physician_name, cur_b.is_manual = raw_id_a, raw_name_a, True
+
+        # Same stats refresh as /api/assign: keep the CP-SAT quality fields
+        # that _compute_stats doesn't know about.
+        _old_status = result.stats.solver_status if result.stats else None
+        _old_gap = result.stats.optimality_gap_pct if result.stats else None
+        result.stats = gen._compute_stats(result)
+        if result.stats and _old_status:
+            result.stats.solver_status = _old_status
+            result.stats.optimality_gap_pct = _old_gap
+
+    n_viol = len(viol_a) + len(viol_b)
+    verb = "Would swap" if body.dry_run else "Swapped"
+    return SwapResponse(
+        success=True,
+        applied=not body.dry_run,
+        a=SwapSideSchema(
+            physician_id=raw_id_a,
+            physician_name=name_a,
+            date=d_b.isoformat(),
+            shift_code=shift_b.code,
+            violations=[_v(v) for v in viol_a],
+        ),
+        b=SwapSideSchema(
+            physician_id=raw_id_b,
+            physician_name=name_b,
+            date=d_a.isoformat(),
+            shift_code=shift_a.code,
+            violations=[_v(v) for v in viol_b],
+        ),
+        message=(
+            f"{verb} {name_a} ({shift_a.code} on {d_a.isoformat()}) with "
+            f"{name_b} ({shift_b.code} on {d_b.isoformat()})."
+            + (f" {n_viol} rule(s) overridden." if n_viol and not body.dry_run
+               else f" {n_viol} rule(s) would be broken." if n_viol
+               else " No rule violations.")
+        ),
+    )
 
 
 @app.get("/api/candidates", response_model=CandidatesResponse)

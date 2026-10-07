@@ -197,6 +197,19 @@ class CpsatScheduleGenerator:
         # at all — see HC-11's use of it for why this exists only for
         # nights and not 0600h.
         self._default_2400h_cap_unstated: int = anchor_cfg.get("default_2400h_cap_unstated", 4)
+        # Anchor-share fairness (2026-10-07, from a real January solve where
+        # one physician who left the 0600h cell blank got 8 of 8 shifts as
+        # 0600h while explicit 0/0 physicians sat at 1 each): every
+        # physician is expected to carry up to this fraction of their own
+        # requested shift count as anchor (0600h/2400h) shifts before
+        # anybody is pushed beyond their own fair share. A physician's
+        # explicit anchor request, when larger, is their target instead.
+        self._anchor_share_target: float = float(anchor_cfg.get("anchor_share_target", 0.40))
+        # Below this requested-shift count the 0/0 minimum-anchor floor is 1
+        # shift; at or above it, 2. Was a hard-coded 10; lowered to 8 by
+        # user instruction (Wittmeier/Thirsk, 8 shifts each, "should have
+        # come up to 2").
+        self._anchor_min_floor_full_threshold: int = int(anchor_cfg.get("anchor_min_floor_full_threshold", 8))
         self._max_weekends: int = (
             config.get("weekends", {}).get("max_weekends_per_month", _DEFAULT_MAX_WEEKENDS)
         )
@@ -1093,8 +1106,25 @@ class CpsatScheduleGenerator:
         # Below this requested-shift-count threshold, the floor target is 1
         # anchor shift; at or above it, 2 (see the floor logic further
         # below). 10 per explicit user instruction.
-        _ANCHOR_MIN_FLOOR_FULL_THRESHOLD = 10
+        _ANCHOR_MIN_FLOOR_FULL_THRESHOLD = self._anchor_min_floor_full_threshold
         _ANCHOR_OVERAGE_PENALTY = 500
+        # Anchor-share fairness (see __init__'s _anchor_share_target):
+        #   * an anchor shift a physician did not ask for, but still within
+        #     their fair share, costs _ANCHOR_UNREQUESTED_PENALTY (preferred
+        #     type: _ANCHOR_UNREQUESTED_PENALTY_PREFERRED) -- enough that a
+        #     physician who actually requested the shift (+90 fulfillment)
+        #     always wins it first, cheap enough that spreading unavoidable
+        #     anchors across everyone's fair share beats piling them up;
+        #   * every anchor beyond max(requested anchors, fair share) costs
+        #     _ANCHOR_SHARE_OVERAGE_STEPS, escalating, for EVERYONE --
+        #     including physicians who left an anchor cell blank, who used
+        #     to be free to load up on. 500 is the old flat overage weight
+        #     ("only when truly nothing else can fill the slot"); the steps
+        #     above it make a 2nd/3rd excess anchor on the same person cost
+        #     more than the 1st on someone else, so excess is spread.
+        _ANCHOR_UNREQUESTED_PENALTY = 150
+        _ANCHOR_UNREQUESTED_PENALTY_PREFERRED = 60
+        _ANCHOR_SHARE_OVERAGE_STEPS = (500, 800, 1100)
         # A physician's stated numbers can themselves signal which anchor
         # type they'd rather absorb overage in — e.g. explicitly wanting 0
         # 0600h and a real positive 2400h count says "give me another
@@ -1211,26 +1241,46 @@ class CpsatScheduleGenerator:
                     anchor_fill_vars_flat.append((fill_0600, weight))
                     anchor_requests_by_pid.setdefault(pid, []).append(("0600h", sub.shifts_0600h_requested))
 
+                # Fair share of anchor shifts for this physician (see
+                # _anchor_share_target): a fraction of their own requested
+                # count, or their explicit anchor request if that's larger.
+                # An explicit anchor request above the share is honoured in
+                # full (KLam's 16 nights of 16 are his target, not overage).
+                eff_req_anchor = sub.shifts_requested or min(10, sub.shifts_max)
+                req_anchors = (
+                    (sub.shifts_2400h_requested if sub.shifts_2400h_stated else 0)
+                    + (sub.shifts_0600h_requested if sub.shifts_0600h_stated else 0)
+                )
+                fair_share = int(math.floor(self._anchor_share_target * eff_req_anchor))
+                anchor_target = max(req_anchors, fair_share)
+                preference = _anchor_preference(pid, sub)
+                pid_cap_2400: int | None = None
+                pid_cap_0600: int | None = None
+
                 # Per-physician 2400h cap. Checked via shifts_2400h_stated,
-                # not `> 0` — a physician who explicitly typed "0" (a real
-                # "I want none") and one who left the cell blank (no signal
-                # at all) both parse to the same int 0, but must be treated
-                # oppositely: an explicit 0 gets the tight requested+tolerance
-                # cap below (effectively "almost never"), not the more
-                # permissive unstated fallback.
+                # not `> 0` — a physician who explicitly typed "0" and one
+                # who left the cell blank both parse to int 0 but mean
+                # different things. An explicit request r is capped at
+                # max(r + tolerance, fair share): the tolerance is the old
+                # "just one more" safety valve, the fair share is the
+                # anchor load everyone is expected to be able to carry
+                # (previously an explicit 0 capped at 1, which made the
+                # 0/0 floor's "2" literally unreachable for anyone who
+                # can't work nights).
                 if sub.shifts_2400h_stated:
-                    pid_cap_2400 = sub.shifts_2400h_requested + self._anchor_tol
+                    pid_cap_2400 = max(sub.shifts_2400h_requested + self._anchor_tol, anchor_target)
                     if vars_2400:
                         model.add(sum(vars_2400) <= pid_cap_2400)
-                        if self._anchor_tol > 0:
-                            over_2400 = model.new_int_var(0, self._anchor_tol, f"over2400_{pid}")
-                            model.add(over_2400 >= sum(vars_2400) - sub.shifts_2400h_requested)
+                        unreq_ub = pid_cap_2400 - sub.shifts_2400h_requested
+                        if unreq_ub > 0:
+                            unreq_2400 = model.new_int_var(0, unreq_ub, f"unreq2400_{pid}")
+                            model.add(unreq_2400 >= sum(vars_2400) - sub.shifts_2400h_requested)
                             weight_2400 = (
-                                _ANCHOR_OVERAGE_PENALTY_PREFERRED
-                                if _anchor_preference(pid, sub) == "2400h"
-                                else _ANCHOR_OVERAGE_PENALTY
+                                _ANCHOR_UNREQUESTED_PENALTY_PREFERRED
+                                if preference == "2400h"
+                                else _ANCHOR_UNREQUESTED_PENALTY
                             )
-                            anchor_overage_penalty_terms.append(-weight_2400 * over_2400)
+                            anchor_overage_penalty_terms.append(-weight_2400 * unreq_2400)
                 elif vars_2400:
                     # No stated 2400h preference at all. Unlike 0600h below,
                     # this still gets a firm fallback ceiling: night-shift
@@ -1243,31 +1293,64 @@ class CpsatScheduleGenerator:
                     # there's a reliable way to know who actually prefers
                     # nights.
                     model.add(sum(vars_2400) <= self._default_2400h_cap_unstated)
+                    # Blank cell = no request, so every night is an
+                    # unrequested anchor for the fairness accounting.
+                    unreq_2400u = model.new_int_var(0, self._default_2400h_cap_unstated, f"unreq2400u_{pid}")
+                    model.add(unreq_2400u >= sum(vars_2400))
+                    anchor_overage_penalty_terms.append(-_ANCHOR_UNREQUESTED_PENALTY * unreq_2400u)
 
                 # Per-physician 0600h cap — only when shifts_0600h_stated
                 # (same explicit-0-vs-blank distinction as 2400h above).
-                # No fallback ceiling for a genuinely blank cell: a guessed
-                # default here was tried (flat, then proportional to total
-                # shifts) and confirmed wrong against real data — real
-                # physicians who truly state no anchor preference take on
-                # far more than any guess would allow. 0600h carries none
-                # of 2400h's fairness/wellbeing concern, so there's no
-                # reason to guess a limit here the way there is for nights
-                # — but an explicit 0 is real signal, not a blank, and
-                # still gets capped below like any other explicit request.
+                # No HARD ceiling for a genuinely blank cell (a guessed
+                # default was tried and confirmed wrong against real data --
+                # some physicians who state nothing genuinely do take on a
+                # lot), but a blank is no longer FREE either: it used to be,
+                # and a real January solve gave one such physician 8 of 8
+                # shifts as 0600h while explicit-0/0 physicians sat at 1.
+                # Blank 0600h now pays the same per-shift unrequested
+                # penalty as everyone else and counts toward the shared
+                # fair-share overage below, so it's soft-limited by cost.
                 if sub.shifts_0600h_stated:
-                    pid_cap_0600 = sub.shifts_0600h_requested + self._anchor_tol
+                    pid_cap_0600 = max(sub.shifts_0600h_requested + self._anchor_tol, anchor_target)
                     if vars_0600:
                         model.add(sum(vars_0600) <= pid_cap_0600)
-                        if self._anchor_tol > 0:
-                            over_0600 = model.new_int_var(0, self._anchor_tol, f"over0600_{pid}")
-                            model.add(over_0600 >= sum(vars_0600) - sub.shifts_0600h_requested)
+                        unreq_ub = pid_cap_0600 - sub.shifts_0600h_requested
+                        if unreq_ub > 0:
+                            unreq_0600 = model.new_int_var(0, unreq_ub, f"unreq0600_{pid}")
+                            model.add(unreq_0600 >= sum(vars_0600) - sub.shifts_0600h_requested)
                             weight_0600 = (
-                                _ANCHOR_OVERAGE_PENALTY_PREFERRED
-                                if _anchor_preference(pid, sub) == "0600h"
-                                else _ANCHOR_OVERAGE_PENALTY
+                                _ANCHOR_UNREQUESTED_PENALTY_PREFERRED
+                                if preference == "0600h"
+                                else _ANCHOR_UNREQUESTED_PENALTY
                             )
-                            anchor_overage_penalty_terms.append(-weight_0600 * over_0600)
+                            anchor_overage_penalty_terms.append(-weight_0600 * unreq_0600)
+                elif vars_0600:
+                    unreq_0600u = model.new_int_var(0, len(all_dates), f"unreq0600u_{pid}")
+                    model.add(unreq_0600u >= sum(vars_0600))
+                    anchor_overage_penalty_terms.append(-_ANCHOR_UNREQUESTED_PENALTY * unreq_0600u)
+
+                # Combined fair-share overage: anchors of EITHER type beyond
+                # anchor_target, escalating, regardless of what was or
+                # wasn't stated. This is what makes "bring everyone up to
+                # their share before pushing anyone past it" hold: a 1st
+                # excess anchor on someone already at their share (500+)
+                # always costs more than one more fair-share anchor on
+                # someone below it (150).
+                total_anchor_expr = sum(vars_2400) + sum(vars_0600)
+                max_anchors_possible = min(
+                    len(all_dates),
+                    (pid_cap_2400 if pid_cap_2400 is not None else (self._default_2400h_cap_unstated if vars_2400 else 0))
+                    + (pid_cap_0600 if pid_cap_0600 is not None else (len(all_dates) if vars_0600 else 0)),
+                )
+                over_room = max_anchors_possible - anchor_target
+                if over_room > 0:
+                    share_steps = [model.new_bool_var(f"anchorshare_over{k}_{pid}") for k in range(over_room)]
+                    model.add(sum(share_steps) >= total_anchor_expr - anchor_target)
+                    for k in range(len(share_steps) - 1):
+                        model.add(share_steps[k] >= share_steps[k + 1])
+                    for k, step in enumerate(share_steps):
+                        weight = _ANCHOR_SHARE_OVERAGE_STEPS[min(k, len(_ANCHOR_SHARE_OVERAGE_STEPS) - 1)]
+                        anchor_overage_penalty_terms.append(-weight * step)
 
                 # Minimum anchor-shift floor for a physician who explicitly
                 # states they want ZERO of both anchor types (0600h AND
@@ -1292,9 +1375,12 @@ class CpsatScheduleGenerator:
                         and sub.shifts_0600h_stated and sub.shifts_0600h_requested == 0
                         and (vars_2400 or vars_0600)):
                     floor_target = 2 if sub.shifts_requested >= _ANCHOR_MIN_FLOOR_FULL_THRESHOLD else 1
+                    # Bounded by the real per-type caps above (fair-share
+                    # based now, so a physician who can only work one
+                    # anchor type is no longer stuck at a floor of 1).
                     combined_cap = (
-                        (self._anchor_tol if vars_2400 else 0)
-                        + (self._anchor_tol if vars_0600 else 0)
+                        (pid_cap_2400 if (vars_2400 and pid_cap_2400 is not None) else 0)
+                        + (pid_cap_0600 if (vars_0600 and pid_cap_0600 is not None) else 0)
                     )
                     available = (
                         _anchor_available_days(sub, "2400h")
@@ -2054,9 +2140,18 @@ class CpsatScheduleGenerator:
             # roster-wide: 6 physicians share this combination; 3 have
             # real 2400h demand this month (Breton, McKinnon, Schindler).
             _max_nights_forces_isolation = pid_cfg and pid_cfg.max_consecutive_nights == 1
+            # Also exempt anyone who explicitly asked for exactly ONE 2400h
+            # shift: a lone night is precisely what they requested, and
+            # requiring an adjacent pair would cost them a 2nd (unwanted,
+            # penalised) night -- so the solver gave them zero instead.
+            # Found via Grishin (real January data: requested 1, got 0).
+            _sub13 = self.submissions.get(pid)
+            _single_night_requested = bool(
+                _sub13 and _sub13.shifts_2400h_stated and _sub13.shifts_2400h_requested == 1
+            )
             _isolated_ok = pid_cfg and (
                 pid_cfg.prefer_singleton_nights or pid_cfg.allow_isolated_nights
-            ) or pid in zero_zero_floor_info or _max_nights_forces_isolation
+            ) or pid in zero_zero_floor_info or _max_nights_forces_isolation or _single_night_requested
             if not _isolated_ok:
                 for d_idx in range(len(all_dates)):
                     curr = night_bool.get((pid, d_idx))

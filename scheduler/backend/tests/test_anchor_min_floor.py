@@ -103,10 +103,13 @@ def test_explicit_positive_request_takes_priority_over_the_floor():
     assert n2400 >= 1
 
 
-def test_floor_never_exceeds_the_existing_anchor_tolerance_cap():
-    """The floor is bounded by the same per-type cap the overage-tolerance
-    valve already enforces (anchor_target_tolerance, default 1 per type) --
-    it must never force a hard cap violation."""
+def test_floor_never_exceeds_the_fair_share_cap():
+    """The floor is bounded by the per-type anchor cap. Since 2026-10-07 that
+    cap for an explicit 0 is max(0 + tolerance, fair share) where fair share
+    is anchor_share_target (0.40) x requested -- an explicit 0 means "no
+    preference, I carry my share", not "almost never". Solo, nothing forces
+    anchors beyond the floor, so the floor (2 at >= 8 requested) is what
+    lands, and never more than the fair share (6 of 15)."""
     sub = _full_availability_submission(
         "Test", shifts_requested=15,
         shifts_2400h_stated=True, shifts_2400h_requested=0,
@@ -116,17 +119,11 @@ def test_floor_never_exceeds_the_existing_anchor_tolerance_cap():
     gen = CpsatScheduleGenerator([sub], roster, {}, trailing_assignments=None)
     result = gen.generate(YEAR, MONTH, time_limit=15.0, num_workers=4)
 
-    n2400 = sum(
+    anchors = sum(
         1 for a in result.assignments
-        if a.physician_id == "Test" and a.shift.time == "2400h"
+        if a.physician_id == "Test" and a.shift.time in ("0600h", "2400h")
     )
-    n0600 = sum(
-        1 for a in result.assignments
-        if a.physician_id == "Test" and a.shift.time == "0600h"
-    )
-    # Default anchor_target_tolerance is 1 per type -- so at most 1 of each.
-    assert n2400 <= 1
-    assert n0600 <= 1
+    assert 2 <= anchors <= 6
 
 
 def test_floor_survives_contention_from_uncapped_blank_physicians():

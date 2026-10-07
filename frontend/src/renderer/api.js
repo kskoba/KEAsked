@@ -34,7 +34,9 @@ async function request(method, path, body) {
     } catch {
       // ignore JSON parse error
     }
-    throw new Error(errorMsg)
+    const err = new Error(errorMsg)
+    err.status = res.status   // lets callers tell a 400 refusal from a network failure
+    throw err
   }
 
   return res.json()
@@ -280,6 +282,23 @@ export async function assignPhysician(date, shiftCode, physicianId) {
     date,
     shift_code: shiftCode,
     physician_id: physicianId
+  })
+}
+
+/**
+ * Swap the physicians in two filled slots, evaluated against the POST-swap
+ * state (both physicians are lifted out before either is checked in the
+ * other's slot, so a same-day A-side/B-side trade is not a double booking).
+ * @param {{date: string, shift: {code: string}}} a   first assignment (as shown in the grid)
+ * @param {{date: string, shift: {code: string}}} b   second assignment
+ * @param {boolean} dryRun   true = report violations only, change nothing
+ * @returns {SwapResponse}  { success, applied, a: {physician_id, physician_name, date, shift_code, violations}, b: {...}, message }
+ */
+export async function swapAssignments(a, b, dryRun = false) {
+  return request('POST', '/api/swap', {
+    a: { date: a.date, shift_code: a.shift.code },
+    b: { date: b.date, shift_code: b.shift.code },
+    dry_run: dryRun
   })
 }
 

@@ -9,7 +9,7 @@ import ReplaceModal from './components/ReplaceModal'
 import OnCallModal from './components/OnCallModal'
 import AssignOrSwapModal from './components/AssignOrSwapModal'
 import SettingsModal from './components/SettingsModal'
-import { assignPhysician, getSchedule, checkViolations, setApiBaseUrl } from './api'
+import { getSchedule, swapAssignments, setApiBaseUrl } from './api'
 
 export default function App() {
   // 'setup' | 'schedule'
@@ -206,10 +206,13 @@ export default function App() {
     setSwapFirst(null)
   }, [])
 
+  // A swap is ONE backend operation (/api/swap), not two /api/assign calls:
+  // the backend lifts both physicians out of their slots before checking
+  // either in the other's, so two people trading A-side/B-side on the same
+  // day are not reported (or refused) as double-booked.
   const doSwap = useCallback(async (a, b) => {
     try {
-      await assignPhysician(a.date, a.shift.code, b.physician_id)
-      await assignPhysician(b.date, b.shift.code, a.physician_id)
+      await swapAssignments(a, b, false)
       const updated = await getSchedule()
       setScheduleData(updated)
     } catch (err) {
@@ -229,27 +232,33 @@ export default function App() {
     setSwapMode(false)
     setSwapFirst(null)
 
-    // Pre-check violations for both directions
+    if (a.date === b.date && a.shift?.code === b.shift?.code) return   // same cell clicked twice
+
+    // Dry-run the swap: violations are evaluated against the post-swap state.
     try {
-      const [resAtoB, resBtoA] = await Promise.all([
-        checkViolations(b.date, b.shift.code, a.physician_id),  // A goes to B's slot
-        checkViolations(a.date, a.shift.code, b.physician_id),  // B goes to A's slot
-      ])
+      const preview = await swapAssignments(a, b, true)
 
       const hardItems = []
-      for (const v of resAtoB.violations ?? []) {
-        if (v.is_hard && v.rule !== 'max_shifts') hardItems.push({ physician: a.physician_name || a.physician_id, description: v.description })
-      }
-      for (const v of resBtoA.violations ?? []) {
-        if (v.is_hard && v.rule !== 'max_shifts') hardItems.push({ physician: b.physician_name || b.physician_id, description: v.description })
+      for (const side of [preview.a, preview.b]) {
+        for (const v of side?.violations ?? []) {
+          if (v.is_hard && v.rule !== 'max_shifts') {
+            hardItems.push({ physician: side.physician_name || side.physician_id, description: v.description })
+          }
+        }
       }
 
       if (hardItems.length > 0) {
         setSwapViolationConfirm({ items: hardItems, onConfirm: () => doSwap(a, b) })
         return
       }
-    } catch {
-      // If violation check fails, proceed with swap anyway
+    } catch (err) {
+      // A 400 here is a real refusal (unfilled slot, same physician), not a
+      // rule violation -- surface it instead of blindly applying.
+      if (err?.status === 400 || /unfilled|same physician|different slots/i.test(err?.message || '')) {
+        alert(`Cannot swap: ${err.message}`)
+        return
+      }
+      // Any other preview failure (network blip): fall through and apply.
     }
 
     await doSwap(a, b)

@@ -1582,6 +1582,9 @@ def sked_physician_link(body: PhysicianLinkRequest) -> PhysicianLinkResponse:
                     "maxConsecutiveShifts": cfg.max_consecutive_shifts,
                     "maxConsecutiveNights": cfg.max_consecutive_nights,
                     "nonAcuteSitePreference": cfg.group_b_site_preference or "",
+                    # honor_all_requests => stars are requests, so sked waives its
+                    # preferred-shift cap for them (physicians.preferred_cap_exempt).
+                    "preferredCapExempt": bool(cfg.honor_all_requests),
                 }
             ],
             base_url_override=(sked_config.survey_base_url or None) if is_survey else None,
@@ -1653,6 +1656,9 @@ def send_monthly_requests(body: SendMonthlyRequestsRequest) -> SendMonthlyReques
                     "maxConsecutiveShifts": cfg.max_consecutive_shifts,
                     "maxConsecutiveNights": cfg.max_consecutive_nights,
                     "nonAcuteSitePreference": cfg.group_b_site_preference or "",
+                    # honor_all_requests => stars are requests, so sked waives its
+                    # preferred-shift cap for them (physicians.preferred_cap_exempt).
+                    "preferredCapExempt": bool(cfg.honor_all_requests),
                 }
                 for cfg in active_physicians
             ],

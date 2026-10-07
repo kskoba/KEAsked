@@ -499,7 +499,10 @@ def describe_physician_facing_rules(cfg: "PhysicianConfig") -> list[str]:
         # flag is also set would misstate an actual cap that doesn't apply.
         items.append(f"You're capped at {cfg.max_weekends} weekend(s) worked per month.")
     if cfg.honor_all_requests:
-        items.append("Your specific date/shift requests are treated as close to mandatory.")
+        items.append(
+            "Your specific date/shift requests are treated as close to mandatory, and the usual "
+            "cap on how many shifts you can mark preferred (★) doesn't apply to you."
+        )
     if cfg.priority_weight > 1.0:
         items.append(
             "Your requested shifts are given extra weight over a colleague's when the schedule can't "

@@ -134,10 +134,10 @@ xlsx and load it; everything else is built and tested (76/76 backend tests).
   max_consecutive_same_site, and never introducing a same-site repeat in a
   run. In that solve ~15 physicians were 0 on one acute side (N Lam 0/4,
   Grishin 0/5, Schindler 4/0, Whiteside 4/0 ...).
-- Tests: `test_anchor_fairness.py` (9). **Open question for the user**: N
-  Lam's "NEHC, RAH B, NEHC" run -- the site-variety rule deliberately
-  excludes NEHC from the no-repeat-in-a-run penalty (7 NEHC slots/day);
-  should NEHC repeats within a run be penalised too (at a lower weight)?
+- Tests: `test_anchor_fairness.py` (13). N Lam's "NEHC, RAH B, NEHC" run:
+  NEHC is now included in the no-repeat-in-a-run penalty at a third of the
+  weight (50 vs 150, `_CLUSTER_NEHC_REPEAT_PENALTY`) -- user decision,
+  since NEHC has 7 slots/day so some repetition there is unavoidable.
 - **Same-day swap bug fixed** (via a sub-agent): there was no backend swap
   at all -- the app composed one from two one-sided `/api/assign` +
   `/api/check-violations` calls, each still seeing the other physician on

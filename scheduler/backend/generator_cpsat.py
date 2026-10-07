@@ -2415,9 +2415,10 @@ class CpsatScheduleGenerator:
 
         # Soft: site variety within a run of consecutive days (2026-10-07).
         # Two parts, per the scheduler's stated rule:
-        #   (a) never two shifts at the same site in one run, for every site
-        #       except NEHC -- RAH A, RAH B, RAH I, and RAH F (float is
-        #       non-acute but scarce, so nobody should get several together).
+        #   (a) never two shifts at the same site in one run -- RAH A, RAH B,
+        #       RAH I, and RAH F at full weight (float is non-acute but
+        #       scarce, so nobody should get several together), NEHC at a
+        #       third of it (see _CLUSTER_NEHC_REPEAT_PENALTY).
         #       Different start times at the same site still count; HC-10
         #       already hard-bans the identical shift CODE on adjacent days.
         #   (b) a run of 2+ days with no acute (RAH A/B) shift anywhere in
@@ -2434,7 +2435,16 @@ class CpsatScheduleGenerator:
         # the near-hard rest rules.
         _CLUSTER_SITE_REPEAT_PENALTY = 150
         _CLUSTER_NO_ACUTE_PENALTY = 150
-        _NO_REPEAT_SITES = ("RAH A side", "RAH B side", "RAH I side", "RAH F side")
+        # NEHC repeats within a run are discouraged too, but at a third of
+        # the weight (user decision 2026-10-07, after N Lam's "NEHC, RAH B,
+        # NEHC" run): NEHC has 7 slots a day, so some repetition there is
+        # unavoidable in a way a 2nd RAH F or RAH A in one run never is.
+        _CLUSTER_NEHC_REPEAT_PENALTY = 50
+        _NO_REPEAT_SITES = ("RAH A side", "RAH B side", "RAH I side", "RAH F side", "NEHC")
+        _SITE_REPEAT_WEIGHT = {
+            site: (_CLUSTER_NEHC_REPEAT_PENALTY if site == "NEHC" else _CLUSTER_SITE_REPEAT_PENALTY)
+            for site in _NO_REPEAT_SITES
+        }
         _ACUTE_SITES = ("RAH A side", "RAH B side")
         cluster_site_penalty_terms = []
         n_days = len(all_dates)
@@ -2464,9 +2474,9 @@ class CpsatScheduleGenerator:
                         mids = [worked_bool.get((pid, m)) for m in range(d_idx + 1, d_idx + k)]
                         if any(m is None for m in mids):
                             continue
-                        rep = model.new_bool_var(f"siterep_{pid}_{site[4:5]}_{d_idx}_{k}")
+                        rep = model.new_bool_var(f"siterep_{pid}_{site.replace(' ', '_')}_{d_idx}_{k}")
                         model.add(_site_expr(d_idx, site) + _site_expr(d_idx + k, site) + sum(mids) <= k + rep)
-                        cluster_site_penalty_terms.append(-_CLUSTER_SITE_REPEAT_PENALTY * rep)
+                        cluster_site_penalty_terms.append(-_SITE_REPEAT_WEIGHT[site] * rep)
 
             # (b) a maximal run of L>=2 worked days containing no acute shift
             for L in range(2, max_run + 1):

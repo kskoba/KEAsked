@@ -204,3 +204,23 @@ def test_balance_pass_never_creates_an_adjacent_same_code_or_run_repeat():
     _, trades = acute_balance.balance_acute_sides(res, {"Alpha": _cfg("Alpha"), "Beta": _cfg("Beta")})
     assert trades == 0
     assert [a.shift.site for a in sorted(res.assignments, key=lambda a: (a.physician_id, a.date))][:2] == ["RAH A side", "RAH B side"]
+
+
+# --------------------------------------------------------------------------- #
+# NEHC repeats within a run (lower-weight variant of the site-variety rule)
+# --------------------------------------------------------------------------- #
+
+def test_nehc_is_not_repeated_within_a_run_when_an_alternative_exists():
+    """N Lam shape: a 3-day run that came out NEHC, RAH B, NEHC. Offer three
+    distinct sites on three consecutive days; the run should use each once."""
+    codes = {"1200h NEHC", "1000h RAH I side", "1200h RAH A side"}
+    sub = _sub("LamN", 3, codes=codes)
+    for d in sub.days:
+        if d.date.day not in (4, 5, 6):
+            d.wants_to_work = False
+            d.available_blocks = frozenset()
+            d.requested_shifts = frozenset()
+    res = _solve([sub], {"LamN": _cfg("LamN")})
+    sites = [a.shift.site for a in sorted(res.assignments, key=lambda a: a.date) if a.physician_id == "LamN"]
+    assert len(sites) == 3
+    assert len(set(sites)) == 3, sites

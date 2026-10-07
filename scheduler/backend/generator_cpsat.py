@@ -1253,6 +1253,15 @@ class CpsatScheduleGenerator:
                 )
                 fair_share = int(math.floor(self._anchor_share_target * eff_req_anchor))
                 anchor_target = max(req_anchors, fair_share)
+                # A physician restricted to one anchor type (only_0600h /
+                # only_2400h, e.g. Garcea, Deol, Mrochuk, KLam) can ONLY
+                # work anchors: every shift they take is one. Fair-share
+                # accounting is meaningless for them and, left in place,
+                # would make their 4th+ shift cost more than it earns and
+                # starve them. Their target is simply their whole request.
+                _cfg_anchor = _get_cfg(pid)
+                if _cfg_anchor and (_cfg_anchor.only_0600h or _cfg_anchor.only_2400h):
+                    anchor_target = max(anchor_target, eff_req_anchor + self._anchor_tol)
                 preference = _anchor_preference(pid, sub)
                 pid_cap_2400: int | None = None
                 pid_cap_0600: int | None = None
@@ -1521,7 +1530,7 @@ class CpsatScheduleGenerator:
         # ----------------------------------------------------------------
         for pid in pids:
             cfg = _get_cfg(pid)
-            max_nights = cfg.max_consecutive_nights if cfg else self._max_consec_default
+            max_nights = self._effective_max_nights(pid, cfg)
             window_size = max_nights + 1
             if window_size <= len(all_dates):
                 night_vars_by_day = []
@@ -2139,7 +2148,7 @@ class CpsatScheduleGenerator:
             # contradiction instead of exempting it serves no one. Checked
             # roster-wide: 6 physicians share this combination; 3 have
             # real 2400h demand this month (Breton, McKinnon, Schindler).
-            _max_nights_forces_isolation = pid_cfg and pid_cfg.max_consecutive_nights == 1
+            _max_nights_forces_isolation = pid_cfg and self._effective_max_nights(pid, pid_cfg) == 1
             # Also exempt anyone who explicitly asked for exactly ONE 2400h
             # shift: a lone night is precisely what they requested, and
             # requiring an adjacent pair would cost them a 2nd (unwanted,
@@ -3302,7 +3311,7 @@ class CpsatScheduleGenerator:
 
         # NIAR — max consecutive 2400h (overnight) shifts.
         if shift.time == "2400h":
-            max_nights = cfg.max_consecutive_nights if cfg else self._max_consec_default
+            max_nights = self._effective_max_nights(pid, cfg)
             night_run = self._night_run_ending_before(pid, d)
             if night_run >= max_nights:
                 v.append(ViolationReason(
@@ -3329,6 +3338,26 @@ class CpsatScheduleGenerator:
     # ------------------------------------------------------------------
     # Stats (identical logic to ScheduleGenerator._compute_stats)
     # ------------------------------------------------------------------
+
+    def _effective_max_nights(self, pid: str, cfg: Optional[PhysicianConfig]) -> int:
+        """
+        The roster's max_consecutive_nights, except that a roster value of 0
+        (typically copied from the annual survey's "typical 0 nights") is
+        lifted to 1 when THIS month's submission explicitly requests >= 1
+        2400h shift -- the dated request is the fresher signal than a
+        standing assumption, and a hard 0 silently made such a request
+        unfulfillable (Grishin, real January data: requested 1, got 0 even
+        solo). A physician who truly can never work nights should carry
+        forbidden_shift_times: [2400h], which still wins here.
+        """
+        base = cfg.max_consecutive_nights if cfg else self._max_consec_default
+        if base == 0:
+            sub = self.submissions.get(pid)
+            forbidden = cfg.forbidden_shift_times if cfg else []
+            if (sub and sub.shifts_2400h_stated and sub.shifts_2400h_requested > 0
+                    and "2400h" not in forbidden):
+                return 1
+        return base
 
     def _compute_stats(self, result: ScheduleResult) -> ScheduleStats:
         filled = len(result.assignments)

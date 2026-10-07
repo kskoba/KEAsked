@@ -134,13 +134,32 @@ xlsx and load it; everything else is built and tested (76/76 backend tests).
   max_consecutive_same_site, and never introducing a same-site repeat in a
   run. In that solve ~15 physicians were 0 on one acute side (N Lam 0/4,
   Grishin 0/5, Schindler 4/0, Whiteside 4/0 ...).
-- Tests: `test_anchor_fairness.py` (8). **Open question for the user**: N
+- Tests: `test_anchor_fairness.py` (9). **Open question for the user**: N
   Lam's "NEHC, RAH B, NEHC" run -- the site-variety rule deliberately
   excludes NEHC from the no-repeat-in-a-run penalty (7 NEHC slots/day);
   should NEHC repeats within a run be penalised too (at a lower weight)?
-- A separate agent was spawned for the manual same-day swap bug (swapping
-  two physicians who both already work that day reports double-booking) --
-  see its commit/notes.
+- **Same-day swap bug fixed** (via a sub-agent): there was no backend swap
+  at all -- the app composed one from two one-sided `/api/assign` +
+  `/api/check-violations` calls, each still seeing the other physician on
+  the day. New `POST /api/swap {a, b, dry_run}` unassigns both first, then
+  checks/assigns each into the other's slot; frontend swap flow rewired.
+  `test_swap.py` (7). Backend restarted locally so it's live.
+- **Real-data check of the fairness work** (4-min local solve, 8.7% gap):
+  Bacon 60% -> 40% anchors (no unwanted 0600h); Wittmeier/Thirsk/Lucyk/
+  Krisik 1 -> 2 anchors; lopsided acute sides 14 -> 2 after 26 A/B trades
+  (N Lam 2/2, Grishin 2/3; Brenneis 0/4 and Rawe 3/0 remain -- no legal
+  same-slot partner). Two that did NOT move were roster, not solver:
+  - Garcea 8/8 0600h is `only_0600h: true` in physicians.yaml -- correct.
+    Exposed a flaw: fair-share penalties on an only-one-anchor-type
+    physician are dead weight that could starve them; they're now exempt
+    (target = their whole request). Test added.
+  - Grishin 0 nights: `max_consecutive_nights: 0` in physicians.yaml (from
+    the survey's typical_2400h 0) hard-bans nights, overriding his January
+    request for 1. Fixed generally: an explicit >=1 night request in the
+    month's submission lifts a roster night cap of 0 to 1 (the roster zero
+    is a standing assumption; the dated request is the fresher signal).
+    Physicians who truly can never work nights should carry
+    `forbidden_shift_times: [2400h]` (Francescutti does), which still wins.
 
 **Still to do:**
 1. Before the January solve, in the app: open "Previous month (December

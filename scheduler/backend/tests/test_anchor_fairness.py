@@ -124,6 +124,18 @@ def test_explicit_large_anchor_request_is_still_honoured_in_full():
     assert _nights(res, "KLam") >= 12
 
 
+def test_only_0600h_physician_is_exempt_from_fair_share_and_fully_scheduled():
+    """Garcea's real shape: only_0600h in the roster, 0600h cell blank, 8
+    requested. Every shift she can work is an anchor, so fair-share penalties
+    must not apply (they'd make her 4th+ shift cost more than it earns)."""
+    sub = _sub("Garcea", 8, s0600=False, r2400=0, s2400=True)
+    roster = {"Garcea": _cfg("Garcea", only_0600h=True, max_consecutive_nights=0)}
+    res = _solve([sub], roster)
+    mine = [a for a in res.assignments if a.physician_id == "Garcea"]
+    assert len(mine) == 8
+    assert all(a.shift.time == "0600h" for a in mine)
+
+
 # --------------------------------------------------------------------------- #
 # Single requested night
 # --------------------------------------------------------------------------- #
@@ -134,6 +146,22 @@ def test_physician_requesting_exactly_one_night_gets_it():
     sub = _sub("Grishin", 12, r0600=6, s0600=True, r2400=1, s2400=True)
     res = _solve([sub], {"Grishin": _cfg("Grishin")}, time_limit=30.0)
     assert _nights(res, "Grishin") == 1
+
+
+def test_roster_night_cap_of_zero_yields_to_an_explicit_night_request():
+    """Grishin's real shape: physicians.yaml says max_consecutive_nights: 0
+    (from the survey), but his January submission asks for 1 night. The
+    dated request wins: he gets his night."""
+    sub = _sub("Grishin", 12, r0600=6, s0600=True, r2400=1, s2400=True)
+    res = _solve([sub], {"Grishin": _cfg("Grishin", max_consecutive_nights=0)}, time_limit=30.0)
+    assert _nights(res, "Grishin") == 1
+
+
+def test_forbidden_night_time_still_wins_over_a_night_request():
+    sub = _sub("Francescutti", 6, r0600=1, s0600=True, r2400=1, s2400=True)
+    cfg = _cfg("Francescutti", max_consecutive_nights=0, forbidden_shift_times=["2000h", "2400h"])
+    res = _solve([sub], {"Francescutti": cfg}, time_limit=20.0)
+    assert _nights(res, "Francescutti") == 0
 
 
 # --------------------------------------------------------------------------- #

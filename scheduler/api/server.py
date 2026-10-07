@@ -55,6 +55,8 @@ from scheduler.api.schemas import (
     RemovePhysicianResponse,
     ImportDirectoryResponse,
     LoadScheduleRequest,
+    LoadTrailingScheduleRequest,
+    TrailingScheduleStatusResponse,
     GoogleSheetsStatusResponse,
     PushToMasterSheetRequest,
     PushToMasterSheetResponse,
@@ -108,6 +110,7 @@ from scheduler.backend import email_sender
 from scheduler.backend import sked_client
 from scheduler.backend import google_sheets_client
 from scheduler.backend import sheets_schedule_reader
+from scheduler.backend import trailing as trailing_mod
 from scheduler.backend.config import (
     CALL_LINKAGE_VALUES,
     GROUP_B_PREFS,
@@ -320,6 +323,17 @@ _state: dict[str, Any] = {
     # physician_id -> set of rule ids the user has manually overridden this
     # session (see /api/override*). Reset on every fresh import.
     "overrides": {},
+    # Cross-month continuity: the *previous* month's finalized schedule,
+    # loaded via /api/trailing-schedule (xlsx) and consumed by /api/generate.
+    # Deliberately its own slot -- "result"/"year"/"month" above mean "the
+    # active month being worked on", and loading December into them would
+    # stomp on January's in-progress state. None when nothing is loaded;
+    # otherwise {"result": ScheduleResult, "source": "xlsx"|"google_sheets",
+    # "file": str|None}.
+    "trailing_source": None,
+    # Human-readable note of what the last /api/generate actually did about
+    # cross-month data (used, or why not) -- surfaced on the status route.
+    "trailing_last_used": None,
 }
 
 
@@ -1776,34 +1790,19 @@ def resend_monthly_request(body: ResendMonthlyRequestRequest) -> ResendMonthlyRe
     return ResendMonthlyRequestResponse(ok=True, status="sent", detail=f"Sent to {cfg.email}.")
 
 
-@app.post("/api/sked/import", response_model=ImportDirectoryResponse)
-def sked_import(body: SkedImportRequest) -> ImportDirectoryResponse:
+def _fetch_sked_period_submissions(
+    sked_config, period_id: str, year: int, month: int, roster: dict,
+) -> tuple[list[PhysicianSubmission], list[NotSubmittedRow], list[str]]:
     """
-    Pull in shift-preference submissions directly from sked for one period,
-    instead of a directory/flat file of xlsx exports. For each active roster
-    physician with a submission (draft or submitted), sked rebuilds their
-    filled-preferences xlsx server-side and this reuses the exact same
-    parsing path as /api/import (importer.import_single_file) — nothing
-    downstream (validation, generation) needs to know the source differs.
-    Physicians with no submission yet, or still in "draft", come back in
-    not_submitted instead of being silently skipped.
+    Pull every active roster physician's *submitted* preferences for one
+    sked period, as raw PhysicianSubmissions (no roster post-processing, no
+    _state changes). Shared by /api/sked/import (the active month) and the
+    cross-month continuity loader (a prior month's requested counts).
+    Raises sked_client.SkedApiError if the period listing itself fails;
+    per-physician fetch/parse failures come back in the third element.
     """
-    sked_config = sked_client.load_sked_config()
-    if sked_config is None or not sked_client.is_fully_configured(sked_config):
-        raise HTTPException(
-            status_code=400,
-            detail="sked is not configured. Copy scheduler/config/sked_template.yaml to sked.yaml "
-                   "(in the physician config folder) and fill it in.",
-        )
-
-    roster = load_roster()
-    scheduler_cfg = _load_scheduler_config()
     active_physicians = {cfg.id: cfg for cfg in roster.values() if cfg.active}
-
-    try:
-        rows = sked_client.list_period_submissions(sked_config, body.period_id)
-    except sked_client.SkedApiError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+    rows = sked_client.list_period_submissions(sked_config, period_id)
     by_physician = {r["physicianId"]: r for r in rows}
 
     not_submitted: list[NotSubmittedRow] = []
@@ -1826,27 +1825,60 @@ def sked_import(body: SkedImportRequest) -> ImportDirectoryResponse:
                 ))
                 continue
             try:
-                xlsx_bytes = sked_client.fetch_physician_export(sked_config, physician_id, body.period_id)
+                xlsx_bytes = sked_client.fetch_physician_export(sked_config, physician_id, period_id)
             except sked_client.SkedApiError as exc:
                 fetch_errors.append(f"{_display_name(cfg)}: could not fetch from sked ({exc})")
                 continue
             file_path = Path(tmpdir) / f"{physician_id}.xlsx"
             file_path.write_bytes(xlsx_bytes)
             try:
-                sub = import_single_file(file_path, body.year, body.month, physician_id_override=physician_id)
+                sub = import_single_file(file_path, year, month, physician_id_override=physician_id)
                 submissions.append(sub)
             except Exception as exc:
                 fetch_errors.append(f"{_display_name(cfg)}: could not parse submission ({exc})")
 
-        _state["overrides"] = {}
-        unresolved = _apply_roster(submissions, roster)
-        _apply_combined_submissions(submissions, roster)
-        _auto_override_flagged_physicians(submissions, roster)
-        _apply_shift_count_overrides(submissions, roster)
-        _apply_casual_availability_default(submissions, roster)
-        results = _build_import_results(submissions, unresolved, roster)
-        _state.update(submissions=submissions, roster=roster, scheduler_config=scheduler_cfg,
-                      year=body.year, month=body.month, directory=f"sked:{body.period_id}", source_file=None)
+    return submissions, not_submitted, fetch_errors
+
+
+@app.post("/api/sked/import", response_model=ImportDirectoryResponse)
+def sked_import(body: SkedImportRequest) -> ImportDirectoryResponse:
+    """
+    Pull in shift-preference submissions directly from sked for one period,
+    instead of a directory/flat file of xlsx exports. For each active roster
+    physician with a submission (draft or submitted), sked rebuilds their
+    filled-preferences xlsx server-side and this reuses the exact same
+    parsing path as /api/import (importer.import_single_file) — nothing
+    downstream (validation, generation) needs to know the source differs.
+    Physicians with no submission yet, or still in "draft", come back in
+    not_submitted instead of being silently skipped.
+    """
+    sked_config = sked_client.load_sked_config()
+    if sked_config is None or not sked_client.is_fully_configured(sked_config):
+        raise HTTPException(
+            status_code=400,
+            detail="sked is not configured. Copy scheduler/config/sked_template.yaml to sked.yaml "
+                   "(in the physician config folder) and fill it in.",
+        )
+
+    roster = load_roster()
+    scheduler_cfg = _load_scheduler_config()
+
+    try:
+        submissions, not_submitted, fetch_errors = _fetch_sked_period_submissions(
+            sked_config, body.period_id, body.year, body.month, roster,
+        )
+    except sked_client.SkedApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    _state["overrides"] = {}
+    unresolved = _apply_roster(submissions, roster)
+    _apply_combined_submissions(submissions, roster)
+    _auto_override_flagged_physicians(submissions, roster)
+    _apply_shift_count_overrides(submissions, roster)
+    _apply_casual_availability_default(submissions, roster)
+    results = _build_import_results(submissions, unresolved, roster)
+    _state.update(submissions=submissions, roster=roster, scheduler_config=scheduler_cfg,
+                  year=body.year, month=body.month, directory=f"sked:{body.period_id}", source_file=None)
 
     for err in fetch_errors:
         print(f"[sked_import] WARNING: {err}")
@@ -2392,9 +2424,21 @@ async def generate(body: GenerateCachedRequest) -> ScheduleResponse:
         else:
             _state["progress"]["best_unfilled"] = None
 
+    # Cross-month continuity: fixed facts about what each physician worked
+    # at the end of the previous month, so HC-8/HC-9/HC-13 can enforce rest
+    # and consecutive-shift rules across the boundary. Always degrades to
+    # None (today's behavior) rather than failing the solve -- not every
+    # month has a predecessor available.
+    trailing_assignments, prior_month = _resolve_trailing_assignments(
+        body.year, body.month, roster, body.trailing_file, scheduler_cfg=cfg,
+    )
+
     try:
         if use_cpsat:
-            gen = CpsatScheduleGenerator(submissions, roster, cfg)
+            gen = CpsatScheduleGenerator(
+                submissions, roster, cfg,
+                trailing_assignments=trailing_assignments, prior_month=prior_month,
+            )
             result = await asyncio.to_thread(
                 gen.generate, body.year, body.month, cpsat_time_limit,
                 progress_callback=progress_cb, cancel_check=cancel_check,
@@ -2848,6 +2892,266 @@ def load_schedule(body: LoadScheduleRequest) -> ScheduleResponse:
         raise HTTPException(status_code=400, detail=f"Failed to parse schedule: {exc}")
 
     return _apply_loaded_schedule(result, roster)
+
+
+# ---------------------------------------------------------------------------
+# Cross-month continuity (previous month's finalized schedule)
+# ---------------------------------------------------------------------------
+
+def _trailing_status(last_used: str | None = None) -> TrailingScheduleStatusResponse:
+    src = _state.get("trailing_source")
+    if not src:
+        return TrailingScheduleStatusResponse(loaded=False, last_used=last_used)
+    result: ScheduleResult = src["result"]
+    roster = _state.get("roster") or {}
+    cfg = _state.get("scheduler_config") or {}
+    group_a_target = cfg.get("site_distribution", {}).get("group_a_target", 0.40)
+    summaries = trailing_mod.build_prior_month_summaries(result, src.get("submissions"))
+    return TrailingScheduleStatusResponse(
+        loaded=True,
+        year=result.year,
+        month=result.month,
+        source=src.get("source"),
+        file=src.get("file"),
+        requests_source=src.get("requests_source"),
+        physician_count=len({a.physician_id for a in result.assignments}),
+        assignment_count=len(result.assignments),
+        requested_known_count=sum(1 for s_ in summaries.values() if s_.shifts_requested is not None),
+        acute_debt_physicians=sorted(
+            pid for pid, s_ in summaries.items()
+            if s_.acute_debt(group_a_target) > 0 and trailing_mod.acute_eligible(roster.get(pid))
+        ),
+        overage_physicians=sorted(pid for pid, s_ in summaries.items() if s_.overage > 0),
+        last_used=last_used,
+    )
+
+
+@app.post("/api/trailing-schedule", response_model=TrailingScheduleStatusResponse)
+def load_trailing_schedule(body: LoadTrailingScheduleRequest) -> TrailingScheduleStatusResponse:
+    """
+    Load the *previous* month's exported schedule xlsx as the cross-month
+    continuity source for the next /api/generate -- WITHOUT making it the
+    active schedule (unlike /api/load-schedule). The active month's
+    submissions/result are untouched.
+
+    Schedule source is either an xlsx `file` (its sheet title, YYYY-MM,
+    says which month it is) or a master-sheet `sheet_url` + explicit
+    `year`/`month`. The month check against the solve target happens at
+    generate time, so a stale source is reported there (and ignored) rather
+    than rejected here. Requested counts (for the repeat-overage carry-over)
+    come from `preferences_directory` or `sked_period_id` if given.
+    """
+    if bool(body.file) == bool(body.sheet_url):
+        raise HTTPException(status_code=400, detail="Provide exactly one of 'file' or 'sheet_url'.")
+    if body.preferences_directory and body.sked_period_id:
+        raise HTTPException(status_code=400, detail="Provide at most one of 'preferences_directory' or 'sked_period_id'.")
+
+    roster = _get_or_load_roster()
+
+    if body.file:
+        fp = Path(body.file)
+        if not fp.is_file():
+            raise HTTPException(status_code=400, detail=f"File not found: {body.file}")
+        if fp.suffix.lower() != ".xlsx":
+            raise HTTPException(status_code=400, detail="File must be an .xlsx file.")
+        try:
+            result = _parse_schedule_xlsx(fp, roster)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Failed to parse trailing schedule: {exc}")
+        source, file_desc = "xlsx", str(fp)
+    else:
+        if not (body.year and body.month):
+            raise HTTPException(status_code=400, detail="'year' and 'month' are required with 'sheet_url'.")
+        result, source = _read_schedule_from_sheet_link(body.sheet_url, body.year, body.month, roster)
+        file_desc = body.sheet_url
+
+    prior_submissions: list[PhysicianSubmission] | None = None
+    requests_source: str | None = None
+    if body.preferences_directory:
+        prior_submissions = _import_prior_month_submissions(body.preferences_directory, result.year, result.month, roster)
+        requests_source = "preferences_directory"
+    elif body.sked_period_id:
+        prior_submissions = _fetch_prior_month_submissions_from_sked(body.sked_period_id, result.year, result.month, roster)
+        requests_source = "sked"
+
+    _state["trailing_source"] = {
+        "result": result, "source": source, "file": file_desc,
+        "submissions": prior_submissions, "requests_source": requests_source,
+    }
+    _state["trailing_last_used"] = None
+    return _trailing_status()
+
+
+def _read_schedule_from_sheet_link(sheet_url: str, year: int, month: int, roster: dict) -> tuple[ScheduleResult, str]:
+    """
+    A master-sheet month from a pasted link: through the Sheets API when
+    google_sheets.yaml credentials exist on this machine, otherwise via the
+    public xlsx export (works only for a link-shared sheet). Returns the
+    parsed result and which of the two paths was used.
+    """
+    try:
+        spreadsheet_id = sheets_schedule_reader.spreadsheet_id_from_url(sheet_url)
+    except sheets_schedule_reader.ScheduleSheetParseError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    gs_config = google_sheets_client.load_google_sheets_config()
+    try:
+        if gs_config is not None and google_sheets_client.is_fully_configured(gs_config):
+            result = sheets_schedule_reader.parse_schedule_from_spreadsheet_id(gs_config, spreadsheet_id, year, month, roster)
+            return result, "google_sheets_link"
+        grid = sheets_schedule_reader.download_public_sheet_grid(spreadsheet_id)
+        result = sheets_schedule_reader.parse_schedule_grid(grid, year, month, roster)
+        return result, "google_sheets_public_link"
+    except sheets_schedule_reader.ScheduleSheetParseError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+def _fetch_prior_month_submissions_from_sked(period_id: str, year: int, month: int, roster: dict) -> list[PhysicianSubmission]:
+    """Prior month's requested counts straight from sked (no _state changes), same post-processing as the xlsx path."""
+    sked_config = sked_client.load_sked_config()
+    if sked_config is None or not sked_client.is_fully_configured(sked_config):
+        raise HTTPException(status_code=400, detail="sked is not configured; cannot pull prior-month requests from it.")
+    try:
+        subs, _not_submitted, fetch_errors = _fetch_sked_period_submissions(sked_config, period_id, year, month, roster)
+    except sked_client.SkedApiError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not pull sked period {period_id!r}: {exc}")
+    for err in fetch_errors:
+        print(f"[trailing] sked {period_id}: {err}")
+    _apply_roster(subs, roster)
+    _apply_combined_submissions(subs, roster)
+    _apply_shift_count_overrides(subs, roster)
+    return subs
+
+
+def _import_prior_month_submissions(
+    directory: str, year: int, month: int, roster: dict,
+) -> list[PhysicianSubmission]:
+    """
+    Import a prior month's preference submissions purely to learn each
+    physician's requested count for that month (for the repeat-overage
+    carry-over). Runs the same roster post-processing as /api/import
+    (aliases, default_shifts_requested, combined headcounts) so the
+    requested numbers mean the same thing they did when that month was
+    solved -- but touches none of the active month's _state.
+    """
+    d = Path(directory)
+    if not d.is_dir():
+        raise HTTPException(status_code=400, detail=f"Preferences directory not found: {directory}")
+    try:
+        subs = import_directory(d, year, month)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to import prior-month preferences: {exc}")
+    _apply_roster(subs, roster)
+    _apply_combined_submissions(subs, roster)
+    _apply_shift_count_overrides(subs, roster)
+    return subs
+
+
+@app.get("/api/trailing-schedule", response_model=TrailingScheduleStatusResponse)
+def get_trailing_schedule() -> TrailingScheduleStatusResponse:
+    """What prior-month schedule (if any) is loaded, and what the last solve did with it."""
+    return _trailing_status(_state.get("trailing_last_used"))
+
+
+@app.delete("/api/trailing-schedule", response_model=TrailingScheduleStatusResponse)
+def clear_trailing_schedule() -> TrailingScheduleStatusResponse:
+    """Forget the loaded prior-month schedule; the next solve runs without cross-month data."""
+    _state["trailing_source"] = None
+    _state["trailing_last_used"] = None
+    return _trailing_status()
+
+
+def _resolve_trailing_assignments(
+    year: int,
+    month: int,
+    roster: dict,
+    trailing_file: str | None = None,
+    scheduler_cfg: dict | None = None,
+) -> tuple[dict[str, list[tuple[datetime.date, Shift]]] | None, dict[str, trailing_mod.PriorMonthSummary] | None]:
+    """
+    Find the previous calendar month's finalized schedule and turn it into
+    (a) the generator's trailing_assignments dict (last-few-days rest /
+    consecutive-shift facts) and (b) its prior_month summaries (whole-month
+    acute-debt / overage carry-over). Sources, in priority order:
+
+      1. ``trailing_file`` passed in the /api/generate body (one-shot xlsx).
+      2. The schedule loaded via POST /api/trailing-schedule.
+      3. The master Google Sheet, if that integration is configured.
+
+    Any failure -- no source, unparseable file, wrong month, Sheets not set
+    up -- yields (None, None) and a note in _state["trailing_last_used"],
+    never an exception: cross-month data is an enhancement to the solve, not
+    a prerequisite, and a missing predecessor month must not block generating.
+    """
+    prev_year, prev_month = trailing_mod.previous_month(year, month)
+    want = f"{prev_year}-{prev_month:02d}"
+
+    def _note(msg: str) -> None:
+        _state["trailing_last_used"] = msg
+        print(f"[trailing] {msg}")
+
+    prior: ScheduleResult | None = None
+    prior_submissions: list[PhysicianSubmission] | None = None
+    source_desc = ""
+
+    if trailing_file:
+        fp = Path(trailing_file)
+        try:
+            if not fp.is_file():
+                raise FileNotFoundError(trailing_file)
+            prior = _parse_schedule_xlsx(fp, roster)
+            source_desc = f"xlsx {fp.name}"
+        except Exception as exc:
+            _note(f"No cross-month data: could not read trailing_file {trailing_file!r}: {exc}")
+            return None, None
+    elif _state.get("trailing_source"):
+        src = _state["trailing_source"]
+        prior = src["result"]
+        prior_submissions = src.get("submissions")
+        source_desc = f"{src.get('source')} {Path(src['file']).name if src.get('file') else ''}".strip()
+    else:
+        gs_config = google_sheets_client.load_google_sheets_config()
+        if gs_config is not None and google_sheets_client.is_fully_configured(gs_config):
+            try:
+                prior = sheets_schedule_reader.parse_schedule_from_sheet(gs_config, prev_year, prev_month, roster)
+                source_desc = "google_sheets"
+            except Exception as exc:
+                _note(f"No cross-month data: master Sheet for {want} unavailable: {exc}")
+                return None, None
+            # Requested counts for the same month from sked, if it's set up
+            # (period ids are "YYYY-MM", the same convention push_schedule
+            # uses). Best-effort: a sked hiccup must not cost us the
+            # schedule-side continuity we already have in hand.
+            sked_config = sked_client.load_sked_config()
+            if sked_config is not None and sked_client.is_fully_configured(sked_config):
+                try:
+                    prior_submissions = _fetch_prior_month_submissions_from_sked(want, prev_year, prev_month, roster)
+                    source_desc += f" + sked {want}"
+                except HTTPException as exc:
+                    print(f"[trailing] prior-month requests from sked unavailable: {exc.detail}")
+        else:
+            _note(f"No cross-month data: no trailing schedule loaded for {want} and Google Sheets is not configured.")
+            return None, None
+
+    try:
+        trailing = trailing_mod.build_trailing_assignments(prior, roster, year, month)
+    except ValueError as exc:
+        _note(f"No cross-month data: {exc} (source: {source_desc})")
+        return None, None
+
+    summaries = trailing_mod.build_prior_month_summaries(prior, prior_submissions)
+    group_a_target = (scheduler_cfg or {}).get("site_distribution", {}).get("group_a_target", 0.40)
+
+    if not trailing and not summaries:
+        _note(f"Cross-month data from {source_desc} for {want} contained no regular shifts.")
+        return None, None
+
+    _note(
+        f"Cross-month data from {source_desc} for {want}: "
+        f"trailing window {trailing_mod.summarize_trailing(trailing)}; "
+        f"carry-over {trailing_mod.summarize_prior_month(summaries, roster, group_a_target)}"
+    )
+    return (trailing or None), (summaries or None)
 
 
 @app.post("/api/assign", response_model=ManualAssignResponse)

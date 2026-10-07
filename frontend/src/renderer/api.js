@@ -465,3 +465,31 @@ export async function getSequencingRules() {
   return request('GET', '/api/scheduling-rules/person-specific')
 }
 
+
+/**
+ * Cross-month continuity: load the PREVIOUS month's finalized schedule (and,
+ * optionally, that month's requests) so the next generate enforces rest /
+ * consecutive-shift rules across the month boundary and applies the
+ * month-to-month carry-over terms (acute debt, repeat overage). Does not
+ * touch the active month.
+ * @param {{ sheet_url?: string, file?: string, year?: number, month?: number,
+ *           preferences_directory?: string, sked_period_id?: string }} body
+ * @returns {TrailingScheduleStatus}
+ */
+export async function loadTrailingSchedule(body) {
+  return request('POST', '/api/trailing-schedule', body)
+}
+
+/**
+ * What previous-month schedule (if any) is loaded, and what the last
+ * generate did with it (`last_used`).
+ * @returns {TrailingScheduleStatus}
+ */
+export async function getTrailingSchedule() {
+  return request('GET', '/api/trailing-schedule')
+}
+
+/** Forget the loaded previous month; the next generate runs without it. */
+export async function clearTrailingSchedule() {
+  return request('DELETE', '/api/trailing-schedule')
+}

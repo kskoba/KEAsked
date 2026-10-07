@@ -22,6 +22,8 @@ physician-assignment data.
 from __future__ import annotations
 
 import datetime
+import io
+import re
 
 from scheduler.backend.config import PhysicianConfig
 from scheduler.backend.generator import (
@@ -51,19 +53,88 @@ class ScheduleSheetParseError(ValueError):
     pass
 
 
+_SPREADSHEET_URL_RE = re.compile(r"/spreadsheets/d/([A-Za-z0-9_-]{20,})")
+_SPREADSHEET_ID_RE = re.compile(r"^[A-Za-z0-9_-]{20,}$")
+
+
+def spreadsheet_id_from_url(url_or_id: str) -> str:
+    """
+    The spreadsheet id from a docs.google.com link (any /edit, /view,
+    ?gid=... suffix), or the string itself if it already is a bare id.
+    Raises ScheduleSheetParseError for anything else.
+    """
+    text = (url_or_id or "").strip()
+    m = _SPREADSHEET_URL_RE.search(text)
+    if m:
+        return m.group(1)
+    if _SPREADSHEET_ID_RE.match(text):
+        return text
+    raise ScheduleSheetParseError(f"Not a Google Sheets link or spreadsheet id: {url_or_id!r}")
+
+
 def parse_schedule_from_sheet(
     config: GoogleSheetsConfig, year: int, month: int, roster: dict[str, PhysicianConfig]
 ) -> ScheduleResult:
+    """Locate the month's file in the configured Drive folder and parse it (needs credentials)."""
     file_id = find_month_file_id(config, year, month)
     if not file_id:
         raise ScheduleSheetParseError(
             f"No master-sheet file found for {year}-{month:02d} in the configured Drive folder."
         )
+    return parse_schedule_from_spreadsheet_id(config, file_id, year, month, roster)
 
+
+def parse_schedule_from_spreadsheet_id(
+    config: GoogleSheetsConfig, spreadsheet_id: str, year: int, month: int, roster: dict[str, PhysicianConfig]
+) -> ScheduleResult:
+    """Parse a specific spreadsheet (e.g. from a pasted link) through the Sheets API (needs credentials)."""
     try:
-        grid = read_range(config, file_id, f"A1:{_MAX_COLS_A1}{_MAX_ROWS}")
+        grid = read_range(config, spreadsheet_id, f"A1:{_MAX_COLS_A1}{_MAX_ROWS}")
     except GoogleSheetsApiError as exc:
         raise ScheduleSheetParseError(f"Could not read master sheet for {year}-{month:02d}: {exc}") from exc
+    return parse_schedule_grid(grid, year, month, roster)
+
+
+def download_public_sheet_grid(spreadsheet_id: str, timeout: float = 30.0) -> list[list]:
+    """
+    Fetch a spreadsheet's first tab as a grid WITHOUT any Google credentials,
+    via the public xlsx export URL. Only works when the sheet is shared as
+    "anyone with the link can view" -- otherwise Google answers with a sign-in
+    page (HTML, not a workbook), which surfaces here as a clear error rather
+    than a confusing parse failure further down. This is the no-setup path
+    for reading a prior month's schedule while google_sheets.yaml (service
+    account) isn't set up on a machine.
+    """
+    import httpx
+    import openpyxl
+
+    url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/export?format=xlsx"
+    try:
+        resp = httpx.get(url, follow_redirects=True, timeout=timeout)
+    except httpx.HTTPError as exc:
+        raise ScheduleSheetParseError(f"Could not download spreadsheet {spreadsheet_id!r}: {exc}") from exc
+    ctype = resp.headers.get("content-type", "")
+    if resp.status_code != 200 or "html" in ctype.lower():
+        raise ScheduleSheetParseError(
+            f"Spreadsheet {spreadsheet_id!r} is not publicly readable (HTTP {resp.status_code}, {ctype or 'no content-type'}). "
+            "Share it as 'anyone with the link can view', or set up google_sheets.yaml so it can be read with credentials."
+        )
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(resp.content), data_only=True, read_only=True)
+    except Exception as exc:
+        raise ScheduleSheetParseError(f"Downloaded spreadsheet {spreadsheet_id!r} is not a readable workbook: {exc}") from exc
+    ws = wb.worksheets[0]
+    return [list(row) for row in ws.iter_rows(min_row=1, max_row=_MAX_ROWS, max_col=9, values_only=True)]
+
+
+def parse_schedule_grid(
+    grid: list[list], year: int, month: int, roster: dict[str, PhysicianConfig]
+) -> ScheduleResult:
+    """
+    The grid-walk itself, over rows of cell values as the Sheets API returns
+    them (strings, ragged rows) or as openpyxl yields them (typed values,
+    None for blanks). Shared by the credentialed and public-link readers.
+    """
 
     def cell(row: list, col: int):
         return row[col] if col < len(row) else None

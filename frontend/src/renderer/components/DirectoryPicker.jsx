@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
+import PreviousMonthPanel from './PreviousMonthPanel'
 import { importSubmissions, importFlatFile, importFromSked, resendMonthlyRequest, getSkedPeriods, getPhysicianLink, generateSchedule, cancelGenerate, detectFlatMonth, getGenerateProgress, loadScheduleFromFile, loadScheduleFromMasterSheet, getApiBaseUrl } from '../api'
 
 // Whether the active backend is this machine or a remote one (e.g. a Docker
@@ -689,6 +690,9 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
               </div>
             </div>
           </div>
+
+          {/* Cross-month continuity: previous month's schedule + requests */}
+          <PreviousMonthPanel year={year} month={month} disabled={generating} remote={remote} />
 
           {generateError && (
             <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-md text-red-700 text-sm">

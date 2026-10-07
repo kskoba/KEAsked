@@ -44,6 +44,7 @@ from scheduler.backend.generator import (
     _weekend_key,
 )
 from scheduler.backend.models import PhysicianSubmission
+from scheduler.backend.trailing import PriorMonthSummary, acute_eligible
 from scheduler.backend.shifts import (
     BLOCKS,
     SHIFT_TO_BLOCK,
@@ -113,6 +114,17 @@ def _shift_by_code() -> dict[str, Shift]:
 # separately from shifts.py's own definitions.
 _ALL_SITES: list[str] = sorted({shift.site for block in BLOCKS for shift in block})
 
+# Month-to-month carry-over weights (see trailing.PriorMonthSummary and the
+# two "carry-over" blocks in generate()). 120 per extra acute unit: above an
+# ordinary A-floor unit (30), alternation (20), site tie-break (6) and the
+# same-site-repeat penalty (40) combined, below a filled slot (1000+) and
+# the anchor-overage penalty (500). 150 per repeat-overage shift: enough to
+# redirect overage to someone who wasn't over last month when there's a
+# choice, never enough to leave a slot empty.
+_ACUTE_CARRYOVER_WEIGHT = 120
+_ACUTE_CARRYOVER_MAX_UNITS = 1
+_OVERAGE_CARRYOVER_PENALTY = 150
+
 
 # ---------------------------------------------------------------------------
 # CP-SAT solver
@@ -142,6 +154,7 @@ class CpsatScheduleGenerator:
         roster: dict[str, PhysicianConfig],
         config: dict,
         trailing_assignments: dict[str, list[tuple[datetime.date, Shift]]] | None = None,
+        prior_month: dict[str, PriorMonthSummary] | None = None,
     ) -> None:
         self.submissions: dict[str, PhysicianSubmission] = {
             s.physician_id: s for s in submissions
@@ -160,6 +173,14 @@ class CpsatScheduleGenerator:
         # deliberately excluded by the caller before this is passed in;
         # HC-8/HC-9/HC-13 only ever reason about regular shifts.
         self._trailing: dict[str, list[tuple[datetime.date, Shift]]] = trailing_assignments or {}
+        # Whole-prior-month tallies per physician (regular shifts worked,
+        # how many were acute, what they'd requested) feeding the two
+        # month-to-month carry-over soft terms in generate(): the acute-debt
+        # push and the repeat-overage discouragement. Built by
+        # trailing.build_prior_month_summaries from the same prior-month
+        # ScheduleResult as trailing_assignments. Empty/None -> both terms
+        # are inert, exactly today's behavior.
+        self._prior_month: dict[str, PriorMonthSummary] = prior_month or {}
 
         # Config shortcuts (mirrors ScheduleGenerator.__init__)
         anchor_cfg = config.get("anchor_shifts", {})
@@ -1675,6 +1696,7 @@ class CpsatScheduleGenerator:
         for pid in pids:
             sub = self.submissions[pid]
             cfg = _get_cfg(pid)
+            prior = self._prior_month.get(pid)
             effective_requested = sub.shifts_requested
             if effective_requested == 0 and sub.shifts_max > 0:
                 effective_requested = min(10, sub.shifts_max)
@@ -1715,6 +1737,27 @@ class CpsatScheduleGenerator:
 
             # Small linear term: slight incentive to fill toward max even above requested.
             deficit_penalty_terms.append(3 * physician_shift_exprs[pid])
+
+            # Month-to-month carry-over (repeat overage): a physician who
+            # was scheduled OVER their requested count last month is
+            # discouraged from going over again this month -- each shift
+            # beyond effective_requested costs _OVERAGE_CARRYOVER_PENALTY,
+            # so when the solver has to put overage somewhere it prefers a
+            # physician who wasn't already over last month. Soft: still far
+            # cheaper than an unfilled slot (1000+), so coverage never
+            # suffers for it; it only redistributes who absorbs the extra.
+            # Inert when the prior requested count is unknown (xlsx-only
+            # trailing data), when they weren't over, or when a hard cap
+            # already pins them at requested (casual / cap_at_requested).
+            if (
+                prior is not None and prior.overage > 0 and effective_requested > 0
+                and not (cfg and (cfg.casual or cfg.cap_at_requested))
+            ):
+                room = max(0, sub.shifts_max - effective_requested)
+                if room > 0:
+                    over_var = model.new_int_var(0, room, f"overcarry_{pid}")
+                    model.add(over_var >= physician_shift_exprs[pid] - effective_requested)
+                    deficit_penalty_terms.append(-_OVERAGE_CARRYOVER_PENALTY * over_var)
 
         # Soft: Group A/B balance — consecutive alternation reward/penalty.
         # Rather than a weak per-shift bonus, we reward A→B or B→A consecutive
@@ -1766,6 +1809,26 @@ class CpsatScheduleGenerator:
             a_floor = model.new_int_var(0, target_a, f"afloor_{pid}")
             model.add(a_floor <= a_total_expr)
             group_balance_terms.append(30 * a_floor)
+
+            # Month-to-month carry-over (acute debt): a physician whose
+            # PRIOR month came out disproportionately non-acute (acute
+            # share below the Group A target, by at least one whole shift)
+            # gets one extra acute unit this month, worth well above the
+            # ordinary 30 A-floor unit so it actually lands rather than
+            # being traded away for an alternation or site tie-break. The
+            # extra unit sits ON TOP of target_a (a_floor + a_carry <=
+            # total), so it's a genuine "one more than you'd otherwise be
+            # steered toward", not a re-weighting of the normal target.
+            # Skipped for physicians structurally barred from every acute
+            # site (forbidden_sites covers RAH A and B -- Krisik,
+            # Francescutti), who can't repay the debt and shouldn't be
+            # nagged about it. Soft only: a slot is still worth 1000+.
+            prior = self._prior_month.get(pid)
+            if prior is not None and prior.acute_debt(self._group_a_target) > 0 and acute_eligible(_get_cfg(pid)):
+                extra = min(prior.acute_debt(self._group_a_target), _ACUTE_CARRYOVER_MAX_UNITS)
+                a_carry = model.new_int_var(0, extra, f"acarry_{pid}")
+                model.add(a_floor + a_carry <= a_total_expr)
+                group_balance_terms.append(_ACUTE_CARRYOVER_WEIGHT * a_carry)
 
         # Step 1c: group_b_site_preference — small bonus for preferred Group B site shifts.
         # This implements the per-physician within-Group-B site preference from physicians.yaml.

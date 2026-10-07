@@ -518,6 +518,11 @@ class GenerateCachedRequest(BaseModel):
     year: int
     month: int
     time_limit_seconds: int | None = None  # None → use server default (600s)
+    # Optional one-shot source for cross-month continuity: absolute path to
+    # the previous month's exported schedule xlsx. Overrides whatever was
+    # loaded via /api/trailing-schedule for this one solve. Omit to use the
+    # loaded trailing schedule (or the master Google Sheet, or nothing).
+    trailing_file: str | None = None
 
 
 class DetectFlatResponse(BaseModel):
@@ -527,6 +532,45 @@ class DetectFlatResponse(BaseModel):
 
 class LoadScheduleRequest(BaseModel):
     file: str               # absolute path to a previously exported schedule .xlsx
+
+
+# ---------------------------------------------------------------------------
+# Cross-month continuity — the *previous* month's finalized schedule, kept
+# separately from the active month so loading it never clobbers in-progress
+# work. See /api/trailing-schedule and scheduler/backend/trailing.py.
+# ---------------------------------------------------------------------------
+
+class LoadTrailingScheduleRequest(BaseModel):
+    # The prior month's finalized schedule -- exactly one of:
+    file: str | None = None         # absolute path to an exported schedule .xlsx (month read from its sheet title)
+    sheet_url: str | None = None    # Google Sheets link (or bare spreadsheet id) to that month's master sheet;
+                                    # read with google_sheets.yaml credentials when present, else via the
+                                    # public xlsx export (sheet must be shared "anyone with the link can view").
+                                    # Requires year + month, since a link carries neither.
+    year: int | None = None
+    month: int | None = None
+    # The prior month's *requested* counts (which a schedule alone can't
+    # say) for the repeat-overage carry-over -- at most one of:
+    preferences_directory: str | None = None   # folder of that month's preference xlsx files (as /api/import takes)
+    sked_period_id: str | None = None          # sked period to pull submissions from (e.g. "2026-12")
+
+
+class TrailingScheduleStatusResponse(BaseModel):
+    loaded: bool
+    year: int | None = None
+    month: int | None = None
+    source: str | None = None           # "xlsx" | "google_sheets" | "google_sheets_link" | "google_sheets_public_link"
+    requests_source: str | None = None  # "preferences_directory" | "sked" | None
+    file: str | None = None             # path when source == "xlsx"
+    physician_count: int = 0            # physicians with >=1 regular shift in the prior month
+    assignment_count: int = 0           # regular shifts in the prior month (all days, not just the window)
+    # Month-to-month carry-over inputs derived from the loaded prior month.
+    requested_known_count: int = 0      # physicians whose prior requested count is known (preferences_directory given)
+    acute_debt_physicians: list[str] = []      # will get the extra-acute push next solve
+    overage_physicians: list[str] = []         # went over requested last month -> discouraged from repeating
+    # Set after a solve: what /api/generate actually handed the solver, or
+    # why it ran without cross-month data.
+    last_used: str | None = None
 
 
 # ---------------------------------------------------------------------------

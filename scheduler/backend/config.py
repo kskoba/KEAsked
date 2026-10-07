@@ -353,12 +353,13 @@ class PhysicianConfig:
     max_consecutive_same_site: Optional[int] = None
 
     # Weekday this physician wants avoided (e.g. a protected admin day) —
-    # one of WEEKDAY_VALUES, or None. Soft preference (same -5/shift
-    # objective penalty as the legacy avoid_mondays below). Generalizes
-    # avoid_mondays to any single weekday; avoid_mondays still works as
-    # shorthand for avoid_weekday="MON" when avoid_weekday itself is unset
-    # — kept for backward compatibility rather than migrating every
-    # existing avoid_mondays entry.
+    # one of WEEKDAY_VALUES, or None. Informational only since 2026-10-06:
+    # the solver no longer reads this (or avoid_mondays). Its -5/shift
+    # penalty was outweighed by a single site-preference tie-break, and
+    # the real mechanism for "can't work Wednesdays" is the physician not
+    # offering Wednesdays in their submission — availability is hard, a
+    # weight never will be. Kept as a note on the roster; avoid_mondays
+    # remains as legacy shorthand for the same note.
     avoid_weekday: Optional[str] = None
 
     # Soft preference: concentrate this physician's weekend shifts onto as
@@ -520,10 +521,6 @@ def describe_physician_facing_rules(cfg: "PhysicianConfig") -> list[str]:
         )
     if cfg.no_call:
         items.append("You're never assigned on-call (DOC/NOC) shifts.")
-    if cfg.avoid_weekday:
-        items.append(f"Scheduling tries to avoid putting you on {cfg.avoid_weekday}s.")
-    elif cfg.avoid_mondays:
-        items.append("Scheduling tries to avoid putting you on Mondays.")
     if cfg.rest_after_late_shift:
         items.append("You're guaranteed a day off after any shift starting at 1600h, 1800h, or 2000h.")
     if cfg.post_block_rest_days:

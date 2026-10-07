@@ -1314,7 +1314,19 @@ class CpsatScheduleGenerator:
         # casual-priority change below (see casual_pids handling) is the
         # only variable moving in this round -- revisit raising this again
         # once that change's own effect has been measured on its own.
-        _WEEKEND_OVERAGE_PENALTY = 250
+        # Escalating, not flat (2026-10-06). A flat per-weekend penalty is
+        # a wash when redistributing: moving one weekend from a physician
+        # who is 4 over cap to one who is 1 over saves 250 and costs 250,
+        # so the solver has no reason to spread the overage -- confirmed
+        # on real Jan 2027 data where McKinnon landed on 5/5 weekends
+        # (cap 1) while holding 15 untouched weekday 1600h/1700h days, and
+        # earlier in the Breton/Sachs 4-weekend case noted above. With
+        # increasing steps the same move is net +500, so overage is spread
+        # as thinly as the roster allows. The top step is kept below a
+        # weekend slot's fill weight (1000 base + 200 weekend) so the solver
+        # still fills the slot rather than leaving it empty to dodge the
+        # penalty.
+        _WEEKEND_OVERAGE_STEPS = (250, 500, 800, 1000)   # 1st, 2nd, 3rd, 4th+ weekend over cap
         weekend_worked_vars_by_pid: dict[str, list] = {}
         weekend_overage_penalty_terms = []
         for pid in pids:
@@ -1347,7 +1359,16 @@ class CpsatScheduleGenerator:
                 weekend_worked_vars_by_pid[pid] = weekend_worked_vars
                 over_we = model.new_int_var(0, len(weekend_clusters), f"wknd_over_{pid}")
                 model.add(over_we >= sum(weekend_worked_vars) - max_we)
-                weekend_overage_penalty_terms.append(-_WEEKEND_OVERAGE_PENALTY * over_we)
+                # over_we == number of step booleans set; steps are ordered
+                # (step k+1 only if step k) and weighted increasingly, so
+                # the k-th weekend over cap pays the k-th step's price.
+                steps = [model.new_bool_var(f"wknd_over_step{k}_{pid}") for k in range(len(weekend_clusters))]
+                model.add(over_we == sum(steps))
+                for k in range(len(steps) - 1):
+                    model.add(steps[k] >= steps[k + 1])
+                for k, step in enumerate(steps):
+                    weight = _WEEKEND_OVERAGE_STEPS[min(k, len(_WEEKEND_OVERAGE_STEPS) - 1)]
+                    weekend_overage_penalty_terms.append(-weight * step)
 
         # Soft: weekend-clumping penalty. Penalizes each distinct weekend
         # touched, so — for a similar total number of weekend shifts — the
@@ -1789,9 +1810,21 @@ class CpsatScheduleGenerator:
                 for shift in block
                 if shift.site == "RAH F side"
             )
-            f_floor = model.new_int_var(0, target_f, f"ffloor_{pid}")
-            model.add(f_floor <= f_total_expr)
-            group_balance_terms.append(35 * f_floor)
+            # Per-unit steps, front-loaded (2026-10-06): the FIRST float
+            # shift is worth 90 -- on par with an anchor-fulfillment unit,
+            # and above anything a single non-night slot can otherwise
+            # earn (acute floor 30, alternation 20, site tie-break 6, a
+            # same-site repeat avoided at 40) -- so "at least one float"
+            # actually holds when he has few non-night slots to spend.
+            # Further units stay a mild 35 preference. Ordered steps, same
+            # pattern as the escalating weekend-overage term.
+            _FLOAT_FLOOR_STEPS = (90, 35)
+            f_steps = [model.new_bool_var(f"ffloor_step{k}_{pid}") for k in range(target_f)]
+            model.add(sum(f_steps) <= f_total_expr)
+            for k in range(len(f_steps) - 1):
+                model.add(f_steps[k] >= f_steps[k + 1])
+            for k, step in enumerate(f_steps):
+                group_balance_terms.append(_FLOAT_FLOOR_STEPS[min(k, len(_FLOAT_FLOOR_STEPS) - 1)] * step)
 
         # Step 2: build objective terms for consecutive pairs
         for pid in pids:
@@ -2170,9 +2203,23 @@ class CpsatScheduleGenerator:
         # Physicians with max_consecutive_shifts >= 4 are ALLOWED to work 4 days in a
         # row (hard constraint), but we discourage it as a last resort.
         # Physicians with mc < 4 already cannot (HC-8), so skip them.
+        #
+        # Weight 35 -> 60 (2026-10-06): at 35 this was inverted -- a 4-run
+        # earns +10 x 3 adjacency pairs (+18 x 3 for nights), so the net
+        # was neutral or positive and the comment above was false. 60 makes
+        # a plain 4-run net -30: a nudge, deliberately still beatable, since
+        # a physician whose SIAR is set to 4 may genuinely prefer 4 in a row
+        # and must still be able to get it when it buys anything real.
+        # Physicians who explicitly asked for full-length runs
+        # (prefer_clustered_nights -- KLam) are exempt entirely: for them
+        # the 4-run IS the goal (see _CLUSTERED_NIGHTS_BONUS).
+        _RUN4_PENALTY = 60
         run_penalty_terms = []
         for pid in pids:
             if _max_consec(pid) < 4:
+                continue
+            run_cfg = _get_cfg(pid)
+            if run_cfg and run_cfg.prefer_clustered_nights:
                 continue
             for d_idx in range(len(all_dates) - 3):
                 w0 = worked_bool.get((pid, d_idx))
@@ -2187,31 +2234,15 @@ class CpsatScheduleGenerator:
                 model.add_implication(run4, w2)
                 model.add_implication(run4, w3)
                 model.add(w0 + w1 + w2 + w3 <= 3 + run4)
-                run_penalty_terms.append(-35 * run4)
+                run_penalty_terms.append(-_RUN4_PENALTY * run4)
 
-        # Soft: avoid-weekday penalty (-5 per shift on the physician's
-        # avoided weekday, e.g. a protected admin day). Generalizes the
-        # legacy avoid_mondays flag (still honoured as shorthand for
-        # avoid_weekday="MON" when avoid_weekday itself is unset — see
-        # PhysicianConfig.avoid_weekday) to any single weekday.
-        _WEEKDAY_NUM = {"MON": 0, "TUE": 1, "WED": 2, "THU": 3, "FRI": 4, "SAT": 5, "SUN": 6}
-        monday_penalty_terms = []
-        for pid in pids:
-            cfg = _get_cfg(pid)
-            target_day = None
-            if cfg:
-                if cfg.avoid_weekday:
-                    target_day = _WEEKDAY_NUM.get(cfg.avoid_weekday)
-                elif cfg.avoid_mondays:
-                    target_day = 0
-            if target_day is None:
-                continue
-            for d_idx, d in enumerate(all_dates):
-                if d.weekday() != target_day:
-                    continue
-                for block in BLOCKS:
-                    for shift in block:
-                        monday_penalty_terms.append(-5 * shifts[(pid, d_idx, shift.code)])
+        # No avoid_weekday / avoid_mondays objective term (removed
+        # 2026-10-06): at -5 per shift it was outweighed by a single
+        # site-preference tie-break (+6), i.e. a no-op, and the real
+        # mechanism for "I can't work Wednesdays" is the physician not
+        # offering Wednesdays in their submission -- availability is
+        # hard, a weight never will be. The roster field remains as a
+        # note only (see PhysicianConfig.avoid_weekday).
 
         # Composite objective (all terms are non-negative rewards; maximize)
         # filled_expr is already per-shift-weighted (see above) — do not
@@ -2223,7 +2254,6 @@ class CpsatScheduleGenerator:
         objective_terms.extend(clustering_bonus_terms)
         objective_terms.extend(any_cluster_terms)
         objective_terms.extend(run_penalty_terms)
-        objective_terms.extend(monday_penalty_terms)
         objective_terms.extend(long_gap_penalty_terms)
         objective_terms.extend(swing_penalty_terms)
         objective_terms.extend(anchor_overage_penalty_terms)

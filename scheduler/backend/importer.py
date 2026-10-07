@@ -125,10 +125,18 @@ def _parse_anchor_value(raw) -> tuple[int, bool]:
     handle:
       - A plain number, including a literal 0 (an explicit "I want
         none" — stated=True, distinct from a blank cell).
-      - Free-text ranges ("3 or 4", "1 to 2", "up to 4") — takes the
-        higher end (max of every integer found in the text).
+      - Free-text ranges ("3 or 4", "1 to 2", "6-8") — takes the LOWER
+        end. Policy changed 2026-10-06 from higher-end: a range means the
+        low number is what they want and the high number is what they'd
+        tolerate; reading it high used up all of a physician's shifts on
+        one anchor type (RScheirer's "6/8" became 8 of 8 as nights,
+        leaving no room for the float he also wanted). A ceiling phrase
+        ("up to 4", "at most 4", "no more than 4", "max 4") still reads as
+        its number — there the number IS the tolerance, not a floor.
       - Excel silently reinterpreting a typed range like "4/6" as a date
-        — takes max(month, day) as the range's two ends.
+        — min(month, day) is the range's low end (locale-agnostic: the
+        two typed numbers land in month/day in either order).
+      - Spelled-out counts ("two", "one or two") are converted first.
       - Genuinely non-numeric free text with no digits at all — no
         number to extract, so treated the same as blank (stated=False)
         rather than guessing.
@@ -138,14 +146,30 @@ def _parse_anchor_value(raw) -> tuple[int, bool]:
     if isinstance(raw, (int, float)):
         return int(raw), True
     if isinstance(raw, datetime.datetime):
-        return max(raw.month, raw.day), True
+        return min(raw.month, raw.day), True
     text = str(raw).strip()
     if not text:
         return 0, False
-    numbers = re.findall(r"\d+", text)
-    if numbers:
-        return max(int(n) for n in numbers), True
-    return 0, False
+    # Spelled-out counts ("two", "one or two") -- found in a real Jan 2027
+    # submission (Haager: "two") that was silently landing as blank, i.e.
+    # no stated request at all, so the anchor floor never protected it.
+    for word, digit in _NUMBER_WORDS.items():
+        text = re.sub(rf"\b{word}\b", digit, text, flags=re.IGNORECASE)
+    numbers = [int(n) for n in re.findall(r"\d+", text)]
+    if not numbers:
+        return 0, False
+    if _CEILING_PHRASE_RE.search(text):
+        return max(numbers), True
+    return min(numbers), True
+
+
+_CEILING_PHRASE_RE = re.compile(r"\b(up to|at most|no more than|max(imum)?)\b", re.IGNORECASE)
+
+
+_NUMBER_WORDS = {
+    "zero": "0", "none": "0", "one": "1", "two": "2", "three": "3", "four": "4",
+    "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9", "ten": "10",
+}
 
 
 # --------------------------------------------------------------------------- #

@@ -161,6 +161,61 @@ xlsx and load it; everything else is built and tested (76/76 backend tests).
     Physicians who truly can never work nights should carry
     `forbidden_shift_times: [2400h]` (Francescutti does), which still wins.
 
+**Also 2026-10-07 (evening), from the user's review of `Tests/cpsatv2-jan2.xlsx`:**
+- jan2 verdict: anchors fixed (no unmet requests; only 4 physicians 1 night
+  over fair share; every 0/0 at the floor), A/B sides fully balanced (0
+  lopsided vs 14 in jan1), weekends: 33 over the proportional cap but the
+  month is structurally short (Jan 1 is a Friday, Jan 31 a Sunday -> 48% of
+  slots are weekend slots; caps allow ~110 physician-weekends, ~162 needed)
+  and 30 of 33 are over by exactly 1; the 3 outliers (McKinnon 4 vs cap 1,
+  Fisher/Lefebvre 4 vs 2) offered mostly weekends themselves. **User
+  decided: do NOT change the weekend cap.**
+- **Anchor floor extended to blank cells**: floor now applies to anyone with
+  no positive anchor request of either type (explicit 0, blank, or mixed),
+  not just explicit 0/0 -- blank/blank physicians (MacGougan, Gunawan,
+  Rawe, Rosenblum) had carried zero anchors while 0/0 carried 2.
+- **`anchor_floor_exempt` roster toggle** ("Admin role -- exempt from
+  mandatory anchors" in the Roster Editor): no floor, no fair share; target
+  = exactly what they requested. Set for MacGougan, Bly, MacLean, Haager in
+  physicians.yaml (gitignored -> needs config sync to Unraid).
+- Optimality gap discussion: the badge thresholds (<1 near-optimal, <5
+  good, >=5 sub-optimal in `Sidebar.jsx`) were calibrated on the old
+  objective; the indicator/step terms added 2026-10-06/07 inflate the LP
+  bound so a converged run now reads ~6%. Recommendation on record (not
+  implemented): make "no improvement in the last N minutes" the primary
+  verdict and demote the gap to context; recalibrate cutoffs from 2-3
+  repeated runs.
+
+**Also 2026-10-07 (evening), weekends -- from comparing `cpsatv2-nov1` with
+the human November schedule (user asked for options 1 and 3, not the cap):**
+- Finding: same 273 weekend shifts, human used 147 physician-weekends vs the
+  solver's 156 (34 full Fri+Sat+Sun weekends vs 23; 37 lone Fridays vs 27,
+  22 of the solver's being Thu+Fri tails worth +10). Those 9 extra touches
+  ARE the extra cap breaches (31 vs 24) and splits (12 vs 8). The
+  prefer_weekends physicians were also under-used (KLam 6/16 weekend
+  nights vs the human's 9/16).
+- **`_WEEKEND_CLUMP_PENALTY` 15 -> 70** (per weekend cluster touched, non-
+  prefer_weekends only): opening a new weekend for one shift now clearly
+  loses to adding a day to one already touched. Below the split penalty
+  (150) and the first over-cap step (250). Not yet validated on a real run
+  -- the next November/January solve is the test (watch the FSU count and
+  the lone-Friday count).
+- **`scheduler/backend/weekend_repair.py`** post-solve pass (runs in
+  `/api/generate` after the A/B pass): (A) trade a split's Fri/Sun with a
+  Saturday-ONLY physician's Saturday, or (B) give the split's Friday to a
+  Sat+Sun physician (or Sunday to a Fri+Sat one) in exchange for one of
+  their weekday shifts, completing their weekend. Rule-checked through the
+  generator's post-solve checker plus an explicit HC-10 adjacent-same-code
+  guard (the checker lacks it), never moves anchor load (same start time or
+  both non-anchor). On the real nov1 file it fixes 2 of 12: the rest are
+  blocked by anchor incompatibility or the split physician not having
+  offered the weekday -- real constraints, not pass gaps. Tests in
+  `test_weekend_repair.py` (7).
+- **`CpsatScheduleGenerator.resync_from_result(result)`**: rebuilds the
+  incremental state after a post-solve pass mutates assignments; called in
+  `/api/generate` after the A/B pass (which previously left `_slot_to_pid`
+  stale for later /api/swap and on-call checks).
+
 **Still to do:**
 1. Before the January solve, in the app: open "Previous month (December
    2026)" in the solver card, paste the December master-sheet link, Browse

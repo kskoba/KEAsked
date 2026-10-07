@@ -115,6 +115,7 @@ from scheduler.backend import google_sheets_client
 from scheduler.backend import sheets_schedule_reader
 from scheduler.backend import trailing as trailing_mod
 from scheduler.backend import acute_balance
+from scheduler.backend import weekend_repair
 from scheduler.backend.config import (
     CALL_LINKAGE_VALUES,
     GROUP_B_PREFS,
@@ -2490,6 +2491,16 @@ async def generate(body: GenerateCachedRequest) -> ScheduleResponse:
         result, _ab_trades = acute_balance.balance_acute_sides(result, roster)
         if _ab_trades:
             print(f"[acute-balance] {_ab_trades} A/B side trade(s) applied")
+        # Keep the generator's incremental state in step with the mutated
+        # result before anything else consults it.
+        if hasattr(gen, "resync_from_result"):
+            gen.resync_from_result(result)
+            # Final pass: turn Fri+Sun-without-Saturday weekends into proper
+            # Sat-including ones by trading with a Saturday-only physician
+            # (see weekend_repair.py). Rule-checked through the generator.
+            result, _we_trades = weekend_repair.repair_weekend_splits(gen, result)
+            if _we_trades:
+                print(f"[weekend-repair] {_we_trades} Fri/Sun split(s) repaired")
         # Assign on-call shifts after the regular schedule is complete
         result = await asyncio.to_thread(gen.assign_on_calls, result)
         # Restore solver quality fields lost by repair_pass/_compute_stats

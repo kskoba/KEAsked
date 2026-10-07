@@ -1533,7 +1533,20 @@ class CpsatScheduleGenerator:
         # flag is to touch AS MANY weekends as possible, which this penalty
         # would otherwise directly fight (see the prefer_weekends bonus
         # below).
-        _WEEKEND_CLUMP_PENALTY = 15
+        #
+        # 15 -> 70 (2026-10-07, user decision after comparing cpsatv2-nov1
+        # with the human November schedule): at 15, opening a NEW weekend
+        # for a single shift was cheaper than almost anything else, so the
+        # solver spent 156 physician-weekends on 273 weekend shifts where
+        # the human spent 147 (34 full Fri+Sat+Sun weekends vs 23; 37 lone
+        # Fridays vs 27, most of them tails of a Thu+Fri run worth +10).
+        # Every extra weekend touched is a cap breach or a split somewhere.
+        # 70 outweighs the consecutive-day pair bonus (+10) and the site
+        # tie-breaks (6) by a wide margin, so adding a 2nd/3rd day to a
+        # weekend already touched (free) beats touching a new one; it stays
+        # below the Fri+Sun split penalty (150) and the first weekend-over-
+        # cap step (250), which keep their ordering.
+        _WEEKEND_CLUMP_PENALTY = 70
         weekend_clump_penalty_terms = []
         for pid in pids:
             cfg = _get_cfg(pid)
@@ -3365,6 +3378,22 @@ class CpsatScheduleGenerator:
     # ------------------------------------------------------------------
     # Stats (identical logic to ScheduleGenerator._compute_stats)
     # ------------------------------------------------------------------
+
+    def resync_from_result(self, result: ScheduleResult) -> None:
+        """
+        Rebuild this generator's incremental assignment state (_slot_to_pid,
+        _pid_to_slots, counts, weekend keys) from ``result``. Needed after a
+        post-solve pass mutates result.assignments directly (acute_balance,
+        weekend_repair), so later rule checks (/api/swap, /api/assign,
+        on-call assignment) see the schedule that actually exists.
+        """
+        self._pid_to_slots = defaultdict(list)
+        self._slot_to_pid = {}
+        self._shift_count = defaultdict(int)
+        self._anchor_count = defaultdict(int)
+        self._weekend_keys = defaultdict(set)
+        for a in result.assignments:
+            self._assign(a.physician_id, a.date, a.shift)
 
     def _effective_max_nights(self, pid: str, cfg: Optional[PhysicianConfig]) -> int:
         """

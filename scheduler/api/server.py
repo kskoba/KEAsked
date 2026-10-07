@@ -585,9 +585,11 @@ def _build_import_results(
         valid_blocks = sum(len(d.available_blocks) for d in sub.days if d.is_valid_day(min_blocks))
         valid_weekends = sum(1 for d in sub.days if d.is_valid_weekend(min_blocks))
         anchored = sum(1 for d in sub.days if d.is_anchored(min_blocks))
+        src = sub.source_file if sub.source_file and Path(sub.source_file).is_file() else None
         paired.append((sub, PhysicianImportResult(
             physician_id=sub.physician_id,
             physician_name=display_names.get(sub.physician_id, sub.physician_name),
+            source_file=src,
             shifts_requested=sub.shifts_requested,
             shifts_min=sub.shifts_min,
             shifts_max=sub.shifts_max,

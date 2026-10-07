@@ -54,6 +54,11 @@ class PhysicianImportResult(BaseModel):
     anchored_days: int
     issues: list[ValidationIssueSchema]
     is_valid: bool
+    # Absolute path of the submission xlsx this row was parsed from, when it
+    # still exists on the backend's filesystem (directory imports). None for
+    # sked imports (parsed from a temp file that is gone by now) and for
+    # anything synthetic. Lets the Validate page open the file directly.
+    source_file: str | None = None
 
 
 class NotSubmittedRow(BaseModel):

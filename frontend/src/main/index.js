@@ -617,6 +617,21 @@ ipcMain.handle('shell:openExternal', (_event, url) => {
   return shell.openExternal(url)
 })
 
+// IPC: open a local file in its default application -- used by the
+// Validate page to open a physician's submission xlsx. Restricted to .xlsx
+// paths that exist, so a stray string from the backend can never launch
+// anything else. Resolves to '' on success or an error message (Electron's
+// shell.openPath contract).
+ipcMain.handle('shell:openPath', async (_event, filePath) => {
+  if (typeof filePath !== 'string' || !/\.xlsx$/i.test(filePath)) {
+    throw new Error(`Refusing to open non-xlsx path: ${filePath}`)
+  }
+  if (!existsSync(filePath)) {
+    throw new Error(`File not found on this computer: ${filePath}`)
+  }
+  return shell.openPath(filePath)
+})
+
 // IPC: open (or focus) the physician roster editor window
 ipcMain.handle('window:openRoster', () => {
   createRosterWindow()

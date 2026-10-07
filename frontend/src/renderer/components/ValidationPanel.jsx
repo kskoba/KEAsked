@@ -1,11 +1,30 @@
 import React, { useState, useEffect } from 'react'
 import {
   overrideIssue, overrideClear, overrideAll, getValidationSummary,
-  getByteBlocPreview, sendByteBlocRequests, getEmailStatus, sendReminderEmail,
+  getByteBlocPreview, sendByteBlocRequests, getEmailStatus, sendReminderEmail, getApiBaseUrl,
 } from '../api'
+
+// The backend reports where each submission xlsx lives on ITS filesystem;
+// that's only openable from here when the backend is this computer.
+function isRemoteBackend() {
+  return !/^https?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/.test(getApiBaseUrl())
+}
 
 export default function ValidationPanel({ importResult, onImportResultUpdate }) {
   const { physicians = [], total_physicians, valid_physicians } = importResult
+  const canOpenFiles = Boolean(window.electronAPI?.openPath) && !isRemoteBackend()
+  const [openError, setOpenError] = useState(null)
+
+  async function openSubmission(e, physician) {
+    e.stopPropagation()                       // the row click toggles the issue list
+    setOpenError(null)
+    try {
+      const err = await window.electronAPI.openPath(physician.source_file)
+      if (err) setOpenError(`${physician.physician_name}: ${err}`)
+    } catch (ex) {
+      setOpenError(`${physician.physician_name}: ${ex.message}`)
+    }
+  }
   const [expanded, setExpanded] = useState({})
   const [busy, setBusy] = useState(null)     // key of the in-flight override action, or null
   const [report, setReport] = useState(null) // null | { loading, error, items }
@@ -125,6 +144,12 @@ export default function ValidationPanel({ importResult, onImportResultUpdate }) 
       </div>
 
       {/* Table */}
+      {openError && (
+        <div className="mx-6 mb-3 p-2.5 bg-red-50 border border-red-200 rounded-md text-red-700 text-xs flex items-start justify-between gap-3">
+          <span>Could not open submission file — {openError}</span>
+          <button type="button" onClick={() => setOpenError(null)} className="text-red-400 hover:text-red-600">✕</button>
+        </div>
+      )}
       <div className="overflow-auto max-h-[65vh]">
         <table className="w-full text-sm">
           <thead className="sticky top-0 bg-slate-50 border-b border-slate-200">
@@ -167,9 +192,26 @@ export default function ValidationPanel({ importResult, onImportResultUpdate }) 
                       )}
                     </td>
 
-                    {/* Name */}
+                    {/* Name + open-submission button */}
                     <td className="px-3 py-3 font-medium text-slate-800">
-                      {physician.physician_name}
+                      <span className="inline-flex items-center gap-2">
+                        {physician.physician_name}
+                        {physician.source_file && (
+                          <button
+                            type="button"
+                            onClick={(e) => openSubmission(e, physician)}
+                            disabled={!canOpenFiles}
+                            title={canOpenFiles
+                              ? `Open ${physician.source_file.split('/').pop()}`
+                              : 'The submission file lives on the remote backend, not this computer'}
+                            className="inline-flex items-center justify-center w-6 h-6 rounded text-slate-400 hover:text-sky-600 hover:bg-sky-50 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent transition-colors"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6M7 4h7l5 5v11a1 1 0 01-1 1H7a1 1 0 01-1-1V5a1 1 0 011-1z" />
+                            </svg>
+                          </button>
+                        )}
+                      </span>
                     </td>
 
                     {/* Shifts requested */}

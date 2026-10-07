@@ -177,6 +177,14 @@ class PhysicianConfig:
     # If True, requested dates+shifts are treated as near-mandatory (high score bonus).
     honor_all_requests: bool = False
 
+    # Admin role: exempt from mandatory anchor (0600h/2400h) shifts. When
+    # this physician requests no anchors (0 or blank), the solver neither
+    # applies the minimum-anchor floor nor expects a fair share from them;
+    # any anchor they didn't ask for is treated as overage from the first
+    # one. An explicit positive anchor request is still honoured normally.
+    # Added 2026-10-07 for MacGougan, Bly, MacLean, Haager.
+    anchor_floor_exempt: bool = False
+
     # If True, solver will not penalise isolated 2400h nights for this physician
     # (i.e. singleton midnight shifts are acceptable / preferred).
     prefer_singleton_nights: bool = False
@@ -503,6 +511,11 @@ def describe_physician_facing_rules(cfg: "PhysicianConfig") -> list[str]:
             "Your specific date/shift requests are treated as close to mandatory, and the usual "
             "cap on how many shifts you can mark preferred (★) doesn't apply to you."
         )
+    if cfg.anchor_floor_exempt:
+        items.append(
+            "Admin role: you're exempt from mandatory 0600h/2400h shifts -- if you don't request "
+            "any, the scheduler won't assign you one unless nothing else can fill it."
+        )
     if cfg.priority_weight > 1.0:
         items.append(
             "Your requested shifts are given extra weight over a colleague's when the schedule can't "
@@ -678,6 +691,7 @@ def _parse_physician(raw: dict) -> PhysicianConfig:
         prefer_weekends=bool(sched.get("prefer_weekends", False)),
         max_weekends=parsed_max_weekends,
         honor_all_requests=bool(sched.get("honor_all_requests", False)),
+        anchor_floor_exempt=bool(sched.get("anchor_floor_exempt", False)),
         prefer_singleton_nights=bool(sched.get("prefer_singleton_nights", False)),
         prefer_clustered_nights=bool(sched.get("prefer_clustered_nights", False)),
         allow_isolated_nights=bool(sched.get("allow_isolated_nights", False)),
@@ -792,6 +806,8 @@ def physician_config_to_raw(cfg: PhysicianConfig) -> dict:
         sched["max_weekends"] = cfg.max_weekends
     if cfg.honor_all_requests:
         sched["honor_all_requests"] = True
+    if cfg.anchor_floor_exempt:
+        sched["anchor_floor_exempt"] = True
     if cfg.prefer_singleton_nights:
         sched["prefer_singleton_nights"] = True
     if cfg.prefer_clustered_nights:

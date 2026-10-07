@@ -1262,6 +1262,13 @@ class CpsatScheduleGenerator:
                 _cfg_anchor = _get_cfg(pid)
                 if _cfg_anchor and (_cfg_anchor.only_0600h or _cfg_anchor.only_2400h):
                     anchor_target = max(anchor_target, eff_req_anchor + self._anchor_tol)
+                # Admin role (anchor_floor_exempt): no fair share expected
+                # of them -- their target is exactly what they asked for,
+                # so any anchor they didn't request is overage from the
+                # first one (500+), and the floor below is skipped.
+                _anchor_exempt = bool(_cfg_anchor and _cfg_anchor.anchor_floor_exempt)
+                if _anchor_exempt:
+                    anchor_target = req_anchors
                 preference = _anchor_preference(pid, sub)
                 pid_cap_2400: int | None = None
                 pid_cap_0600: int | None = None
@@ -1388,7 +1395,7 @@ class CpsatScheduleGenerator:
                 # anchors while the explicit-0/0 physicians carried their
                 # floor of 2: a blank means "no preference", and no
                 # preference shouldn't rank below "I'd rather not".
-                if req_anchors == 0 and (vars_2400 or vars_0600):
+                if req_anchors == 0 and (vars_2400 or vars_0600) and not _anchor_exempt:
                     floor_target = 2 if sub.shifts_requested >= _ANCHOR_MIN_FLOOR_FULL_THRESHOLD else 1
                     # Bounded by the real per-type caps above (fair-share
                     # based now, so a physician who can only work one

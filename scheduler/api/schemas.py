@@ -489,6 +489,7 @@ class PhysicianDetail(BaseModel):
     prefer_weekends: bool = False
     max_weekends: Optional[int] = None
     honor_all_requests: bool = False
+    anchor_floor_exempt: bool = False   # admin role: exempt from mandatory anchor shifts when none requested
     prefer_singleton_nights: bool = False
     prefer_clustered_nights: bool = False
     forbidden_shift_times: list[str] = []

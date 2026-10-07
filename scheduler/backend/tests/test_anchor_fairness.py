@@ -102,6 +102,22 @@ def test_blank_0600h_with_explicit_zero_nights_gets_the_floor_too():
     assert _anchors(res, "Rosenblum") >= 2
 
 
+def test_admin_anchor_exempt_physician_is_not_brought_up_to_the_floor():
+    """MacGougan with the admin toggle: blank/blank, 10 shifts -> no floor, no
+    fair share; solo he takes no anchors at all."""
+    sub = _sub("MacGougan", 10, s0600=False, s2400=False)
+    res = _solve([sub], {"MacGougan": _cfg("MacGougan", anchor_floor_exempt=True)})
+    assert _anchors(res, "MacGougan") == 0
+    assert sum(1 for a in res.assignments if a.physician_id == "MacGougan") == 10
+
+
+def test_admin_anchor_exempt_still_honours_an_explicit_anchor_request():
+    """Haager with the toggle but a real request for 2 0600h still gets them."""
+    sub = _sub("Haager", 9, r0600=2, s0600=True, r2400=0, s2400=True)
+    res = _solve([sub], {"Haager": _cfg("Haager", anchor_floor_exempt=True)})
+    assert sum(1 for a in res.assignments if a.physician_id == "Haager" and a.shift.time == "0600h") == 2
+
+
 def test_excess_anchors_spread_to_fair_share_before_anyone_goes_over():
     """Three identical physicians, 10 shifts each, available Jan 1-16 only,
     offering the four 0600h slots plus a single 1200h NEHC slot per day: 16

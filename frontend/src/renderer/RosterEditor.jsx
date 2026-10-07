@@ -476,6 +476,12 @@ export default function RosterEditor() {
                   hint="Soft, high priority — the solver strongly prefers the exact days/shifts they marked on their submission, not just hitting their requested total."
                 />
                 <CheckboxField
+                  label="Admin role — exempt from mandatory anchors"
+                  checked={form.anchor_floor_exempt}
+                  onChange={(v) => setField('anchor_floor_exempt', v)}
+                  hint="If they request no 0600h/2400h shifts (0 or blank), the solver won't bring them up to the usual minimum-anchor floor or expect a fair share of anchors; any anchor they didn't ask for counts as overage from the first one. An explicit anchor request is still honoured."
+                />
+                <CheckboxField
                   label="Prefer singleton nights"
                   checked={form.prefer_singleton_nights}
                   onChange={(v) => setField('prefer_singleton_nights', v)}

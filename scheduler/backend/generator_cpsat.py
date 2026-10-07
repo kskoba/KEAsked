@@ -8,7 +8,7 @@ as generator.py so both approaches are interchangeable from server.py's perspect
 Usage:
     from scheduler.backend.generator_cpsat import CpsatScheduleGenerator
     gen = CpsatScheduleGenerator(submissions, roster, config)
-    result = gen.generate(year, month, time_limit=90)  # num_workers defaults to 75% of cores
+    result = gen.generate(year, month, time_limit=90)  # num_workers defaults to 90% of cores
 
 Requirements:
     pip install ortools
@@ -289,8 +289,11 @@ class CpsatScheduleGenerator:
         num_workers:
             Number of parallel search workers for CP-SAT.  CP-SAT releases
             the GIL internally so this genuinely uses multiple cores.
-            Defaults to 75% of the machine's CPU cores (min 1) so the UI
-            and backend stay responsive during a solve.
+            Defaults to 90% of the machine's CPU cores (min 1), leaving a
+            little headroom for the API process and the OS. Was 75%; raised
+            2026-10-06 after a real solve on the 24-core Unraid box showed
+            18 workers only reaching ~90% overall utilization with the
+            remainder idle.
         progress_callback:
             Optional callable(current, total, best_score).  CP-SAT does not
             provide per-iteration callbacks so this is called once at the
@@ -302,7 +305,7 @@ class CpsatScheduleGenerator:
             same code path as hitting the time limit, just sooner.
         """
         if num_workers is None:
-            num_workers = max(1, round((os.cpu_count() or 4) * 0.75))
+            num_workers = max(1, round((os.cpu_count() or 4) * 0.9))
 
         if not _ORTOOLS_AVAILABLE:
             logger.warning(
@@ -1540,7 +1543,10 @@ class CpsatScheduleGenerator:
         #       a month-boundary cluster missing Fri or Sun has no "gap" to
         #       speak of.
         #
-        # Both (a) and (b) are skipped for a physician who ALSO has
+        # (b) now applies to every physician (see _WEEKEND_SPLIT_PENALTY
+        # below); only its weight is prefer_weekends-specific.
+        #
+        # (a) is skipped for a physician who ALSO has
         # prefer_clustered_nights set (only KLam today) -- confirmed on
         # real data that the per-shift weekend reward directly fights
         # completing a full-length night run: with every shift a 2400h
@@ -1562,22 +1568,35 @@ class CpsatScheduleGenerator:
         # leaving the gap. Kept comfortably above that line rather than
         # exactly at it.
         _PREFER_WEEKEND_GAP_PENALTY = 220
+        # The same Fri+Sun-without-Saturday "split" is undesirable for
+        # EVERYONE, not just prefer_weekends physicians -- it was found at
+        # 11.9% of all weekend touches in a real Jan 2027 solve (18 splits
+        # across 16 physicians, spread evenly over all 5 weekends), and
+        # nothing in the objective discouraged it: weekend_clump_penalty
+        # only counts distinct weekends touched (shape-blind), and the
+        # +10 any_cluster adjacency bonus is too small to matter. Weight
+        # chosen to sit between the per-day shape penalties it should
+        # override (a swing at 35 plus a same-site repeat at 40 -- the
+        # solver should take Fri+Sat even at that cost) and the near-hard
+        # soft rules it must NOT override (the 36h long-gap rule at 300,
+        # weekend overage at 250). prefer_weekends physicians keep their
+        # stronger 220 (justified above against their own +80/shift pull).
+        _WEEKEND_SPLIT_PENALTY = 150
         prefer_weekend_bonus_terms = []
         prefer_weekend_gap_penalty_terms = []
         for pid in pids:
             cfg = _get_cfg(pid)
-            if not (cfg and cfg.prefer_weekends):
-                continue
-            if cfg.prefer_clustered_nights:
-                continue
-            for d_idx, d in enumerate(all_dates):
-                if d.weekday() not in _WEEKEND_WEEKDAYS:
-                    continue
-                for block in BLOCKS:
-                    for shift in block:
-                        prefer_weekend_bonus_terms.append(
-                            _PREFER_WEEKEND_SHIFT_BONUS * shifts[(pid, d_idx, shift.code)]
-                        )
+            pushes_weekends = bool(cfg and cfg.prefer_weekends and not cfg.prefer_clustered_nights)
+            if pushes_weekends:
+                for d_idx, d in enumerate(all_dates):
+                    if d.weekday() not in _WEEKEND_WEEKDAYS:
+                        continue
+                    for block in BLOCKS:
+                        for shift in block:
+                            prefer_weekend_bonus_terms.append(
+                                _PREFER_WEEKEND_SHIFT_BONUS * shifts[(pid, d_idx, shift.code)]
+                            )
+            gap_penalty = _PREFER_WEEKEND_GAP_PENALTY if pushes_weekends else _WEEKEND_SPLIT_PENALTY
             for wk_key, d_indices in weekend_clusters.items():
                 by_weekday = {all_dates[i].weekday(): i for i in d_indices}
                 if not all(wd in by_weekday for wd in (4, 5, 6)):
@@ -1587,7 +1606,7 @@ class CpsatScheduleGenerator:
                 sun_w = worked_bool[(pid, by_weekday[6])]
                 gap = model.new_bool_var(f"wkndgap_{pid}_{wk_key[2]}")
                 model.add(fri_w + sun_w - sat_w <= 1 + gap)
-                prefer_weekend_gap_penalty_terms.append(-_PREFER_WEEKEND_GAP_PENALTY * gap)
+                prefer_weekend_gap_penalty_terms.append(-gap_penalty * gap)
 
         # requested_bonus_by_pid captures each physician's own bonus expression
         # so the lexicographic tiers below (normal-vs-casual priority) can sum

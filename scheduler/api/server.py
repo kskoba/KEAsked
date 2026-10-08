@@ -2542,6 +2542,25 @@ async def generate(body: GenerateCachedRequest) -> ScheduleResponse:
     return _result_to_response(result)
 
 
+@app.post("/api/clear-month")
+def clear_loaded_month() -> dict:
+    """
+    Forget the currently loaded month: imported submissions, the validation
+    results they feed, any generated or loaded schedule, manual overrides,
+    and the cached generator. The roster, scheduler config and the
+    previous-month (trailing) source are kept -- they belong to the setup,
+    not to a month. Refused while a solve is running.
+    """
+    if _state.get("progress", {}).get("running"):
+        raise HTTPException(status_code=409, detail="A solve is running. Cancel it first, then clear.")
+    _state.update(
+        submissions=[], result=None, year=None, month=None, directory=None, source_file=None,
+        generator=None, overrides={}, cancel_requested=False,
+        progress={"current": 0, "total": 0, "running": False, "best_unfilled": None, "gap_pct": None, "last_improved_at": None},
+    )
+    return {"cleared": True}
+
+
 @app.get("/api/schedule", response_model=ScheduleResponse)
 def get_schedule() -> ScheduleResponse:
     """Return the most recently generated schedule."""

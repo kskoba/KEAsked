@@ -18,7 +18,14 @@ const MONTHS = [
 
 const currentDate = new Date()
 
-export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onScheduleLoaded, importResult }) {
+export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onScheduleLoaded, onClearMonth, hasLoadedMonth, importResult }) {
+  const [clearArmed, setClearArmed] = useState(false)   // two-click confirm for "Clear loaded month"
+  const [clearing, setClearing] = useState(false)
+  async function handleClearMonth() {
+    if (!clearArmed) { setClearArmed(true); return }
+    setClearing(true)
+    try { await onClearMonth() } finally { setClearing(false); setClearArmed(false); setPath(''); setPrefPath(''); setImportError(null); setGenerateError(null); setLoadError(null) }
+  }
   const [mode, setMode] = useState('directory')   // 'directory' | 'sked' | 'load'  (the old single-flat-file import was retired 2026-10-07)
   const [path, setPath] = useState('')
   const [skedPeriods, setSkedPeriods] = useState(null)
@@ -233,12 +240,40 @@ export default function DirectoryPicker({ onImportDone, onScheduleGenerated, onS
     <div className={mode === 'load' ? '' : 'flex flex-col md:flex-row gap-4 items-start'}>
       {/* Import card */}
       <div className={`bg-white rounded-xl shadow-sm border border-slate-200 p-6 ${mode === 'load' ? '' : 'flex-1 min-w-0 w-full'}`}>
-        <h2 className="text-lg font-semibold text-slate-800 mb-4 flex items-center gap-2">
-          <svg className="w-5 h-5 text-sky-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
-          </svg>
-          Schedule Setup
-        </h2>
+        <div className="flex items-center justify-between gap-3 mb-4">
+          <h2 className="text-lg font-semibold text-slate-800 flex items-center gap-2">
+            <svg className="w-5 h-5 text-sky-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
+            </svg>
+            Schedule Setup
+          </h2>
+          {hasLoadedMonth && (
+            <div className="flex items-center gap-2">
+              {clearArmed && !clearing && (
+                <button
+                  type="button"
+                  onClick={() => setClearArmed(false)}
+                  className="px-2.5 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-700"
+                >
+                  Keep it
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleClearMonth}
+                disabled={importing || generating || loading || clearing}
+                title="Forget the imported submissions, validation results and schedule so you can start another month. The roster and the previous-month source are kept."
+                className={`px-3 py-1.5 text-xs font-medium rounded-md border transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                  clearArmed
+                    ? 'bg-red-600 border-red-600 text-white hover:bg-red-500'
+                    : 'bg-white border-slate-300 text-slate-600 hover:border-red-400 hover:text-red-600'
+                }`}
+              >
+                {clearing ? 'Clearing…' : clearArmed ? 'Yes, clear the loaded month' : 'Clear loaded month'}
+              </button>
+            </div>
+          )}
+        </div>
 
         {/* Mode toggle */}
         <div className="flex gap-1 mb-5 p-1 bg-slate-100 rounded-lg w-fit">

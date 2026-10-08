@@ -318,6 +318,14 @@ export async function checkViolations(date, shiftCode, physicianId) {
 }
 
 /**
+ * Forget the currently loaded month on the backend (submissions, validation,
+ * schedule, overrides). Roster, config and the previous-month source stay.
+ */
+export async function clearLoadedMonth() {
+  return request('POST', '/api/clear-month')
+}
+
+/**
  * Load a previously exported schedule xlsx as the active schedule.
  * @param {string} file  Absolute path to the .xlsx file
  * @returns {ScheduleResponse}

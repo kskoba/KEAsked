@@ -9,7 +9,7 @@ import ReplaceModal from './components/ReplaceModal'
 import OnCallModal from './components/OnCallModal'
 import AssignOrSwapModal from './components/AssignOrSwapModal'
 import SettingsModal from './components/SettingsModal'
-import { getSchedule, swapAssignments, setApiBaseUrl } from './api'
+import { getSchedule, swapAssignments, setApiBaseUrl, clearLoadedMonth } from './api'
 
 export default function App() {
   // 'setup' | 'schedule'
@@ -128,6 +128,16 @@ export default function App() {
 
   const handleImportDone = useCallback((result) => {
     setImportResult(result)
+  }, [])
+
+  // "Clear loaded month": backend forgets the month, the screen follows.
+  const handleClearMonth = useCallback(async () => {
+    await clearLoadedMonth()
+    setImportResult(null)
+    setScheduleData(null)
+    setPhysicianViolations({})
+    setScheduleLoadedFromFile(false)
+    setView('setup')
   }, [])
 
   const handleScheduleGenerated = useCallback((schedule) => {
@@ -316,6 +326,8 @@ export default function App() {
               onImportDone={handleImportDone}
               onScheduleGenerated={handleScheduleGenerated}
               onScheduleLoaded={handleScheduleLoaded}
+              onClearMonth={handleClearMonth}
+              hasLoadedMonth={Boolean(importResult || scheduleData)}
               importResult={importResult}
             />
             {importResult && (

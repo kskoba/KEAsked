@@ -94,3 +94,21 @@ def test_legacy_sheet_without_date_labels_falls_back_to_fixed_columns(tmp_path):
     _write_sheet(f, "Test", [None] * 31, {0: {"Z": "z"}, 4: {"Z": "z"}})
     sub = import_single_file(f, 2027, 3)
     assert _day(sub, 1).wants_to_work and _day(sub, 5).wants_to_work and not _day(sub, 2).wants_to_work
+
+
+def test_gaps_inside_the_months_date_row_are_filled_by_column_offset(tmp_path):
+    """A real November sheet had date labels on only ~half its days (the
+    physician cleared some header cells) but marks laid out one column per
+    day. Those days must still import; only a day the template omits
+    outright (no column at all) is 'not offered'."""
+    f = tmp_path / "Test - November 2026.xlsx"
+    labels = [1, 2, 3, 4, None, None, None, None, 9, 10, 11] + [None] * 9 + [21, 22, 23, 24, 25, None, 27, None, None, None, 1]
+    assert len(labels) == 31          # 30 November columns + the trailing Dec 1
+    _write_sheet(f, "Test", labels, {5: {"Z": "z"}, 15: {"Z": "z"}, 28: {"Z": "z"}, 30: {"Z": "z"}})
+    sub = import_single_file(f, 2026, 11)
+    assert _day(sub, 6).wants_to_work          # inside the 4..9 gap
+    assert _day(sub, 16).wants_to_work         # inside the 11..21 gap
+    assert _day(sub, 29).wants_to_work         # after the last label (27), before the Dec 1 column
+    assert not _day(sub, 7).wants_to_work
+    assert [d.date for d in sub.spillover_days] == [datetime.date(2026, 12, 1)]
+    assert sub.spillover_days[0].wants_to_work

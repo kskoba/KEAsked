@@ -312,7 +312,13 @@ the human November schedule (user asked for options 1 and 3, not the cap):**
   next-month-dated assignments like sheet spill-over, so a solver-made
   December moves January to start Jan 2. Data-driven: February's template
   has a Feb 1 column and no trailing day, so February is Feb 1-28 as the
-  user confirmed ("just Nov-Jan"). +4 tests in `test_spillover.py`.
+  user confirmed ("just Nov-Jan"). +5 tests in `test_spillover.py`.
+  **Ranges (user-confirmed 2026-10-08)**: November = Nov 1 -> Dec 1 (the
+  November template has a real Nov 1 column AND a trailing Dec 1; 35 of 80
+  Nov submissions offer Dec 1), December = Dec 2 -> Jan 1, January = Jan 2
+  -> 31, every other month = whole month. Last night's cpsatv2-nov1 Nov 1
+  was genuine (real Nov 1 column), but its Dec 1 column was dropped by the
+  old importer -- the new one captures it.
 
 **Still to do:**
 1. Before the January solve, in the app: open "Previous month (December

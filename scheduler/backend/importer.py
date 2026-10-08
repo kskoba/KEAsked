@@ -339,6 +339,31 @@ def _parse_worksheet(
         for col, d in runs[main_idx]:
             if 1 <= d <= days_in_month and d not in day_to_col:
                 day_to_col[d] = col
+        # Fill GAPS inside the month's run by column offset from the nearest
+        # label: a physician who cleared some date-header cells (one real
+        # November sheet labels only ~half its days) still laid their marks
+        # out one column per day. A day is only treated as "no column" when
+        # it falls before the first label or after the last one with no
+        # consistent column to land on -- i.e. the template genuinely omits
+        # it (the January template's Jan 1).
+        labeled = sorted(day_to_col.items())
+        for (d_a, c_a), (d_b, c_b) in zip(labeled, labeled[1:]):
+            if d_b - d_a == c_b - c_a:            # consistent one-column-per-day spacing
+                for d in range(d_a + 1, d_b):
+                    day_to_col.setdefault(d, c_a + (d - d_a))
+        # Extend forward past the last label up to the month end, but never
+        # into the column(s) a following (spill-over) run occupies.
+        if labeled:
+            d_last, c_last = labeled[-1]
+            next_run_col = runs[main_idx + 1][0][0] if main_idx + 1 < len(runs) else max_col + 1
+            for d in range(d_last + 1, days_in_month + 1):
+                c = c_last + (d - d_last)
+                if c >= next_run_col:
+                    break
+                # Only when the sheet's own layout says this column is a day
+                # column (a weekday label or any mark in the Z row).
+                if _cell(ws, _DOW_ROW, c) or _cell(ws, _Z_ROW, c):
+                    day_to_col.setdefault(d, c)
         last_main_day = runs[main_idx][-1][1]
         for run in runs[main_idx + 1:]:
             first_day = run[0][1]

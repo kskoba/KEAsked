@@ -159,3 +159,94 @@ def test_on_call_is_not_assigned_on_an_unscheduled_leading_day():
     res = gen.assign_on_calls(res)
     # Before the guard this produced a Jan 1 DOC; Jan 1 belongs to December's sheet.
     assert res.on_calls == []
+
+
+# --------------------------------------------------------------------------- #
+# Scheduling the spill-over day WITH its month (a December solve staffs Jan 1)
+# --------------------------------------------------------------------------- #
+
+def _dec_submission(pid: str, days: set[int], jan1: bool, codes=None) -> PhysicianSubmission:
+    codes = frozenset(codes) if codes else frozenset(ALL_SHIFT_CODES)
+    sub = PhysicianSubmission(
+        physician_id=pid, physician_name=pid, year=2026, month=12,
+        shifts_requested=2, shifts_min=0, shifts_max=2,
+        days=[DayAvailability(date=datetime.date(2026, 12, d), wants_to_work=(d in days),
+                              available_blocks=frozenset(range(5)) if d in days else frozenset(),
+                              requested_shifts=codes if d in days else frozenset())
+              for d in range(1, 32)],
+    )
+    if jan1:
+        sub.spillover_days = [DayAvailability(date=datetime.date(2027, 1, 1), wants_to_work=True,
+                                              available_blocks=frozenset(range(5)), requested_shifts=codes)]
+    return sub
+
+
+def test_december_solve_schedules_jan_1_from_the_sheets_jan_1_column():
+    # Only Alpha offered Jan 1 (via the December template's trailing column).
+    subs = [_dec_submission("Alpha", {30}, jan1=True, codes={"1200h NEHC"}),
+            _dec_submission("Beta", {30}, jan1=False, codes={"1200h NEHC"})]
+    gen = CpsatScheduleGenerator(subs, {p: ROSTER[p] for p in ("Alpha", "Beta")}, {})
+    res = gen.generate(2026, 12, time_limit=10.0, num_workers=4)
+
+    jan1 = [a for a in res.assignments if a.date == datetime.date(2027, 1, 1)]
+    assert [a.physician_id for a in jan1] == ["Alpha"]
+    assert any(u.date == datetime.date(2027, 1, 1) for u in res.unfilled)          # Jan 1 slots exist
+    assert len(res.unfilled) + len(res.assignments) == 32 * 21                      # 31 Dec days + Jan 1
+    assert (res.year, res.month) == (2026, 12)
+
+
+def test_december_solve_without_spillover_flag_stays_within_december():
+    subs = [_dec_submission("Alpha", {30}, jan1=True, codes={"1200h NEHC"})]
+    gen = CpsatScheduleGenerator(subs, {"Alpha": ROSTER["Alpha"]}, {})
+    res = gen.generate(2026, 12, time_limit=10.0, num_workers=4, include_spillover=False)
+    assert all(a.date.month == 12 for a in res.assignments) and all(u.date.month == 12 for u in res.unfilled)
+    assert len(res.unfilled) + len(res.assignments) == 31 * 21
+
+
+def test_export_round_trip_keeps_jan_1_as_spillover_dated_2027(tmp_path):
+    from scheduler.api import server
+    res = ScheduleResult(year=2026, month=12, assignments=[
+        Assignment(date=datetime.date(2026, 12, 31), shift=Shift("1200h", "NEHC"), physician_id="Alpha", physician_name="Alpha"),
+        Assignment(date=datetime.date(2027, 1, 1), shift=Shift("1200h", "NEHC"), physician_id="Beta", physician_name="Beta"),
+    ])
+    path = tmp_path / "schedule_2026_12.xlsx"
+    server._build_export_workbook(res).save(path)
+    back = server._parse_schedule_xlsx(path, ROSTER)
+
+    assert [(a.physician_id, a.date) for a in back.assignments] == [("Alpha", datetime.date(2026, 12, 31))]
+    assert [(a.physician_id, a.date) for a in back.spillover] == [("Beta", datetime.date(2027, 1, 1))]
+    assert all(u.date.month == 12 for u in back.unfilled)
+    # And a solver-made December (Jan 1 in assignments) moves January's start day too.
+    assert trailing_mod.spillover_start_day(res, 2027, 1) == 2
+    assert trailing_mod.spillover_start_day(back, 2027, 1) == 2
+
+
+def test_on_call_is_assigned_on_a_scheduled_spillover_day():
+    from scheduler.backend.generator import ScheduleGenerator, UnfilledSlot
+    sub = _dec_submission("Alpha", {30}, jan1=True)
+    sub.spillover_days[0].doc_available = True
+    gen = ScheduleGenerator([sub], {"Alpha": ROSTER["Alpha"]}, {})
+    res = ScheduleResult(year=2026, month=12,
+                         unfilled=[UnfilledSlot(date=datetime.date(2027, 1, 1), shift=Shift("1200h", "NEHC"), candidates=[])])
+    res = gen.assign_on_calls(res)
+    assert [(oc.physician_id, oc.date, oc.call_type) for oc in res.on_calls] == [("Alpha", datetime.date(2027, 1, 1), "DOC")]
+
+
+def test_november_solve_schedules_dec_1_the_same_way():
+    """November's template carries Dec 1; the same mechanism extends November to Nov 1..Dec 1."""
+    codes = frozenset({"1200h NEHC"})
+    sub = PhysicianSubmission(
+        physician_id="Alpha", physician_name="Alpha", year=2026, month=11,
+        shifts_requested=2, shifts_min=0, shifts_max=2,
+        # Nov 29, not 30: the identical shift code on two ADJACENT days is a hard rule (HC-10).
+        days=[DayAvailability(date=datetime.date(2026, 11, d), wants_to_work=(d == 29),
+                              available_blocks=frozenset(range(5)) if d == 29 else frozenset(),
+                              requested_shifts=codes if d == 29 else frozenset()) for d in range(1, 31)],
+    )
+    sub.spillover_days = [DayAvailability(date=datetime.date(2026, 12, 1), wants_to_work=True,
+                                          available_blocks=frozenset(range(5)), requested_shifts=codes)]
+    gen = CpsatScheduleGenerator([sub], {"Alpha": ROSTER["Alpha"]}, {})
+    res = gen.generate(2026, 11, time_limit=10.0, num_workers=4)
+    assert sorted(a.date for a in res.assignments if a.physician_id == "Alpha") == [datetime.date(2026, 11, 29), datetime.date(2026, 12, 1)]
+    assert len(res.unfilled) + len(res.assignments) == 31 * 21     # 30 Nov days + Dec 1
+    assert (res.year, res.month) == (2026, 11)

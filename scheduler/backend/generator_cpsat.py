@@ -240,7 +240,11 @@ class CpsatScheduleGenerator:
         # importer.py/models.py's DayAvailability.preferred_shifts)
         self._preferred_shifts: dict[tuple, frozenset] = {}
         for sub in submissions:
-            for day in sub.days:
+            # spillover_days: the NEXT month's leading day(s) this month's
+            # template carries (the December sheet's Jan 1 column). They
+            # are scheduled WITH this month -- see generate()'s
+            # include_spillover -- so they index exactly like in-month days.
+            for day in list(sub.days) + list(sub.spillover_days):
                 # A day the physician didn't mark as a Service Day (Z) is
                 # never actually assignable, regardless of which individual
                 # shift-cells happen to still be marked available on it --
@@ -283,6 +287,7 @@ class CpsatScheduleGenerator:
         progress_callback: Optional[Callable] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
         start_day: int = 1,
+        include_spillover: bool = True,
     ) -> ScheduleResult:
         """
         Solve the scheduling problem with CP-SAT and return a ScheduleResult.
@@ -293,6 +298,15 @@ class CpsatScheduleGenerator:
         Jan 2-31. Days before start_day get NO slots in this result; what was
         worked on them arrives through trailing_assignments and is enforced
         by the cross-boundary rest/consecutive rules exactly like Dec 31.
+
+        ``include_spillover``: when the submissions carry the NEXT month's
+        leading day(s) (PhysicianSubmission.spillover_days -- the November
+        template's Dec 1 column, the December template's Jan 1 column),
+        extend the scheduled range to cover them, contiguously from the day
+        after the month ends. Those days are scheduled with this month by
+        department convention, and their availability lives nowhere else.
+        Fully data-driven: a template with no such column changes nothing
+        (February is Feb 1-28).
 
         If any physician in the roster is flagged `casual`, the single model
         built here adds two extra "lexicographic" solves before the final
@@ -316,6 +330,7 @@ class CpsatScheduleGenerator:
         """
         return self._generate_single_phase(
             year, month, time_limit, num_workers, progress_callback, cancel_check, start_day=start_day,
+            include_spillover=include_spillover,
         )
 
     def _generate_single_phase(
@@ -327,6 +342,7 @@ class CpsatScheduleGenerator:
         progress_callback: Optional[Callable] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
         start_day: int = 1,
+        include_spillover: bool = True,
     ) -> ScheduleResult:
         """
         Solve the scheduling problem with CP-SAT and return a ScheduleResult.
@@ -380,6 +396,20 @@ class CpsatScheduleGenerator:
         days_in_month = calendar.monthrange(year, month)[1]
         start_day = max(1, min(int(start_day), days_in_month))
         all_dates = [datetime.date(year, month, d) for d in range(start_day, days_in_month + 1)]
+        if include_spillover:
+            # Next-month leading days the templates carry, contiguous from
+            # the day after month end (November's Dec 1, December's Jan 1).
+            offered = {
+                day.date for sub in self.submissions.values() for day in sub.spillover_days
+                if day.date > all_dates[-1]
+            }
+            nxt = all_dates[-1] + datetime.timedelta(days=1)
+            while nxt in offered:
+                all_dates.append(nxt)
+                nxt += datetime.timedelta(days=1)
+            if all_dates[-1].month != month:
+                logger.info("CP-SAT: scheduling range extends past %d-%02d to %s (spill-over day(s) carried by this month's templates)",
+                            year, month, all_dates[-1].isoformat())
         all_shifts_flat = _all_shifts()
         shift_by_code = _shift_by_code()
         pids = list(self.submissions.keys())
@@ -1195,7 +1225,7 @@ class CpsatScheduleGenerator:
         def _anchor_available_days(sub, time_str: str) -> int:
             block_idx = _ANCHOR_BLOCK_IDX.get(time_str)
             count = 0
-            for day in sub.days:
+            for day in list(sub.days) + list(sub.spillover_days):
                 if any(code.startswith(time_str) for code in day.requested_shifts):
                     count += 1
                 elif block_idx is not None and block_idx in day.available_blocks:

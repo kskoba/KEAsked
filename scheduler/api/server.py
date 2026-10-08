@@ -2117,13 +2117,18 @@ def _push_result_to_master_sheet(
 
     days_in_month = calendar.monthrange(result.year, result.month)[1]
     all_dates = [datetime.date(result.year, result.month, d) for d in range(1, days_in_month + 1)]
+    # Out-of-month days this schedule covers (a December solve's Jan 1) are
+    # written into the month's own sheet, in the last week row, where the
+    # department keeps them.
+    extra_days = {a.date for a in result.assignments if a.date.month != result.month}
     weeks: list[list[datetime.date | None]] = []
     first = all_dates[0]
     week_start = first - datetime.timedelta(days=(first.weekday() + 1) % 7)
     d = week_start
-    while d <= all_dates[-1]:
+    last = max([all_dates[-1], *extra_days])
+    while d <= last:
         weeks.append([
-            (day if day.month == result.month else None)
+            (day if (day.month == result.month or day in extra_days) else None)
             for day in (d + datetime.timedelta(days=i) for i in range(7))
         ])
         d += datetime.timedelta(days=7)
@@ -2594,16 +2599,22 @@ def _build_export_workbook(result: ScheduleResult) -> openpyxl.Workbook:
     # Index regular assignments by (date, shift_code) -> physician_name
     index: dict[tuple, str] = {
         (a.date, a.shift.code): a.physician_name
-        for a in result.assignments
+        for a in list(result.assignments) + list(result.spillover)
     }
     # Index on-call assignments by (date, call_type) -> physician_name
     call_index: dict[tuple, str] = {
         (oc.date, oc.call_type): oc.physician_name
-        for oc in result.on_calls
+        for oc in list(result.on_calls) + list(result.spillover_on_calls)
     }
 
     days_in_month = calendar.monthrange(result.year, result.month)[1]
     all_dates = [datetime.date(result.year, result.month, d) for d in range(1, days_in_month + 1)]
+    # Days outside the month the schedule nevertheless covers (a November
+    # solve's Dec 1, a December solve's Jan 1) get their own column in the
+    # last week row, exactly as the department's own sheet lays them out.
+    extra_days = {a.date for a in list(result.assignments) + list(result.spillover) if a.date.month != result.month}
+    extra_days |= {u.date for u in result.unfilled if u.date.month != result.month}
+    last = max([all_dates[-1], *extra_days])
 
     # Group dates into Sun-starting weeks
     weeks: list[list[datetime.date | None]] = []
@@ -2611,11 +2622,11 @@ def _build_export_workbook(result: ScheduleResult) -> openpyxl.Workbook:
     first = all_dates[0]
     week_start = first - datetime.timedelta(days=(first.weekday() + 1) % 7)
     d = week_start
-    while d <= all_dates[-1]:
+    while d <= last:
         week = []
         for i in range(7):
             day = d + datetime.timedelta(days=i)
-            week.append(day if day.month == result.month else None)
+            week.append(day if (day.month == result.month or day in extra_days) else None)
         weeks.append(week)
         d += datetime.timedelta(days=7)
 
@@ -2748,6 +2759,11 @@ def _parse_schedule_xlsx(path: Path, roster: dict) -> ScheduleResult:
     assignments: list[Assignment] = []
     on_calls: list[OnCallAssignment] = []
     unfilled: list[UnfilledSlot] = []
+    spillover: list[Assignment] = []
+    spillover_on_calls: list[OnCallAssignment] = []
+
+    def _in_month(d: datetime.date) -> bool:
+        return (d.year, d.month) == (year, month)
 
     rows = list(ws.iter_rows(values_only=True))
     i = 0
@@ -2764,14 +2780,13 @@ def _parse_schedule_xlsx(path: Path, roster: dict) -> ScheduleResult:
         if i >= len(rows):
             break
         date_row = rows[i]
-        col_to_date: dict[int, datetime.date] = {}
-        for c in range(1, 8):   # cols B–H → indices 1–7
-            val = date_row[c]
-            if val is not None and val != "":
-                try:
-                    col_to_date[c] = datetime.date(year, month, int(val))
-                except (ValueError, TypeError):
-                    pass
+        # Dates by column offset from any in-month label (same rule as the
+        # master-sheet reader), so a trailing next-month column (an
+        # exported December's Jan 1) resolves to the real date instead of
+        # being mistaken for day 1 of this month.
+        col_to_date = sheets_schedule_reader._week_dates(
+            date_row, year, month, lambda row, c: row[c] if c < len(row) else None
+        )
 
         # Parse shift pairs until gap row or next week header
         i += 1
@@ -2806,25 +2821,27 @@ def _parse_schedule_xlsx(path: Path, roster: dict) -> ScheduleResult:
                 if time_code is None:
                     # On-call row (DOC / NOC)
                     if name and name not in ("", "---", "None"):
-                        on_calls.append(OnCallAssignment(
+                        oc = OnCallAssignment(
                             date=d,
                             call_type=CALL_TYPE_BY_LABEL.get(site_label, site_label),
                             physician_id=_resolve_id(name),
                             physician_name=name,
-                        ))
+                        )
+                        (on_calls if _in_month(d) else spillover_on_calls).append(oc)
                 else:
                     shift_code = f"{time_code} {site_code}"
                     shift = _SHIFT_CODE_LOOKUP.get(shift_code)
                     if shift is None:
                         continue
                     if name and name not in ("", "---", "None"):
-                        assignments.append(Assignment(
+                        a = Assignment(
                             date=d,
                             shift=shift,
                             physician_id=_resolve_id(name),
                             physician_name=name,
-                        ))
-                    else:
+                        )
+                        (assignments if _in_month(d) else spillover).append(a)
+                    elif _in_month(d):
                         unfilled.append(UnfilledSlot(date=d, shift=shift, candidates=[]))
 
     # --- Compute stats from reconstructed assignments ---
@@ -2875,6 +2892,8 @@ def _parse_schedule_xlsx(path: Path, roster: dict) -> ScheduleResult:
         issues=[],
         stats=stats,
         on_calls=on_calls,
+        spillover=spillover,
+        spillover_on_calls=spillover_on_calls,
     )
 
 
@@ -2907,6 +2926,14 @@ def _apply_loaded_schedule(result: ScheduleResult, roster: dict) -> ScheduleResp
                 ),
             )
 
+    # A loaded month's spill-over day(s) (a December sheet's Jan 1) are part
+    # of that month's schedule for editing, display and export purposes, so
+    # fold them in here. (As a *previous* month for the next solve they stay
+    # separate -- trailing.py reads both lists.)
+    if result.spillover or result.spillover_on_calls:
+        result.assignments = list(result.assignments) + list(result.spillover)
+        result.on_calls = list(result.on_calls) + list(result.spillover_on_calls)
+        result.spillover, result.spillover_on_calls = [], []
     _state["result"] = result
     _state["year"] = result.year
     _state["month"] = result.month

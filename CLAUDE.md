@@ -259,10 +259,23 @@ the human November schedule (user asked for options 1 and 3, not the cap):**
   December submissions offer Jan 1). `test_importer_day_columns.py` (4).
   Consequence: a January solve WITHOUT December loaded now leaves Jan 1's 21
   slots unfilled (honest -- they're December's); with December loaded the
-  solve starts Jan 2. **Not yet done**: letting a November/December solve
-  actually staff its spill-over day from `spillover_days` (the solver's
-  date range is still one calendar month) -- needed before the solver can
-  produce a Dec 2026-style sheet itself.
+  solve starts Jan 2.
+- **A December solve now staffs Jan 1 itself** (user: "the only place the
+  Jan 1 preferences live" is the December sheets). `generate(include_
+  spillover=True)` extends the range contiguously past month end to the
+  day(s) the submissions' `spillover_days` carry; availability/anchor
+  indexes include them; `_build_result` dates them in the next month but
+  the result stays year/month = December. Export writes them in the last
+  week row (the department's layout); `_parse_schedule_xlsx` reads them
+  back into `result.spillover` (dates by column offset, like the sheet
+  reader); loading a schedule as ACTIVE folds spill-over into assignments
+  (grid/edit/export see Jan 1; the grid already derives its weeks from the
+  dates present); the master-sheet push writes them into the month's own
+  sheet; greedy on-call covers them; `trailing.spillover_start_day` treats
+  next-month-dated assignments like sheet spill-over, so a solver-made
+  December moves January to start Jan 2. Data-driven: February's template
+  has a Feb 1 column and no trailing day, so February is Feb 1-28 as the
+  user confirmed ("just Nov-Jan"). +4 tests in `test_spillover.py`.
 
 **Still to do:**
 1. Before the January solve, in the app: open "Previous month (December

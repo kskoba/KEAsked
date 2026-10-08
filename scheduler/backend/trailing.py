@@ -78,7 +78,12 @@ def spillover_start_day(prior: ScheduleResult, year: int, month: int) -> int:
     solved for Jan 2-31). Only a contiguous run of staffed days from the
     1st counts; anything else leaves the start at 1.
     """
-    staffed = sorted({a.date.day for a in prior.spillover if (a.date.year, a.date.month) == (year, month)})
+    # A human sheet parses its next-month column into prior.spillover; a
+    # solver-made month carries those days in prior.assignments directly.
+    staffed = sorted({
+        a.date.day for a in list(prior.spillover) + list(prior.assignments)
+        if (a.date.year, a.date.month) == (year, month)
+    })
     start = 1
     for day in staffed:
         if day == start:

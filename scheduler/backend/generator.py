@@ -1712,7 +1712,7 @@ class ScheduleGenerator:
             if cfg_oc and (cfg_oc.no_call or cfg_oc.casual):
                 continue
             days_list: list[tuple[datetime.date, str]] = []
-            for day in sub.days:
+            for day in list(sub.days) + list(sub.spillover_days):
                 if day.date not in scheduled_days:
                     continue
                 if day.doc_available:

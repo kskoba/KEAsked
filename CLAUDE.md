@@ -5,6 +5,43 @@ it's written for a session with zero memory of prior conversations.
 
 ## ⭐ Next task — start here
 
+**2026-10-07 (late evening, this machine) — two user rules from the
+cpsatv2-jan3 review, UNCOMMITTED as of this writing (`git status`):**
+- **Escalating shortfall** (`_SHORTFALL_STEPS = (0, 300, 600, 1000)` in
+  `generator_cpsat.py`): per physician, the 2nd/3rd/4th+ shift under their
+  request costs extra, so when requests exceed slots (January: 640 vs 630)
+  the shortfall spreads one per physician. Krisik had landed 6/8 with 13
+  open days while seven colleagues sat exactly at request.
+- **Casual-priority tiers reworked to make that stick there too.** The
+  tiers freeze every physician's count before the final objective, so the
+  spread must be decided inside them: tier terms are now `2 × units −
+  shortfall steps`. Also fixed two pre-existing flaws found on the way:
+  (a) tier 1 counted `bonus_low − contestable` and simply set contestable
+  = 0, protecting the "contestable" last unit as well, so tier 2 could
+  never give it to a casual (casuals 0/2 in jan3); now `protected` counts
+  shifts up to request−1 and `contestable` is a bool that needs the full
+  request; (b) tier 1's per-physician freeze used to lock everything it
+  incidentally assigned up to the full request; it now freezes only the
+  protected units (request−1 for normals, nothing for casuals). Tier time
+  cap 60 s → 120 s (jan3's tier 1 used its whole minute, unproven).
+- **Anchor-heavy first step** (`_ANCHOR_SHARE_OVERAGE_STEPS_HEAVY =
+  (1000, 1050, 1100)`, `_ANCHOR_HEAVY_SHARE = 0.5`): when a physician's
+  STATED anchors exceed half their requested shifts, the first anchor
+  beyond target costs 1000 instead of 500 (Fisher: 7 of 11 asked, got a
+  6th night). Exempt: roster `anchor_preference`, `only_0600h/only_2400h`,
+  `anchor_floor_exempt`. All steps stay under the 1100 0600h slot payoff.
+- Tests: `test_shortfall_and_anchor_heavy.py` (3; each verified to FAIL
+  with its rule disabled). Full suite 128/128. Local backend restarted on
+  this code; **Unraid still needs push + rebuild** before the next real
+  run. Comparison artifact for jan3 vs the human January:
+  https://claude.ai/code/artifact/ca0be767-f7b2-4b36-9422-ba47f7e90917
+  (recommends 40–45 min runs: 40 min was within 0.02% of the 60-min result).
+- Fixture lesson: a night-only test availability needs a DIFFERENT 2400h
+  code per day — same code on consecutive days is a hard rule (HC-10) and
+  nights must come in pairs (HC-13b), so a single-code night fixture can
+  never place two nights.
+
+
 **Cross-month continuity is now wired end-to-end (2026-10-07, uncommitted
 as of this writing — check `git status`).** The remaining step before a
 60-minute run is to get a *real* finalized December schedule as a local

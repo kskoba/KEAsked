@@ -1167,6 +1167,17 @@ class CpsatScheduleGenerator:
         _ANCHOR_UNREQUESTED_PENALTY = 150
         _ANCHOR_UNREQUESTED_PENALTY_PREFERRED = 60
         _ANCHOR_SHARE_OVERAGE_STEPS = (500, 800, 1100)
+        # Anchor-heavy physicians (user rule, 2026-10-07, from cpsatv2-jan3:
+        # Fisher asked for 7 anchors of 11 and was handed a 6th night on a
+        # thin weekend because the 500-point first step was the cheapest way
+        # out). When a physician's STATED anchors already exceed half their
+        # requested shifts, the first excess anchor costs double, so the
+        # solver looks harder for anyone else. Every step stays below the
+        # 1100-point 0600h slot payoff so a slot is never left empty over
+        # this. Not applied to physicians who are anchor people by roster
+        # (anchor_preference / only_0600h / only_2400h / anchor_floor_exempt).
+        _ANCHOR_SHARE_OVERAGE_STEPS_HEAVY = (1000, 1050, 1100)
+        _ANCHOR_HEAVY_SHARE = 0.5
         # A physician's stated numbers can themselves signal which anchor
         # type they'd rather absorb overage in — e.g. explicitly wanting 0
         # 0600h and a real positive 2400h count says "give me another
@@ -1401,13 +1412,22 @@ class CpsatScheduleGenerator:
                     + (pid_cap_0600 if pid_cap_0600 is not None else (len(all_dates) if vars_0600 else 0)),
                 )
                 over_room = max_anchors_possible - anchor_target
+                anchor_heavy = (
+                    req_anchors > _ANCHOR_HEAVY_SHARE * eff_req_anchor
+                    and not _anchor_exempt
+                    and not (_cfg_anchor and (
+                        _cfg_anchor.only_0600h or _cfg_anchor.only_2400h
+                        or _cfg_anchor.anchor_preference in ("2400h", "0600h")
+                    ))
+                )
+                over_steps = _ANCHOR_SHARE_OVERAGE_STEPS_HEAVY if anchor_heavy else _ANCHOR_SHARE_OVERAGE_STEPS
                 if over_room > 0:
                     share_steps = [model.new_bool_var(f"anchorshare_over{k}_{pid}") for k in range(over_room)]
                     model.add(sum(share_steps) >= total_anchor_expr - anchor_target)
                     for k in range(len(share_steps) - 1):
                         model.add(share_steps[k] >= share_steps[k + 1])
                     for k, step in enumerate(share_steps):
-                        weight = _ANCHOR_SHARE_OVERAGE_STEPS[min(k, len(_ANCHOR_SHARE_OVERAGE_STEPS) - 1)]
+                        weight = over_steps[min(k, len(over_steps) - 1)]
                         anchor_overage_penalty_terms.append(-weight * step)
 
                 # Minimum anchor-shift floor for a physician who explicitly
@@ -1866,8 +1886,23 @@ class CpsatScheduleGenerator:
         # is capped at 1, not split roughly in half like bonus_high/low
         # themselves.
         bonus_contestable_by_pid: dict[str, object] = {}
+        protected_by_pid: dict[str, object] = {}
         effective_requested_by_pid: dict[str, int] = {}
         deficit_penalty_terms = []
+        # Escalating shortfall (user rule, 2026-10-07, from cpsatv2-jan3:
+        # Krisik landed 2 under her 8 while seven other physicians sat
+        # exactly at request -- she had 13 open days, the solver simply
+        # had no reason to prefer two people one short over one person
+        # two short). Per physician, ordered step booleans count how many
+        # shifts they finish below their request: the 1st missing shift is
+        # already priced by the lost 100/50 request bonus above, the 2nd
+        # and later cost extra and escalate, so when the month is short
+        # of slots (requests > slots) the shortfall is spread one per
+        # physician instead of piled on whoever is cheapest to skip. Also
+        # fed into the lexicographic request tiers below (they freeze every
+        # physician's count, so spreading has to happen *inside* them).
+        _SHORTFALL_STEPS = (0, 300, 600, 1000)
+        shortfall_steps_by_pid: dict[str, list] = {}
         for pid in pids:
             sub = self.submissions[pid]
             cfg = _get_cfg(pid)
@@ -1904,11 +1939,40 @@ class CpsatScheduleGenerator:
                 bonus_high_by_pid[pid] = bonus_high
                 bonus_low_by_pid[pid] = bonus_low
 
-                if not (cfg and cfg.casual) and low_span > 0:
-                    contestable_span = min(1, low_span)
-                    bonus_contestable = model.new_int_var(0, contestable_span, f"reqbonus_contestable_{pid}")
-                    model.add(bonus_contestable <= bonus_low)
-                    bonus_contestable_by_pid[pid] = bonus_contestable
+                if not (cfg and cfg.casual):
+                    # Tier accounting for the casual-priority tiers below.
+                    # `protected` counts this physician's shifts up to
+                    # request-1 (tier 1 maximises it); `contestable` is
+                    # true only when they reach their FULL request (tier 2
+                    # weighs it against casual physicians' demand). Counted
+                    # straight off the shift total, not off bonus_low --
+                    # the old `bonus_low - contestable` form let tier 1
+                    # pick contestable = 0 and silently protect the last
+                    # unit too, so tier 2 could never actually contest it
+                    # (real-run symptom: casuals 0/2 while every normal
+                    # physician sat exactly at request).
+                    protected = model.new_int_var(0, max(1, effective_requested - 1), f"req_protected_{pid}")
+                    model.add(protected <= physician_shift_exprs[pid])
+                    protected_by_pid[pid] = protected
+                    if effective_requested >= 2:
+                        contestable = model.new_bool_var(f"req_contestable_{pid}")
+                        model.add(physician_shift_exprs[pid] >= effective_requested).only_enforce_if(contestable)
+                        bonus_contestable_by_pid[pid] = contestable
+
+                # Escalating shortfall steps (see _SHORTFALL_STEPS above):
+                # sum(steps) >= requested - scheduled, steps ordered so the
+                # k-th one is only ever set once the first k-1 are.
+                steps = [model.new_bool_var(f"short_step{k}_{pid}") for k in range(effective_requested)]
+                model.add(sum(steps) >= effective_requested - physician_shift_exprs[pid])
+                for k in range(len(steps) - 1):
+                    model.add(steps[k] >= steps[k + 1])
+                penalised_steps = []
+                for k, step in enumerate(steps):
+                    weight = _SHORTFALL_STEPS[min(k, len(_SHORTFALL_STEPS) - 1)]
+                    if weight > 0:
+                        deficit_penalty_terms.append(-weight * step)
+                        penalised_steps.append(step)
+                shortfall_steps_by_pid[pid] = penalised_steps
 
             # Small linear term: slight incentive to fill toward max even above requested.
             deficit_penalty_terms.append(3 * physician_shift_exprs[pid])
@@ -2634,29 +2698,31 @@ class CpsatScheduleGenerator:
         # shifts instead of being shut out entirely.
         # ----------------------------------------------------------------
         casual_pids = {pid for pid in pids if getattr(_get_cfg(pid), "casual", False)}
+        # Each tier maximises a count of request units. Units are weighted
+        # 2 and every physician's 2nd-and-later shortfall step is weighted
+        # -1, so within a tier "two people one short" strictly beats "one
+        # person two short", while giving up an extra unit (-2) to avoid a
+        # step (-1) never pays. The tiers freeze each physician's achieved
+        # count afterwards, so this is the only place the spread can be
+        # decided whenever casual physicians make the tiers run at all.
         normal_high_terms = [
-            bonus_high_by_pid[pid] for pid in pids
-            if pid not in casual_pids and pid in bonus_high_by_pid
+            # Every normal physician's request except its last unit (a
+            # physician asking for exactly 1 keeps that single unit here).
+            2 * protected_by_pid[pid] for pid in pids
+            if pid not in casual_pids and pid in protected_by_pid
         ] + [
-            # Everything in bonus_low except the tiny contestable slice --
-            # i.e. all but at most 1 shift of a normal physician's marginal
-            # demand is protected here too, not just their essential half.
-            bonus_low_by_pid[pid] - bonus_contestable_by_pid[pid]
-            for pid in pids
-            if pid not in casual_pids and pid in bonus_low_by_pid and pid in bonus_contestable_by_pid
-        ] + [
-            # A normal physician with low_span == 0 (effective_requested
-            # == 1) never got a bonus_contestable var at all -- their
-            # single unit of demand is entirely essential, full stop.
-            bonus_low_by_pid[pid] for pid in pids
-            if pid not in casual_pids and pid in bonus_low_by_pid and pid not in bonus_contestable_by_pid
+            -step for pid in pids if pid not in casual_pids
+            for step in shortfall_steps_by_pid.get(pid, [])
         ]
         marginal_and_casual_terms = [
-            bonus_contestable_by_pid[pid] for pid in pids
+            2 * bonus_contestable_by_pid[pid] for pid in pids
             if pid not in casual_pids and pid in bonus_contestable_by_pid
         ] + [
-            requested_bonus_by_pid[pid] for pid in pids
+            2 * requested_bonus_by_pid[pid] for pid in pids
             if pid in casual_pids and pid in requested_bonus_by_pid
+        ] + [
+            -step for pid in pids if pid in casual_pids
+            for step in shortfall_steps_by_pid.get(pid, [])
         ]
         casual_bonus_terms = [
             requested_bonus_by_pid[pid] for pid in pids
@@ -2706,11 +2772,16 @@ class CpsatScheduleGenerator:
                 progress_callback(pct, 100, obj, bound)
             return _report
 
-        def _run_priority_tier(tier_label: str, terms: list, progress_pct: int) -> None:
+        def _run_priority_tier(tier_label: str, terms: list, progress_pct: int,
+                               freeze_cap_by_pid: Optional[dict[str, int]] = None) -> None:
             nonlocal remaining_time_limit
             if not terms:
                 return
-            tier_time_limit = min(60.0, max(5.0, time_limit * 0.1))
+            # 120 s cap (was 60): on the 60-minute cpsatv2-jan3 run tier 1
+            # used its whole minute on a ~60k-boolean model and locked an
+            # unproven value; the shortfall spread is decided here, so it
+            # deserves a little more of a long run's budget.
+            tier_time_limit = min(120.0, max(5.0, time_limit * 0.1))
             logger.info("CP-SAT lexicographic: %s", tier_label)
             tier_expr = sum(terms)
             model.maximize(tier_expr)
@@ -2732,6 +2803,11 @@ class CpsatScheduleGenerator:
                 # respected. Capped at each physician's own
                 # effective_requested so this can never ratchet in an
                 # accidental overage beyond what they actually asked for.
+                # Freeze only what THIS tier protects (freeze_cap_by_pid):
+                # tier 1 used to freeze everything it happened to assign,
+                # up to the full request, which quietly settled the
+                # contestable units and the casuals' slots before tier 2 --
+                # the tier meant to decide them -- ever ran.
                 for pid, eff_req in effective_requested_by_pid.items():
                     achieved = sum(
                         tier_cb.best_values.get((pid, d_idx, shift.code), 0)
@@ -2739,7 +2815,8 @@ class CpsatScheduleGenerator:
                         for block in BLOCKS
                         for shift in block
                     )
-                    floor = min(achieved, eff_req)
+                    cap = eff_req if freeze_cap_by_pid is None else freeze_cap_by_pid.get(pid, eff_req)
+                    floor = min(achieved, cap)
                     if floor > 0:
                         model.add(physician_shift_exprs[pid] >= floor)
                 _apply_hint(tier_cb)
@@ -2750,9 +2827,14 @@ class CpsatScheduleGenerator:
         if casual_pids and casual_bonus_terms:
             # Tier 1: every normal physician's ESSENTIAL demand only
             # (bonus_high) — protected ahead of any casual competition.
+            tier1_freeze = {
+                pid: (0 if pid in casual_pids
+                      else eff_req - (1 if pid in bonus_contestable_by_pid else 0))
+                for pid, eff_req in effective_requested_by_pid.items()
+            }
             _run_priority_tier(
                 "tier 1/3 — normal physicians' essential demand (protected from casual competition)",
-                normal_high_terms, 65,
+                normal_high_terms, 65, freeze_cap_by_pid=tier1_freeze,
             )
             # Tier 2: everyone's MARGINAL demand (normal bonus_low) competing
             # together with casual physicians' full demand (bonus_high +

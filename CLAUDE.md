@@ -245,6 +245,25 @@ the human November schedule (user asked for options 1 and 3, not the cap):**
   Near-optimal (<3%) > Still improving when time ran out (amber) > Good
   (<8%) > Sub-optimal (>=8% and not converged, red).
 
+- **Importer bug (evening, found via "how did the solver staff Jan 1?")**:
+  the January template has NO Jan 1 column (DATE row 2..31); the importer's
+  fallback for a day missing from the DATE row was the fixed offset for day
+  1 = column B = Jan 2, so every January submission's Jan 1 was a copy of
+  its Jan 2 (30 physicians "available" on a day nobody offered -- that is
+  how cpsatv2-jan1/jan2 staffed Jan 1). December's template runs 2..31
+  then a trailing "1" (Jan 1) in col AG, which used to be read as Dec 1.
+  Fixed in `importer.py`: the DATE row is split into increasing runs, the
+  longest is the month, a day with no column is NOT offered, and a wrapped
+  trailing run is the next month's leading day(s) -> new
+  `PhysicianSubmission.spillover_days` (dated in the next month; 45 of 74
+  December submissions offer Jan 1). `test_importer_day_columns.py` (4).
+  Consequence: a January solve WITHOUT December loaded now leaves Jan 1's 21
+  slots unfilled (honest -- they're December's); with December loaded the
+  solve starts Jan 2. **Not yet done**: letting a November/December solve
+  actually staff its spill-over day from `spillover_days` (the solver's
+  date range is still one calendar month) -- needed before the solver can
+  produce a Dec 2026-style sheet itself.
+
 **Still to do:**
 1. Before the January solve, in the app: open "Previous month (December
    2026)" in the solver card, paste the December master-sheet link, Browse

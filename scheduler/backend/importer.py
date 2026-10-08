@@ -176,6 +176,84 @@ _NUMBER_WORDS = {
 # Core parser
 # --------------------------------------------------------------------------- #
 
+def _parse_day_column(ws, col: int, date: datetime.date) -> DayAvailability:
+    """One calendar day's availability from its own column of the sheet."""
+    # --- Z marker (wants to work) ---
+    wants = str(_cell(ws, _Z_ROW, col) or "").strip().upper() == "Z"
+
+    # --- Block availability (submission-quality signal for the
+    # validator's min_valid_blocks/anchored-day rules ONLY — this
+    # stays "every row in the block filled", unchanged. It exists to
+    # nudge physicians toward offering whole blocks; some legitimately
+    # don't and have allowances there, which is exactly why scheduling
+    # itself must not rely on it — see available_shifts below.) ---
+    available_blocks: set[int] = set()
+    for block_idx, row_list in enumerate(_BLOCK_ROWS):
+        if all(_is_filled(_cell(ws, r, col)) for r in row_list):
+            available_blocks.add(block_idx)
+
+    # --- Per-shift availability (what the generator actually schedules
+    # against). Each row stands on its own: a physician available for
+    # 2400h RAH A but not 2400h NEHC on the same day is available for
+    # exactly that — not "the whole 2400h block" and not "nothing" —
+    # regardless of whether that makes the block count as valid above.
+    available_shifts: set[str] = {
+        shift_code
+        for row, shift_code in _ROW_TO_SHIFT_CODE.items()
+        if _is_filled(_cell(ws, row, col))
+    }
+
+    # --- Preferred shift (the "Preferred" row, above the main grid) ---
+    # The sheet's own convention is shorthand text (e.g. "15NE",
+    # "18RA") that's ALSO exactly what's typed into that shift's own
+    # row for this day -- so rather than parsing the shorthand
+    # ourselves (ambiguous on its own: "18RA" is printed identically
+    # for both 1800h RAH A side and 1800h RAH B side in this
+    # template), match it against this physician's own per-row text
+    # for this same day and take whichever row(s) it equals. Usually
+    # resolves to exactly one shift code; two when the sheet's
+    # shorthand is genuinely ambiguous between two sites, in which
+    # case both are kept as candidates. DOC/NOC rows are deliberately
+    # excluded here -- on-call assignment isn't part of the same
+    # shifts[] mechanism this feeds (see generator_cpsat.py's
+    # honor_all_requests bonus), so a "NOC"-style preferred entry has
+    # nothing to resolve against and is silently ignored, not an error.
+    preferred_raw = str(_cell(ws, _PREFERRED_ROW, col) or "").strip()
+    preferred_shifts: set[str] = set()
+    if preferred_raw.upper() == "N":
+        # Bare "N" is a different, coarser convention some physicians
+        # use for "a night shift, any site" rather than a specific
+        # site+time code (confirmed against a real submission,
+        # RScheirer, 2026-09-29). Every 2400h code he's actually
+        # available for that day is kept as a candidate -- same
+        # "don't guess a single site" principle as the site-ambiguous
+        # case below, just starting from a coarser signal.
+        preferred_shifts = {
+            shift_code for shift_code in available_shifts if shift_code.startswith("2400h")
+        }
+    elif preferred_raw:
+        for row, shift_code in _ROW_TO_SHIFT_CODE.items():
+            cell_text = str(_cell(ws, row, col) or "").strip()
+            if cell_text and cell_text.upper() == preferred_raw.upper():
+                preferred_shifts.add(shift_code)
+
+    # --- On-call availability (Day On Call / Night On Call) — physicians
+    # type "DOC" / "NOC" on the days they're available for each, on their
+    # own dedicated rows separate from the regular shift grid. ---
+    doc_available = _is_filled(_cell(ws, _DOC_ROW, col))
+    noc_available = _is_filled(_cell(ws, _NOC_ROW, col))
+
+    return DayAvailability(
+            date=date,
+            wants_to_work=wants,
+            available_blocks=frozenset(available_blocks),
+            requested_shifts=frozenset(available_shifts),
+            doc_available=doc_available,
+            noc_available=noc_available,
+            preferred_shifts=frozenset(preferred_shifts),
+    )
+
+
 def _parse_worksheet(
     ws,
     year: int,
@@ -230,95 +308,66 @@ def _parse_worksheet(
     # which then has no availability data and is correctly left as "not
     # submitted" rather than guessed at.
     max_col = min(ws.max_column or 1, _FIRST_DAY_COL + days_in_month + 10)
-    day_to_col: dict[int, int] = {}
+    labeled: list[tuple[int, int]] = []          # (col, day number) in sheet order
     for col in range(_FIRST_DAY_COL, max_col + 1):
         try:
             d = int(_cell(ws, _DATE_ROW, col))
         except (TypeError, ValueError):
             continue
-        if 1 <= d <= days_in_month and d not in day_to_col:
-            day_to_col[d] = col
+        labeled.append((col, d))
+
+    # Split the DATE row into strictly increasing runs. The longest run is
+    # this month (2..31 on the January and December templates). Anything
+    # AFTER it that wraps to a small number is the NEXT month's leading
+    # day(s) -- the department's template for some months (Nov/Dec/Jan, for
+    # holiday planning) carries them at the right-hand end: the December
+    # sheet ends "... 30, 31, 1" where that 1 is Jan 1. Anything BEFORE
+    # the main run would be previous-month days and is ignored. Trailing
+    # repeats of the last day (the template's own "31, 31" summary cells)
+    # are neither. Never let a wrapped 1 become day 1 of THIS month: the
+    # same sheet omits its real day 1 (Dec 1 lives on November's sheet).
+    runs: list[list[tuple[int, int]]] = []
+    for col, d in labeled:
+        if runs and d > runs[-1][-1][1]:
+            runs[-1].append((col, d))
+        else:
+            runs.append([(col, d)])
+    day_to_col: dict[int, int] = {}
+    spill_cols: list[tuple[datetime.date, int]] = []
+    if runs:
+        main_idx = max(range(len(runs)), key=lambda i: len(runs[i]))
+        for col, d in runs[main_idx]:
+            if 1 <= d <= days_in_month and d not in day_to_col:
+                day_to_col[d] = col
+        last_main_day = runs[main_idx][-1][1]
+        for run in runs[main_idx + 1:]:
+            first_day = run[0][1]
+            if not (1 <= first_day <= 7 and first_day < last_main_day):
+                break                       # e.g. the trailing "31, 31" summary cells
+            ny, nm = (year + 1, 1) if month == 12 else (year, month + 1)
+            for col, d in run:
+                if 1 <= d <= 7:
+                    spill_cols.append((datetime.date(ny, nm, d), col))
+            break
 
     for day_num in range(1, days_in_month + 1):
-        col = day_to_col.get(day_num, _day_col(day_num))
         date = datetime.date(year, month, day_num)
-
-        # --- Z marker (wants to work) ---
-        wants = str(_cell(ws, _Z_ROW, col) or "").strip().upper() == "Z"
-
-        # --- Block availability (submission-quality signal for the
-        # validator's min_valid_blocks/anchored-day rules ONLY — this
-        # stays "every row in the block filled", unchanged. It exists to
-        # nudge physicians toward offering whole blocks; some legitimately
-        # don't and have allowances there, which is exactly why scheduling
-        # itself must not rely on it — see available_shifts below.) ---
-        available_blocks: set[int] = set()
-        for block_idx, row_list in enumerate(_BLOCK_ROWS):
-            if all(_is_filled(_cell(ws, r, col)) for r in row_list):
-                available_blocks.add(block_idx)
-
-        # --- Per-shift availability (what the generator actually schedules
-        # against). Each row stands on its own: a physician available for
-        # 2400h RAH A but not 2400h NEHC on the same day is available for
-        # exactly that — not "the whole 2400h block" and not "nothing" —
-        # regardless of whether that makes the block count as valid above.
-        available_shifts: set[str] = {
-            shift_code
-            for row, shift_code in _ROW_TO_SHIFT_CODE.items()
-            if _is_filled(_cell(ws, row, col))
-        }
-
-        # --- Preferred shift (the "Preferred" row, above the main grid) ---
-        # The sheet's own convention is shorthand text (e.g. "15NE",
-        # "18RA") that's ALSO exactly what's typed into that shift's own
-        # row for this day -- so rather than parsing the shorthand
-        # ourselves (ambiguous on its own: "18RA" is printed identically
-        # for both 1800h RAH A side and 1800h RAH B side in this
-        # template), match it against this physician's own per-row text
-        # for this same day and take whichever row(s) it equals. Usually
-        # resolves to exactly one shift code; two when the sheet's
-        # shorthand is genuinely ambiguous between two sites, in which
-        # case both are kept as candidates. DOC/NOC rows are deliberately
-        # excluded here -- on-call assignment isn't part of the same
-        # shifts[] mechanism this feeds (see generator_cpsat.py's
-        # honor_all_requests bonus), so a "NOC"-style preferred entry has
-        # nothing to resolve against and is silently ignored, not an error.
-        preferred_raw = str(_cell(ws, _PREFERRED_ROW, col) or "").strip()
-        preferred_shifts: set[str] = set()
-        if preferred_raw.upper() == "N":
-            # Bare "N" is a different, coarser convention some physicians
-            # use for "a night shift, any site" rather than a specific
-            # site+time code (confirmed against a real submission,
-            # RScheirer, 2026-09-29). Every 2400h code he's actually
-            # available for that day is kept as a candidate -- same
-            # "don't guess a single site" principle as the site-ambiguous
-            # case below, just starting from a coarser signal.
-            preferred_shifts = {
-                shift_code for shift_code in available_shifts if shift_code.startswith("2400h")
-            }
-        elif preferred_raw:
-            for row, shift_code in _ROW_TO_SHIFT_CODE.items():
-                cell_text = str(_cell(ws, row, col) or "").strip()
-                if cell_text and cell_text.upper() == preferred_raw.upper():
-                    preferred_shifts.add(shift_code)
-
-        # --- On-call availability (Day On Call / Night On Call) — physicians
-        # type "DOC" / "NOC" on the days they're available for each, on their
-        # own dedicated rows separate from the regular shift grid. ---
-        doc_available = _is_filled(_cell(ws, _DOC_ROW, col))
-        noc_available = _is_filled(_cell(ws, _NOC_ROW, col))
-
-        days.append(
-            DayAvailability(
-                date=date,
-                wants_to_work=wants,
-                available_blocks=frozenset(available_blocks),
-                requested_shifts=frozenset(available_shifts),
-                doc_available=doc_available,
-                noc_available=noc_available,
-                preferred_shifts=frozenset(preferred_shifts),
-            )
-        )
+        if day_to_col:
+            col = day_to_col.get(day_num)
+        else:
+            col = _day_col(day_num)   # legacy sheet with no DATE row labels at all
+        if col is None:
+            # The sheet has no column for this day (e.g. Jan 1 on the
+            # January template, scheduled with December). It was NOT
+            # offered -- never borrow a neighbouring column's marks. (The
+            # old fixed-offset fallback did exactly that: every January
+            # submission's "Jan 1" was a copy of its Jan 2 column.)
+            days.append(DayAvailability(
+                date=date, wants_to_work=False,
+                available_blocks=frozenset(), requested_shifts=frozenset(),
+            ))
+            continue
+        days.append(_parse_day_column(ws, col, date))
 
         # --- Day-of-week sanity check ---
         # The physician's own row-4 label for this column should match the
@@ -332,6 +381,8 @@ def _parse_worksheet(
             dow_labeled += 1
             if dow_label != _DOW_LABELS[date.weekday()]:
                 dow_mismatched += 1
+
+    spillover_days: list[DayAvailability] = [_parse_day_column(ws, col, d) for d, col in spill_cols]
 
     month_mismatch = dow_labeled > 0 and (dow_mismatched / dow_labeled) > 0.5
 
@@ -359,6 +410,7 @@ def _parse_worksheet(
         shifts_0600h_stated=shifts_0600h_stated,
         days=days,
         source_file=source_file,
+        spillover_days=spillover_days,
         raw_name_candidates=raw_name_candidates,
         month_mismatch=month_mismatch,
     )

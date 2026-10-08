@@ -177,6 +177,13 @@ class PhysicianSubmission:
     days: list[DayAvailability] = field(default_factory=list)
     source_file: str = ""
 
+    # Availability for the NEXT month's leading day(s) when this month's
+    # template carries them (the December sheet ends with a Jan 1 column,
+    # for holiday planning). Dated in the next month; kept out of `days`
+    # so every in-month consumer stays month-bound. Not scheduled yet --
+    # recorded so the data isn't lost (see importer._parse_day_column).
+    spillover_days: list[DayAvailability] = field(default_factory=list)
+
     # Other non-empty text found in row 1 besides physician_name itself
     # (per-xlsx submissions only) — some physicians type their name in the
     # wrong cell (e.g. next to a leftover "insert name here" in A1) rather

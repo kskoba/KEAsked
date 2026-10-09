@@ -5,6 +5,41 @@ it's written for a session with zero memory of prior conversations.
 
 ## ⭐ Next task — start here
 
+**2026-10-09 — on-call isolation fix (`assign_on_calls` in
+`generator.py`), from comparing cpsatv2-nov2 / jan3 with the human
+November and January schedules:**
+- Finding (user's definitions): a weekend call is *isolated* when the
+  physician has no regular shift anywhere in that Fri-Sun cluster; a
+  midweek call when there is no shift within 2 days either side. Solver
+  isolated **13/16 and 19/20** weekend calls vs the human's 7/15 and
+  11/24; midweek 10/33 and 9/32 vs 8/34 and 7/31.
+- Cause: the greedy pass was physician-first with weekdays ranked first
+  for everyone, so weekend slots went to whoever was left; and its
+  isolation check used +/-2 days, so a Friday call "attached" to a
+  Wednesday shift.
+- Fix: **Phase A** walks the weekend call slots and gives each to an
+  eligible physician who already works that Fri-Sun cluster (ranked by
+  linkage match, then fewest call-available days); `call_linkage:
+  independent` physicians are skipped. **Phase B** is the old
+  physician-first pass for everything left. `_isolation_rank` now uses
+  the cluster for weekends and +/-2 days for midweek. Eligibility checks
+  were factored into `_eligible` (unchanged rules).
+- Replayed on the real nov2/jan3 regular schedules: weekend isolated
+  13/16 -> 7/16 (human 7/15) and 19/20 -> 7/21 (human 11/24); midweek
+  10/33 -> 7/34 and 9/32 -> 4/30; fill 49 -> 50 and 52 -> 51.
+- Tests: `test_oncall_weekend_slot_first.py` (4). Fixture note: the pass
+  only considers dates that carry at least one regular slot, and a DOC
+  the day after a shift is only legal after a 0600h start (23 h exactly).
+- Still greedy and post-solve; moving on-call into CP-SAT (option 3) was
+  explicitly NOT asked for.
+- November run report (cpsatv2-nov2, 45 min, first run with the shortfall
+  + anchor-heavy rules and October carry-over):
+  https://claude.ai/code/artifact/d38a4f91-d66a-4a26-a1a2-c77819e9eb20
+  Watch item from it: Fisher 3/5 nights while Bacon/Lung/Gunawan each got
+  2 unrequested nights; A Hanson 0/10 nights and Taylor 0/1 0600h are
+  sheet data issues.
+
+
 **2026-10-07 (late evening, this machine) — two user rules from the
 cpsatv2-jan3 review, UNCOMMITTED as of this writing (`git status`):**
 - **Escalating shortfall** (`_SHORTFALL_STEPS = (0, 300, 600, 1000)` in

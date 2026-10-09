@@ -1614,6 +1614,9 @@ class ScheduleGenerator:
           - DOC preferred during the day; NOC preferred at night — both are
             acceptable; DOC is tried first per available day.
           - Prefer weekdays; avoid weekends where possible.
+          - Weekend call slots are filled first, slot by slot, from
+            physicians who already work that Fri-Sun weekend (Phase A);
+            everything else is physician-first (Phase B).
           - Full-time physicians should ideally each receive 1 call.
           - Unfilled calls are noted but do not block schedule release.
           - Does NOT modify regular assignments — purely additive.
@@ -1666,39 +1669,41 @@ class ScheduleGenerator:
                 return 0 if (prev_shift is None and next_shift is None) else 2
             return 1
 
+        def _weekend_cluster(call_date: datetime.date) -> set[datetime.date]:
+            """The Fri/Sat/Sun cluster containing call_date (empty for Mon-Thu)."""
+            wd = call_date.weekday()
+            if wd not in _WEEKEND_WEEKDAYS:
+                return set()
+            fri = call_date - datetime.timedelta(days=wd - 4)
+            return {fri + datetime.timedelta(days=i) for i in range(3)}
+
         def _isolation_rank(pid: str, call_date: datetime.date) -> int:
             """
-            0 = not an isolated weekend call (weekday call, or a weekend
-            call with a regular shift within 2 calendar days either side),
-            1 = an isolated weekend call -- still eligible, just tried after
-            every 0 candidate for this physician.
+            0 = the call sits next to this physician's own regular work,
+            1 = an isolated call -- still eligible, just tried after every
+            0 candidate.
 
-            Checked against real June/October 2026 human-built schedules
-            (2026-09-24): isolated weekend calls do happen there (~17-19%
-            of weekend calls, using this same +/-2-day definition), so this
-            is a soft ordering preference, not a hard block like an earlier,
-            reverted version of this method had -- humans clearly treat
-            "adjacent to my other work" as a strong preference, not an
-            absolute rule, and a hard block cost real call fill rate to
-            enforce a stricter standard than actual practice uses. The
-            previous version of assign_on_calls had no such preference at
-            all (pure chronological fallback), which tested at ~3x the
-            human isolation rate on a real Oct 2026 solve (53% vs 19%) --
-            this closes that gap without reintroducing the fill-rate cost.
+            Definitions (user's, 2026-10-09, from comparing cpsatv2-nov2 /
+            jan3 with the human November and January schedules):
+              * weekend (Fri/Sat/Sun) call: isolated when the physician has
+                NO regular shift anywhere in that Fri-Sun cluster;
+              * midweek (Mon-Thu) call: isolated when there is no regular
+                shift within 2 days either side.
+            The old +/-2-day check for weekends let a Friday call count as
+            "attached" to a Wednesday shift. Under the cluster definition
+            the human schedules isolate 46-47% of weekend calls and the
+            solver isolated 81-95% (13/16 and 19/20), which is what the
+            slot-first weekend pass below is for. Human midweek isolation
+            is 23-24%; the solver's was 28-30%.
             """
-            if call_date.weekday() not in _WEEKEND_WEEKDAYS:
-                return 0
+            cluster = _weekend_cluster(call_date)
+            if cluster:
+                return 0 if any(shift_by_pid_date.get((pid, d)) is not None for d in cluster) else 1
             for delta in (-2, -1, 1, 2):
                 if shift_by_pid_date.get((pid, call_date + datetime.timedelta(days=delta))) is not None:
                     return 0
             return 1
 
-        # Build per-physician on-call availability:
-        # pid -> [(date, call_type)] sorted weekdays first, then by date
-        # Only days this result actually scheduled get on-call assigned. A
-        # month solved from its 2nd (its 1st staffed on the previous month's
-        # sheet, e.g. Jan 1 2027 on the December sheet, call included) has no
-        # regular slots on the 1st, and must not get a 2nd DOC/NOC there.
         scheduled_days = {a.date for a in result.assignments} | {u.date for u in result.unfilled}
         avail: dict[str, list[tuple[datetime.date, str]]] = {}
         for pid, sub in self.submissions.items():
@@ -1731,64 +1736,106 @@ class ScheduleGenerator:
                 avail[pid] = days_list
 
         # Greedy assignment: each physician gets at most 1 call.
+        def _eligible(pid: str, call_date: datetime.date, call_type: str) -> bool:
+            """Hard rules for one physician taking one call slot (slot must be open)."""
+            if (call_date, call_type) in filled_call_slots:
+                return False
+            # Must not have a regular shift on the call day
+            if pid in shift_dates.get(call_date, set()):
+                return False
+            # NOTE: an earlier version of this method hard-blocked an
+            # "isolated" weekend call. Rolled back 2026-09-23 -- checked
+            # real June and October 2026 human-built schedules and isolated
+            # weekend calls are normal, accepted practice there too, and
+            # the hard block cost real fill rate (54/62 -> 35/62 on a real
+            # Oct 2026 solve). Isolation is a soft ordering preference
+            # (_isolation_rank) plus the slot-first weekend pass below,
+            # never a block.
+            #
+            # Next-day rest: no regular shift the day after the call --
+            # except call_linkage="doc_before_evening"'s one confirmed-
+            # safe case (DOC immediately before an evening-start shift;
+            # see _linkage_rank's docstring and this method's own).
+            next_day = call_date + datetime.timedelta(days=1)
+            next_day_shift = shift_by_pid_date.get((pid, next_day))
+            if next_day_shift is not None:
+                cfg_l = (self.roster.get(pid)
+                          or self._roster_lower.get(pid.lower())
+                          or self._roster_by_name.get(pid.lower()))
+                exempt = (
+                    cfg_l and cfg_l.call_linkage == "doc_before_evening"
+                    and call_type == "DOC"
+                    and next_day_shift.time in _EVENING_SHIFT_TIMES
+                )
+                if not exempt:
+                    return False
+            # Previous-day rest: the shift worked the day before (if any)
+            # must be properly spaced from this on-call's start time --
+            # this is what catches e.g. a 2400h shift followed by DOC
+            # (0500h) the next morning, a 5-hour gap.
+            prev_shift = shift_by_pid_date.get((pid, call_date - datetime.timedelta(days=1)))
+            if prev_shift is not None and not is_spacing_ok(prev_shift, Shift(time=call_type, site="")):
+                return False
+            return True
+
+        def _assign(pid: str, call_date: datetime.date, call_type: str) -> None:
+            on_calls.append(OnCallAssignment(
+                date=call_date,
+                call_type=call_type,
+                physician_id=pid,
+                physician_name=self.submissions[pid].physician_name,
+            ))
+            filled_call_slots.add((call_date, call_type))
+            assigned_pids.add(pid)
+
+        assigned_pids: set[str] = set()
+
+        # Phase A -- weekend call slots, SLOT-first (2026-10-09). The
+        # physician-first pass below fills weekday slots first (everyone
+        # prefers weekdays), so weekend slots used to go to whoever was
+        # left, regardless of whether they worked that weekend: 81-95% of
+        # the solver's weekend calls were isolated vs 46-47% in the human
+        # schedules. Here each weekend slot first looks for a physician who
+        # already has a regular shift in that Fri-Sun cluster and is
+        # otherwise eligible. Only such "attached" assignments are made in
+        # this phase -- anything it cannot place falls through to Phase B
+        # exactly as before, so fill rate can only go up. Physicians whose
+        # call_linkage is "independent" asked for calls AWAY from their
+        # shifts and are left to Phase B.
+        avail_set: dict[str, set[tuple[datetime.date, str]]] = {pid: set(days) for pid, days in avail.items()}
+        weekend_slots = sorted(
+            (d, ct) for d in scheduled_days if d.weekday() in _WEEKEND_WEEKDAYS for ct in ("DOC", "NOC")
+        )
+        for call_date, call_type in weekend_slots:
+            candidates = []
+            for pid in avail:
+                if pid in assigned_pids or (call_date, call_type) not in avail_set[pid]:
+                    continue
+                cfg_c = (self.roster.get(pid)
+                         or self._roster_lower.get(pid.lower())
+                         or self._roster_by_name.get(pid.lower()))
+                if cfg_c and cfg_c.call_linkage == "independent":
+                    continue
+                if _isolation_rank(pid, call_date) != 0 or not _eligible(pid, call_date, call_type):
+                    continue
+                # Rank: linkage preference met first, then the physician
+                # with the fewest call-available days (hardest to place
+                # elsewhere), then stable order.
+                candidates.append((_linkage_rank(pid, call_date, call_type), len(avail_set[pid]), pid))
+            if candidates:
+                candidates.sort()
+                _assign(candidates[0][2], call_date, call_type)
+
+        # Phase B -- physician-first, as before: each remaining physician
+        # takes the first slot on their own ranked list (linkage preference,
+        # weekdays before weekends, attached before isolated, date).
         for pid, call_days in avail.items():
-            sub = self.submissions[pid]
+            if pid in assigned_pids:
+                continue
             for call_date, call_type in call_days:
-                # Skip if this (date, type) slot already has someone
-                if (call_date, call_type) in filled_call_slots:
+                if not _eligible(pid, call_date, call_type):
                     continue
-                # Must not have a regular shift on the call day
-                if pid in shift_dates.get(call_date, set()):
-                    continue
-                # NOTE: an earlier version of this method hard-blocked an
-                # "isolated" weekend call (a Fri/Sat/Sun call for a physician
-                # with no other regular shift that same weekend). Rolled
-                # back 2026-09-23 -- checked real June and October 2026
-                # human-built schedules and isolated weekend calls are
-                # normal, accepted practice there too (18% and 38% of all
-                # weekend calls respectively, not an anomaly), and the hard
-                # block was costing real fill rate (call fill dropped from
-                # 54/62 to 35/62 on a real Oct 2026 solve) to enforce a
-                # stricter standard than actual practice uses. Replaced
-                # 2026-09-24 with _isolation_rank's soft ordering preference
-                # instead (see its docstring above) -- isolation is now
-                # tried last per physician, never blocked outright.
-                #
-                # Next-day rest: no regular shift the day after the call —
-                # except call_linkage="doc_before_evening"'s one confirmed-
-                # safe case (DOC immediately before an evening-start shift;
-                # see _linkage_rank's docstring and this method's own).
-                next_day = call_date + datetime.timedelta(days=1)
-                next_day_shift = shift_by_pid_date.get((pid, next_day))
-                if next_day_shift is not None:
-                    cfg_l = (self.roster.get(pid)
-                              or self._roster_lower.get(pid.lower())
-                              or self._roster_by_name.get(pid.lower()))
-                    exempt = (
-                        cfg_l and cfg_l.call_linkage == "doc_before_evening"
-                        and call_type == "DOC"
-                        and next_day_shift.time in _EVENING_SHIFT_TIMES
-                    )
-                    if not exempt:
-                        continue
-                # Previous-day rest: the shift worked the day before (if
-                # any) must be properly spaced from this on-call's start
-                # time — this is what catches e.g. a 2400h shift followed
-                # by DOC (0500h) the next morning, a 5-hour gap.
-                prev_day = call_date - datetime.timedelta(days=1)
-                prev_shift = shift_by_pid_date.get((pid, prev_day))
-                if prev_shift is not None:
-                    on_call_shift = Shift(time=call_type, site="")
-                    if not is_spacing_ok(prev_shift, on_call_shift):
-                        continue
-                # Assign
-                on_calls.append(OnCallAssignment(
-                    date=call_date,
-                    call_type=call_type,
-                    physician_id=pid,
-                    physician_name=sub.physician_name,
-                ))
-                filled_call_slots.add((call_date, call_type))
+                _assign(pid, call_date, call_type)
                 break   # one call per physician per month
 
         result.on_calls = on_calls

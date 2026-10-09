@@ -82,6 +82,8 @@ export default function Sidebar({ scheduleData, importResult = null, physicianVi
     optimality_gap_pct = null,
     solve_seconds = null,
     stalled_seconds = null,
+    recent_gain_pct = null,
+    recent_gain_window_seconds = null,
   } = stats
 
   const fillPct = total_slots > 0 ? Math.round((filled_slots / total_slots) * 100) : 0
@@ -135,11 +137,20 @@ export default function Sidebar({ scheduleData, importResult = null, physicianVi
                 const gap = optimality_gap_pct ?? 0
                 const gapText = optimality_gap_pct != null ? `${gap < 1 ? gap.toFixed(2) : gap.toFixed(1)}% gap` : 'gap unknown'
                 const stalled = solve_seconds != null && stalled_seconds != null ? stalled_seconds : null
-                // "Converged": no better schedule for the last 10 minutes, or
-                // the last quarter of the run for shorter runs.
+                // "Converged": the score barely moved over the final window
+                // (last 10 min, or last quarter of a shorter run) -- under
+                // 0.1% of the objective is tie-break crumbs, whatever the
+                // stall timer says. Seen on a real 60-min run: 0.04% in the
+                // last 10 min, yet a 6-point improvement 8 s before the end.
+                // Falls back to the stall timer for older results.
+                const CONVERGED_GAIN_PCT = 0.1
                 const convergeAfter = solve_seconds != null ? Math.min(600, Math.max(60, solve_seconds * 0.25)) : null
-                const converged = stalled !== null && stalled >= convergeAfter
-                const stillImproving = stalled !== null && stalled < 30
+                const flattened = recent_gain_pct != null && recent_gain_pct < CONVERGED_GAIN_PCT
+                const converged = flattened || (stalled !== null && stalled >= convergeAfter)
+                const stillImproving = !flattened && stalled !== null && stalled < 30
+                const gainText = recent_gain_pct != null && recent_gain_window_seconds != null
+                  ? `the score moved ${recent_gain_pct}% in the last ${Math.round(recent_gain_window_seconds / 60)} min`
+                  : null
                 const mins = (s) => s >= 90 ? `${Math.round(s / 60)} min` : `${Math.round(s)} s`
                 let label, colors, dotColor, tooltip
                 if (isOptimal) {
@@ -149,7 +160,10 @@ export default function Sidebar({ scheduleData, importResult = null, physicianVi
                 } else if (converged) {
                   label = `Converged (${gapText})`
                   colors = 'bg-sky-50 border-sky-300 text-sky-700'; dotColor = 'bg-sky-500'
-                  tooltip = `No better schedule was found in the last ${mins(stalled)} of a ${mins(solve_seconds)} run. The ${gapText} is the distance to a bound the solver could not tighten further, not evidence of a better schedule. More time is unlikely to help.`
+                  tooltip = (gainText
+                    ? `In a ${mins(solve_seconds)} run ${gainText}: tie-break-sized changes only.`
+                    : `No better schedule was found in the last ${mins(stalled)} of a ${mins(solve_seconds)} run.`)
+                    + ` The ${gapText} is the distance to a bound the solver could not tighten further, not evidence of a better schedule. More time is unlikely to help.`
                 } else if (gap < 3) {
                   label = `Near-optimal (${gapText})`
                   colors = 'bg-sky-50 border-sky-300 text-sky-700'; dotColor = 'bg-sky-500'
@@ -157,7 +171,7 @@ export default function Sidebar({ scheduleData, importResult = null, physicianVi
                 } else if (stillImproving) {
                   label = `Still improving when time ran out (${gapText})`
                   colors = 'bg-amber-50 border-amber-300 text-amber-700'; dotColor = 'bg-amber-500'
-                  tooltip = `The solver found a better schedule in the last ${mins(stalled)} of the run — a longer time limit would likely improve this.`
+                  tooltip = `The solver found a better schedule in the last ${mins(stalled)} of the run${gainText ? ` and ${gainText}` : ''} — a longer time limit would likely improve this.`
                 } else if (gap < 8) {
                   label = `Good solution (${gapText})`
                   colors = 'bg-amber-50 border-amber-300 text-amber-700'; dotColor = 'bg-amber-500'

@@ -112,6 +112,11 @@ class ScheduleStats:
     # still improving at the buzzer would genuinely benefit from more time.
     solve_seconds: float | None = None
     stalled_seconds: float | None = None
+    # Objective gain over the final window of the run, as % of the final
+    # objective, and that window's length. Under ~0.1% means the search had
+    # flattened out whatever the stall time says.
+    recent_gain_pct: float | None = None
+    recent_gain_window_seconds: float | None = None
 
 
 @dataclass

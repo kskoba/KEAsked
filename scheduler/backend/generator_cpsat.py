@@ -92,6 +92,7 @@ class _SolutionCallback(_cp_model.CpSolverSolutionCallback if _ORTOOLS_AVAILABLE
         self.best_objective: float = float('-inf')
         self.best_bound: float = 0.0
         self.best_time: float = 0.0            # solver wall-clock seconds when the incumbent was found
+        self.history: list[tuple[float, float]] = []   # (wall seconds, objective) per improving solution
 
     def on_solution_callback(self) -> None:
         obj = self.objective_value
@@ -100,6 +101,7 @@ class _SolutionCallback(_cp_model.CpSolverSolutionCallback if _ORTOOLS_AVAILABLE
             self.best_values = {k: self.value(v) for k, v in self._shift_vars.items()}
             self.best_bound = self.best_objective_bound
             self.best_time = self.wall_time
+            self.history.append((self.best_time, obj))
             if self._live_progress is not None:
                 self._live_progress(self.best_objective, self.best_bound)
         if self._should_stop is not None and self._should_stop():
@@ -109,6 +111,41 @@ class _SolutionCallback(_cp_model.CpSolverSolutionCallback if _ORTOOLS_AVAILABLE
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def recent_gain_pct(history: list[tuple[float, float]], wall_time: float, window: float) -> float | None:
+    """
+    How much the best objective rose over the last ``window`` seconds of a
+    run, as a percentage of the final objective. ``history`` is the
+    (seconds, objective) pair recorded at each improving solution. The
+    objective at the window's start is the best value found at or before
+    that moment (a step function), or the first value found if the window
+    reaches back before any solution. None without a solution.
+
+    This is the convergence signal that matters: a run whose last 10
+    minutes moved the score by 0.04% has converged for practical purposes
+    even if a 6-point tie-break turned up 8 seconds before the end (seen
+    on a real 60-minute January run, 2026-10-09), whereas "seconds since
+    the last improvement" calls that run still improving.
+    """
+    if not history:
+        return None
+    final = history[-1][1]
+    if final == 0:
+        return None
+    start_t = wall_time - window
+    at_start = history[0][1]
+    for t, obj in history:
+        if t <= start_t:
+            at_start = obj
+        else:
+            break
+    return round(abs(final - at_start) / abs(final) * 100, 3)
+
+
+# Window over which the end-of-run gain is measured: the last 10 minutes,
+# or the last quarter of a shorter run.
+_RECENT_GAIN_WINDOW_MAX = 600.0
+
 
 def _all_shifts() -> list[Shift]:
     """Return a flat list of every Shift across all blocks."""
@@ -3109,6 +3146,9 @@ class CpsatScheduleGenerator:
                 result.stats.optimality_gap_pct = round(gap_pct, 2)
                 result.stats.solve_seconds = round(wall_time, 1)
                 result.stats.stalled_seconds = round(max(0.0, wall_time - solution_cb.best_time), 1)
+                window = min(_RECENT_GAIN_WINDOW_MAX, max(60.0, wall_time * 0.25))
+                result.stats.recent_gain_window_seconds = round(window, 1)
+                result.stats.recent_gain_pct = recent_gain_pct(solution_cb.history, wall_time, window)
                 logger.info(
                     "CP-SAT quality: status=%s  obj=%.0f  bound=%.0f  gap=%.2f%%",
                     result.stats.solver_status, obj, bound, gap_pct,

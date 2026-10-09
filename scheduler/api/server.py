@@ -2492,6 +2492,7 @@ async def generate(body: GenerateCachedRequest) -> ScheduleResponse:
         _optimality_gap_pct = result.stats.optimality_gap_pct if result.stats else None
         _solve_seconds = result.stats.solve_seconds if result.stats else None
         _stalled_seconds = result.stats.stalled_seconds if result.stats else None
+        _recent_gain = (result.stats.recent_gain_pct, result.stats.recent_gain_window_seconds) if result.stats else (None, None)
         # Post-solve repair: juggle adjacent assignments to fill remaining gaps
         if result.unfilled:
             result = await asyncio.to_thread(gen.repair_pass, result, 50)
@@ -2525,6 +2526,7 @@ async def generate(body: GenerateCachedRequest) -> ScheduleResponse:
             result.stats.optimality_gap_pct = _optimality_gap_pct
             result.stats.solve_seconds = _solve_seconds
             result.stats.stalled_seconds = _stalled_seconds
+            result.stats.recent_gain_pct, result.stats.recent_gain_window_seconds = _recent_gain
     except Exception as exc:
         _state["progress"]["running"] = False
         raise HTTPException(status_code=500, detail=f"Generation failed: {exc}\n{traceback.format_exc()}")

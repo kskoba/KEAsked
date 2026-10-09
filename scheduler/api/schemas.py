@@ -365,6 +365,8 @@ class ScheduleStatsSchema(BaseModel):
     optimality_gap_pct: float | None = None
     solve_seconds: float | None = None      # final-tier wall time
     stalled_seconds: float | None = None    # seconds from the last improving solution to the end of the run
+    recent_gain_pct: float | None = None    # objective gain over the final window, % of final objective
+    recent_gain_window_seconds: float | None = None
 
 
 class OnCallAssignmentSchema(BaseModel):

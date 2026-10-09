@@ -105,3 +105,46 @@ def test_independent_linkage_physician_is_left_to_phase_b():
     calls = _calls(res)
     assert calls.get((9, "DOC")) == "Away", calls
     assert calls.get((12, "DOC")) == "Solo", calls
+
+
+# --------------------------------------------------------------------------- #
+# Rest around a call follows department practice (2026-10-09, all four allowed)
+# --------------------------------------------------------------------------- #
+
+def _call_case(call_day: int, call_type: str, shifts: list[tuple[int, str]]):
+    """Physician 'A' offers exactly one call; works the given (day, 'time site') shifts.
+    A call-less 'Filler' makes every day a scheduled day."""
+    days = [DayAvailability(date=datetime.date(YEAR, MONTH, d), wants_to_work=True,
+                            available_blocks=frozenset(range(5)), requested_shifts=frozenset(),
+                            doc_available=(d == call_day and call_type == "DOC"),
+                            noc_available=(d == call_day and call_type == "NOC"))
+            for d in range(1, DAYS + 1)]
+    sub = PhysicianSubmission(physician_id="A", physician_name="A", year=YEAR, month=MONTH,
+                              shifts_requested=4, shifts_min=0, shifts_max=4, days=days)
+    assignments = [Assignment(date=datetime.date(YEAR, MONTH, d), shift=Shift(*code.split(" ", 1)),
+                              physician_id="A", physician_name="A") for d, code in shifts]
+    assignments += [Assignment(date=datetime.date(YEAR, MONTH, d), shift=Shift("0900h", "NEHC"),
+                               physician_id="Filler", physician_name="Filler") for d in range(1, DAYS + 1)]
+    res = ScheduleResult(year=YEAR, month=MONTH, assignments=assignments)
+    gen = ScheduleGenerator([sub], {"A": PhysicianConfig(id="A", name="A")}, CFG)
+    return [(o.physician_id, o.date.day, o.call_type) for o in gen.assign_on_calls(res).on_calls]
+
+
+def test_doc_may_be_followed_by_a_next_day_shift_from_1000h():
+    assert _call_case(12, "DOC", [(13, "1200h NEHC")]) == [("A", 12, "DOC")]
+    assert _call_case(12, "DOC", [(13, "0600h NEHC")]) == []            # 0600h the next morning is still too soon
+
+
+def test_noc_may_be_followed_only_by_the_next_nights_2400h():
+    assert _call_case(12, "NOC", [(13, "2400h NEHC")]) == [("A", 12, "NOC")]
+    assert _call_case(12, "NOC", [(13, "1200h NEHC")]) == []
+
+
+def test_doc_may_follow_a_previous_day_0600h_only():
+    assert _call_case(12, "DOC", [(11, "0600h NEHC")]) == [("A", 12, "DOC")]
+    assert _call_case(12, "DOC", [(11, "1200h NEHC")]) == []
+
+
+def test_noc_may_follow_a_previous_day_shift_that_ends_by_0200():
+    assert _call_case(12, "NOC", [(11, "1800h RAH A side")]) == [("A", 12, "NOC")]
+    assert _call_case(12, "NOC", [(11, "2400h NEHC")]) == []            # a night ending 0800 is too close

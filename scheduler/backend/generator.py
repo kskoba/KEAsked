@@ -1757,30 +1757,39 @@ class ScheduleGenerator:
             # (_isolation_rank) plus the slot-first weekend pass below,
             # never a block.
             #
-            # Next-day rest: no regular shift the day after the call --
-            # except call_linkage="doc_before_evening"'s one confirmed-
-            # safe case (DOC immediately before an evening-start shift;
-            # see _linkage_rank's docstring and this method's own).
-            next_day = call_date + datetime.timedelta(days=1)
-            next_day_shift = shift_by_pid_date.get((pid, next_day))
+            # Rest around a call -- department practice, not the 23h shift-
+            # to-shift rule (user decision 2026-10-09, after tabulating every
+            # adjacent-shift pattern in the human January schedule: on-call
+            # is treated as a lighter obligation than a shift). Of 55 human
+            # calls, 8 were NOC then the next night's 2400h, 7 an 1800h shift
+            # then NOC, 6 DOC then a 1200h shift, 6 a 0600h shift then DOC,
+            # and 8 more DOC followed by a 1000h-2000h shift. The old rules
+            # (no shift at all the day after a call; 23h spacing before it)
+            # forbade every one of those, which made an "attached" weekend
+            # call almost unreachable (8 of 22 slots had any candidate).
+            #
+            #   after DOC  (0500-1559): next-day shift may start 1000h or later
+            #   after NOC  (1600-0459): next-day shift may only be the 2400h night
+            #   before DOC:             previous-day shift may only be a 0600h
+            #                           (ends 1400; 15 h before the 0500 start)
+            #   before NOC:             previous-day shift must end by ~0200,
+            #                           i.e. start 0600h through 1800h
+            next_day_shift = shift_by_pid_date.get((pid, call_date + datetime.timedelta(days=1)))
             if next_day_shift is not None:
-                cfg_l = (self.roster.get(pid)
-                          or self._roster_lower.get(pid.lower())
-                          or self._roster_by_name.get(pid.lower()))
-                exempt = (
-                    cfg_l and cfg_l.call_linkage == "doc_before_evening"
-                    and call_type == "DOC"
-                    and next_day_shift.time in _EVENING_SHIFT_TIMES
-                )
-                if not exempt:
-                    return False
-            # Previous-day rest: the shift worked the day before (if any)
-            # must be properly spaced from this on-call's start time --
-            # this is what catches e.g. a 2400h shift followed by DOC
-            # (0500h) the next morning, a 5-hour gap.
+                if call_type == "DOC":
+                    if next_day_shift.start_hour < 10:
+                        return False
+                else:  # NOC
+                    if next_day_shift.time != "2400h":
+                        return False
             prev_shift = shift_by_pid_date.get((pid, call_date - datetime.timedelta(days=1)))
-            if prev_shift is not None and not is_spacing_ok(prev_shift, Shift(time=call_type, site="")):
-                return False
+            if prev_shift is not None:
+                if call_type == "DOC":
+                    if prev_shift.time != "0600h":
+                        return False
+                else:  # NOC
+                    if prev_shift.start_hour > 18:
+                        return False
             return True
 
         def _assign(pid: str, call_date: datetime.date, call_type: str) -> None:

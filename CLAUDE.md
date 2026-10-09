@@ -5,6 +5,25 @@ it's written for a session with zero memory of prior conversations.
 
 ## ⭐ Next task — start here
 
+**2026-10-09 (later) — call rest rules relaxed to department practice
+(`_eligible` in `assign_on_calls`, generator.py), user decision "allow all 4":**
+- Finding: with the slot-first weekend pass live (Unraid confirmed at
+  c29caf7 by replaying jan5's calls locally, 53/53 identical), jan5 still
+  isolated 15/22 weekend calls because only 8 of 22 slots had ANY attached
+  physician who passed the old rest rules (no shift the day after a call;
+  23h spacing before). Tabulating all 55 human January calls: NOC -> next
+  night's 2400h (8), 1800h shift -> NOC (7), DOC -> 1200h next day (6),
+  0600h -> DOC next day (6), DOC -> 1000h-2000h next day (8). The old rules
+  forbade every one.
+- Now: after DOC a next-day shift may start >= 1000h; after NOC only the
+  next night's 2400h; before DOC only a 0600h; before NOC a shift starting
+  0600h-1800h (ends by ~0200). The doc_before_evening exemption is
+  subsumed. Replayed: jan5 weekend isolated 15/22 -> 10/25 (fill 53 -> 56),
+  jan4 10/24 -> 6/25 (54 -> 56). +4 tests in
+  `test_oncall_weekend_slot_first.py`. Post-solve only -> new generates.
+- Also today: `recent_gain_pct` convergence verdict (e026b5d). Unraid needs
+  a rebuild for both; neither pushed yet.
+
 **2026-10-09 — on-call isolation fix (`assign_on_calls` in
 `generator.py`), from comparing cpsatv2-nov2 / jan3 with the human
 November and January schedules:**

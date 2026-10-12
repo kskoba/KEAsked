@@ -1,9 +1,73 @@
-# KEAsked — session handoff (updated 2026-10-07)
+# KEAsked — session handoff (updated 2026-10-09)
 
 Picking up on a different machine / fresh chat? Read this whole file first —
 it's written for a session with zero memory of prior conversations.
 
 ## ⭐ Next task — start here
+
+**2026-10-10 — Lung's 0/2 anchors (jan4/5/6), fixed in
+`generator_cpsat.py`; UNCOMMITTED as of this writing (`git status`):**
+- Diagnosis (same solo-vs-joint technique): solo, Lung's real January
+  sheet gets 4 nights, so no hard rule blocks him. His only anchor
+  availability is 2400h on 5 weekend dates (Jan 2, 8, 9, 15, 16). In the
+  joint solve January's 120 night slots carry 118 stated 2400h requests
+  (126 with the Lam/Rico merge), and the 0/0 floor was solved only in its
+  own stage AFTER stage B had locked every requester's slots -- so Lung's
+  first night needed a multi-swap chain. A local replay showed that floor
+  stage ending FEASIBLE (unproven) at its 60 s cap with Lung and Chee at
+  zero, Lucyk/Rosenblum 1/2 -- exactly jan6. Forcing Lung >= 1 inside it
+  with 300 s found a schedule, so the night was reachable; the stage just
+  never found it. Meanwhile N Lam and Velji each held a 4th night against
+  3 requested (overage), which is what Lung should have had.
+- **User rule (2026-10-10)**: floor physicians must NOT outweigh anyone's
+  stated anchor request ("someone requesting 2 2400h gets 2 2400h");
+  the floor only takes anchors that would otherwise be overage. A first
+  attempt that put the floor's first unit in stage A (above requesters'
+  2nd+ units) was rejected for exactly that reason and reverted.
+- Fix, three parts, all inside the rule (stated units are locked before
+  any of them run, so they can only ever redirect overage):
+  1. The floor's FIRST unit is also decided inside stage B (requester
+     depth) at a weight strictly below every stated unit (requester
+     weights scaled by floor-count + 1, floor got1 weight 1), with a
+     per-physician lock after stage B. On real data this alone did NOT
+     reach Lung (stage B is 60 s FEASIBLE and the scaled requester terms
+     dominate), kept because it costs nothing and helps easy cases.
+  2. **Floor stage cap 60 s -> 300 s** (`floor_tier_time_limit`). This is
+     what works: the same stage, unforced, found Lung's night (Jan 8 RAH
+     B) at 300 s where 60 s left him at zero. Costs up to 4 extra minutes
+     of a 45-60 min run's final solve.
+  3. New post-solve pass `scheduler/backend/anchor_floor_repair.py`
+     (runs in `/api/generate` after weekend repair): a floor physician
+     below their floor takes an anchor its holder has beyond their
+     STATED request, giving a non-anchor shift back; a pair of overage
+     nights can be split between two floor physicians at once. Rule-
+     checked through the generator plus HC-10 and HC-13b (never leaves
+     the holder an isolated night). Honest result on real data: **0
+     trades** on jan6 and on this morning's replay -- Velji's Jan 2 needs
+     Lung's Jan 3 moved too (23 h spacing) and N Lam's Jan 9 would orphan
+     his Jan 10 with nobody offering it: 3-move chains, which only the
+     CP-SAT floor stage finds. The pass is kept for the simple cases
+     (unpaired nights, 0600h overage -- jan2 had 7 0600h beyond request).
+- Every lexicographic stage now logs `-> status=... objective=... wall=`
+  and the floor stage logs who is still at zero / below floor -- grep
+  `lexicographic` in the docker log after a real run.
+- Tests: `test_anchor_floor_vs_requester_depth.py` (2): (a) four
+  requesters' 2nd night vs a 0/0 physician's only night day -> requesters
+  keep 2 each, floor gets 0; (b) same with 1 requested each -> the floor
+  takes a day-10 slot instead of a requester's overage. Fixture lesson:
+  give requesters `allow_isolated_nights=True` or single-night days are
+  illegal for them. `test_anchor_floor_repair.py` (7: trade, stated
+  never taken, HC-13b guard, only_2400h skipped, floor targets, pair
+  split, pair-split rollback). Floor/fairness/shortfall/repeat-code
+  files re-run: 32/32 plus the route round trips.
+- **No floor below 3 requested shifts** (user rule 2026-10-10:
+  `_ANCHOR_MIN_FLOOR_MIN_REQUESTED = 3` in the solver, mirrored by
+  `_FLOOR_MIN_REQUESTED` in the repair pass): 0 requested (Chee, a casual)
+  or 1-2 requested carries no mandatory anchor. Tests:
+  `test_no_floor_for_two_or_fewer_requested_shifts` (contested, 0
+  anchors) and the floor_target unit cases (3 -> 1, 2 -> 0, 0 -> 0).
+- KLam shows 16 nights for 8 requested only because the Lam/Rico merge
+  doubles the request (correct, not overage).
 
 **2026-10-09 (later) — call rest rules relaxed to department practice
 (`_eligible` in `assign_on_calls`, generator.py), user decision "allow all 4":**

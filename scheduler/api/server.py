@@ -115,7 +115,7 @@ from scheduler.backend import google_sheets_client
 from scheduler.backend import sheets_schedule_reader
 from scheduler.backend import trailing as trailing_mod
 from scheduler.backend import acute_balance
-from scheduler.backend import weekend_repair
+from scheduler.backend import anchor_floor_repair, weekend_repair
 from scheduler.backend.config import (
     CALL_LINKAGE_VALUES,
     GROUP_B_PREFS,
@@ -2518,6 +2518,13 @@ async def generate(body: GenerateCachedRequest) -> ScheduleResponse:
             result, _we_trades = weekend_repair.repair_weekend_splits(gen, result)
             if _we_trades:
                 print(f"[weekend-repair] {_we_trades} Fri/Sun split(s) repaired")
+            # Final pass: a floor physician still below their anchor floor
+            # takes an anchor someone holds beyond their STATED request,
+            # giving a non-anchor shift back (see anchor_floor_repair.py;
+            # user rule 2026-10-10 -- stated requests are never touched).
+            result, _af_trades = anchor_floor_repair.repair_anchor_floors(gen, result)
+            if _af_trades:
+                print(f"[anchor-floor-repair] {_af_trades} overage anchor(s) handed to floor physicians")
         # Assign on-call shifts after the regular schedule is complete
         result = await asyncio.to_thread(gen.assign_on_calls, result)
         # Restore solver quality fields lost by repair_pass/_compute_stats

@@ -191,3 +191,26 @@ def test_floor_eligible_physician_is_automatically_isolation_exempt():
     result = gen.generate(YEAR, MONTH, time_limit=20.0, num_workers=4)
 
     assert _anchor_total(result, "Lung") >= 1
+
+
+def test_no_floor_for_two_or_fewer_requested_shifts():
+    """User rule (2026-10-10): someone asking for 0, 1 or 2 shifts carries
+    no mandatory anchor. Contested against blank fillers who will take any
+    shift, a 0/0 physician asking for 2 must end with 0 anchors (an
+    unrequested anchor costs them 500+ with a fair-share target of 0, so
+    only a floor could have put one there)."""
+    sub_zz = _full_availability_submission(
+        "Small", shifts_requested=2,
+        shifts_2400h_stated=True, shifts_2400h_requested=0,
+        shifts_0600h_stated=True, shifts_0600h_requested=0,
+    )
+    filler_a = _full_availability_submission("FillerA", shifts_requested=15)
+    filler_b = _full_availability_submission("FillerB", shifts_requested=15)
+    roster = {pid: PhysicianConfig(id=pid, name=pid) for pid in ("Small", "FillerA", "FillerB")}
+    gen = CpsatScheduleGenerator([sub_zz, filler_a, filler_b], roster, {}, trailing_assignments=None)
+    result = gen.generate(YEAR, MONTH, time_limit=30.0, num_workers=4)
+
+    # (The helper allows requested + 2, so fill pressure may use Small up to 4 times;
+    # what matters is that none of those shifts is an anchor.)
+    assert sum(1 for a in result.assignments if a.physician_id == "Small") >= 1
+    assert _anchor_total(result, "Small") == 0

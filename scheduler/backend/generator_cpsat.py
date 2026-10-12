@@ -1186,6 +1186,11 @@ class CpsatScheduleGenerator:
         # anchor shift; at or above it, 2 (see the floor logic further
         # below). 10 per explicit user instruction.
         _ANCHOR_MIN_FLOOR_FULL_THRESHOLD = self._anchor_min_floor_full_threshold
+        # No floor at all below 3 requested shifts (user rule, 2026-10-10):
+        # a casual asking for 0 (Chee: floor_target 1 on a 0-shift request
+        # showed up as "still at zero" in every January replay) or someone
+        # asking for 1-2 shifts is not expected to carry an anchor.
+        _ANCHOR_MIN_FLOOR_MIN_REQUESTED = 3
         _ANCHOR_OVERAGE_PENALTY = 500
         # Anchor-share fairness (see __init__'s _anchor_share_target):
         #   * an anchor shift a physician did not ask for, but still within
@@ -1494,7 +1499,10 @@ class CpsatScheduleGenerator:
                 # anchors while the explicit-0/0 physicians carried their
                 # floor of 2: a blank means "no preference", and no
                 # preference shouldn't rank below "I'd rather not".
-                if req_anchors == 0 and (vars_2400 or vars_0600) and not _anchor_exempt:
+                if (
+                    req_anchors == 0 and (vars_2400 or vars_0600) and not _anchor_exempt
+                    and (sub.shifts_requested or 0) >= _ANCHOR_MIN_FLOOR_MIN_REQUESTED
+                ):
                     floor_target = 2 if sub.shifts_requested >= _ANCHOR_MIN_FLOOR_FULL_THRESHOLD else 1
                     # Bounded by the real per-type caps above (fair-share
                     # based now, so a physician who can only work one
@@ -2827,6 +2835,11 @@ class CpsatScheduleGenerator:
             tier_solver.parameters.num_search_workers = num_workers
             tier_cb = _SolutionCallback(shifts, should_stop=cancel_check, live_progress=_make_live_reporter(progress_pct))
             tier_status = tier_solver.solve(model, tier_cb)
+            logger.info(
+                "CP-SAT lexicographic: %s -> status=%s objective=%.0f wall=%.1fs",
+                tier_label, tier_solver.status_name(tier_status),
+                tier_cb.best_objective if tier_cb.best_values else 0.0, tier_solver.wall_time,
+            )
             if tier_status in (_cp_model.OPTIMAL, _cp_model.FEASIBLE) and tier_cb.best_values:
                 model.add(tier_expr >= int(tier_cb.best_objective))
                 # Also freeze each individual physician's achieved count, not
@@ -2985,6 +2998,11 @@ class CpsatScheduleGenerator:
             stageA_solver.parameters.num_search_workers = num_workers
             stageA_cb = _SolutionCallback(shifts, should_stop=cancel_check, live_progress=_make_live_reporter(80))
             stageA_status = stageA_solver.solve(model, stageA_cb)
+            logger.info(
+                "CP-SAT lexicographic: anchor stage A -> status=%s objective=%.0f wall=%.1fs",
+                stageA_solver.status_name(stageA_status),
+                stageA_cb.best_objective if stageA_cb.best_values else 0.0, stageA_solver.wall_time,
+            )
             if stageA_status in (_cp_model.OPTIMAL, _cp_model.FEASIBLE) and stageA_cb.best_values:
                 model.add(stageA_expr >= int(stageA_cb.best_objective))
                 _lock_anchor_floors(stageA_cb.best_values)
@@ -2994,17 +3012,61 @@ class CpsatScheduleGenerator:
                 progress_callback(80, 100, stageA_cb.best_objective if stageA_cb.best_values else 0.0)
 
             # Stage B — depth: maximize total units on top of stage A's floor.
-            logger.info("CP-SAT lexicographic: anchor-fulfillment floor, stage B (depth)")
-            stageB_expr = sum(weight * fill_var for fill_var, weight in anchor_fill_vars_flat)
+            #
+            # The 0/0 floor's FIRST unit is decided HERE too (2026-10-10,
+            # real case: Lung, cpsatv2-jan4/5/6), at a weight strictly
+            # below every stated unit: requester weights are scaled by
+            # (floor physicians + 1) so even all floor units together
+            # cannot buy one stated unit. User rule: a floor physician
+            # never displaces anyone's stated 2400h/0600h request; the
+            # floor only takes anchors that would otherwise be handed out
+            # as overage (N Lam 4 nights for 3 requested, Velji 4 for 3,
+            # in jan6 while Lung sat at 0). Before, the floor was solved
+            # only in its own stage after this one had locked every
+            # requester's slots, so a night-only floor physician's first
+            # night needed a multi-swap chain that the 60 s floor pass
+            # never found (three real runs; a local replay ended that
+            # stage FEASIBLE with Lung at zero, and forcing Lung >= 1 in
+            # it with 300 s did find a schedule -- reachable, not found).
+            # Solving it inside the depth search, before any slot is
+            # locked, is what makes it findable.
+            logger.info("CP-SAT lexicographic: anchor-fulfillment floor, stage B (depth + floor first unit)")
+            floor_got1_by_pid: dict[str, object] = {}
+            for pid, (vars_2400, vars_0600, _floor_ub) in zero_zero_floor_info.items():
+                got1 = model.new_bool_var(f"zzgot1_{pid}")
+                model.add(got1 <= sum(vars_2400) + sum(vars_0600))
+                floor_got1_by_pid[pid] = got1
+            requester_scale = len(floor_got1_by_pid) + 1
+            stageB_expr = (
+                requester_scale * sum(weight * fill_var for fill_var, weight in anchor_fill_vars_flat)
+                + sum(floor_got1_by_pid.values())
+            )
             model.maximize(stageB_expr)
             stageB_solver = _cp_model.CpSolver()
             stageB_solver.parameters.max_time_in_seconds = anchor_tier_time_limit
             stageB_solver.parameters.num_search_workers = num_workers
             stageB_cb = _SolutionCallback(shifts, should_stop=cancel_check, live_progress=_make_live_reporter(85))
             stageB_status = stageB_solver.solve(model, stageB_cb)
+            logger.info(
+                "CP-SAT lexicographic: anchor stage B -> status=%s objective=%.0f wall=%.1fs",
+                stageB_solver.status_name(stageB_status),
+                stageB_cb.best_objective if stageB_cb.best_values else 0.0, stageB_solver.wall_time,
+            )
             if stageB_status in (_cp_model.OPTIMAL, _cp_model.FEASIBLE) and stageB_cb.best_values:
                 model.add(stageB_expr >= int(stageB_cb.best_objective))
                 _lock_anchor_floors(stageB_cb.best_values)
+                # Lock each floor physician's first unit individually (a
+                # sum lock could trade one physician's unit for another's).
+                for pid, (vars_2400, vars_0600, _floor_ub) in zero_zero_floor_info.items():
+                    achieved = sum(
+                        stageB_cb.best_values.get((pid, d_idx, shift.code), 0)
+                        for d_idx in range(len(all_dates))
+                        for block in BLOCKS
+                        for shift in block
+                        if shift.time in ("0600h", "2400h")
+                    )
+                    if achieved >= 1:
+                        model.add(sum(vars_2400) + sum(vars_0600) >= 1)
                 _apply_hint(stageB_cb)
             remaining_time_limit -= stageB_solver.wall_time
             remaining_time_limit = max(30.0, remaining_time_limit)
@@ -3046,7 +3108,15 @@ class CpsatScheduleGenerator:
                 if floor_ub >= 2:
                     floor_depth_terms.append(fill)
 
-            floor_tier_time_limit = min(60.0, max(5.0, time_limit * 0.1))
+            # 300 s cap (was 60, 2026-10-10): on real January data the floor
+            # stage ended its minute FEASIBLE with Lung at zero three runs
+            # running -- his only route to a night was redirecting an
+            # overage night held inside a pair (Velji Jan 2+3), a multi-swap
+            # chain. The same stage given 300 s found it unforced (Jan 8,
+            # RAH B). This stage runs after stage B has locked every stated
+            # anchor request, so the extra time can only ever redirect
+            # overage, never a stated unit (user rule).
+            floor_tier_time_limit = min(300.0, max(5.0, time_limit * 0.1))
             floor_expr = sum(1000 * b for b in floor_breadth_terms) + sum(10 * d for d in floor_depth_terms)
             model.maximize(floor_expr)
             floor_solver = _cp_model.CpSolver()
@@ -3054,12 +3124,19 @@ class CpsatScheduleGenerator:
             floor_solver.parameters.num_search_workers = num_workers
             floor_cb = _SolutionCallback(shifts, should_stop=cancel_check, live_progress=_make_live_reporter(87))
             floor_status = floor_solver.solve(model, floor_cb)
+            logger.info(
+                "CP-SAT lexicographic: anchor minimum floor -> status=%s objective=%.0f wall=%.1fs",
+                floor_solver.status_name(floor_status),
+                floor_cb.best_objective if floor_cb.best_values else 0.0, floor_solver.wall_time,
+            )
             if floor_status in (_cp_model.OPTIMAL, _cp_model.FEASIBLE) and floor_cb.best_values:
                 model.add(floor_expr >= int(floor_cb.best_objective))
                 # Lock each physician's own achieved combined count, not
                 # just the tier-wide sum -- a sum-only lock would let a
                 # later tier trade one physician's floor for another's of
                 # equal weight (same reasoning as _lock_anchor_floors).
+                still_zero: list[str] = []
+                below_floor: list[str] = []
                 for pid, (vars_2400, vars_0600, floor_ub) in zero_zero_floor_info.items():
                     achieved = sum(
                         floor_cb.best_values.get((pid, d_idx, shift.code), 0)
@@ -3071,6 +3148,14 @@ class CpsatScheduleGenerator:
                     floor_lock = min(achieved, floor_ub)
                     if floor_lock > 0:
                         model.add(sum(vars_2400) + sum(vars_0600) >= floor_lock)
+                    if achieved == 0:
+                        still_zero.append(pid)
+                    elif achieved < floor_ub:
+                        below_floor.append(f"{pid} {achieved}/{floor_ub}")
+                logger.info(
+                    "CP-SAT lexicographic: anchor minimum floor -> %d eligible; at zero: %s; below floor: %s",
+                    len(zero_zero_floor_info), ", ".join(still_zero) or "none", ", ".join(below_floor) or "none",
+                )
                 _apply_hint(floor_cb)
             remaining_time_limit -= floor_solver.wall_time
             remaining_time_limit = max(30.0, remaining_time_limit)

@@ -1,9 +1,52 @@
-# KEAsked — session handoff (updated 2026-10-09)
+# KEAsked — session handoff (updated 2026-10-12)
 
 Picking up on a different machine / fresh chat? Read this whole file first —
 it's written for a session with zero memory of prior conversations.
 
 ## ⭐ Next task — start here
+
+**2026-10-12 — cpsatv2-jan7 (first run on 4bbb3c2) and the focused floor
+pass; UNCOMMITTED as of this writing (`git status`):**
+- jan7 verdict vs jan6/human: requests 630 filled, 10 one-short (spread
+  works), anchors all stated met except HansenR 2/3, 3 nights beyond
+  stated (Fisher 6/5, LamN 4/3, Velji 4/3 -- same three), A/B fully
+  balanced, splits 7, over cap 27 (25 by one), FSU 36 vs human 32, runs
+  with no acute 1 (human 19), on-call 54/62 with 9/23 weekend calls
+  isolated. **Lung still 0/2**; docker log showed the new floor stage ran
+  240 s (10% of 40 min) FEASIBLE and left him at zero -- the 300 s cap
+  alone is not reliable.
+- **Focused floor pass** (`generator_cpsat.py`, inside the floor stage,
+  after the full pass): for each floor physician still short, fix
+  everyone who cannot be part of the chain to the solution just found
+  (CP-SAT `fix_variables_to_their_hinted_value`; free = floor
+  physicians + holders of anchors beyond stated + holders of that
+  anchor type on the short physician's offered dates when they offered
+  <= 8) and solve with a SWITCHABLE hard target `zzforce_<pid>` (a
+  literal hinted 1 only in this pass; free in every later stage) --
+  feasibility, not preference. Tried neighbourhood first, then the full
+  model; one physician at a time. Lessons from local replays: (a)
+  running it BEFORE the full pass freed 71/77 physicians (7 short) --
+  useless; (b) a preference-only focused pass (25/77 free, 60 s) found
+  nothing; (c) forcing Lung AND Thirsk together was proven INFEASIBLE in
+  0.5 s while Lung alone had been feasible -> per-physician forcing. The
+  per-physician version, validated on a 20-min local replay (after
+  killing two orphaned `workerd` processes from sked's `wrangler dev`
+  that had held ~20 GB for 6 days): forcing Lung on the full model was
+  **proven INFEASIBLE in 0.5 s** under that run's stage-B locks, and so
+  was Thirsk's 2nd 0600h; the neighbourhood attempts ended UNKNOWN. The
+  2026-10-10 forced run had been feasible under a different stage-B
+  arrangement. Conclusion: with January's nights oversubscribed by
+  stated requests, whether a night-only floor physician can get one
+  depends on how stage B happens to lay the stated nights out, and the
+  rule forbids re-laying them at anyone's expense. The pass is kept
+  because it is cheap (<= ~60 s), succeeds when the layout allows, and
+  otherwise PROVES the floor impossible for that run (the log says
+  `INFEASIBLE`), which beats silently coming up short. If Lung at 0
+  must be fixed by hand, the swap is: an overage night (Velji/N Lam/
+  Fisher) on one of his dates plus whatever his own next-day shift
+  needs for the 23 h rule.
+- Stage logging now also covers the focused pass. Floor/rule/repair/
+  shortfall test files pass on this code (19 + 9).
 
 **2026-10-10 — Lung's 0/2 anchors (jan4/5/6), fixed in
 `generator_cpsat.py`; UNCOMMITTED as of this writing (`git status`):**

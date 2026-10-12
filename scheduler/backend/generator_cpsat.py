@@ -2782,6 +2782,7 @@ class CpsatScheduleGenerator:
         # .wall_time, not the cap itself) is deducted from tier 2's budget,
         # so total time stays close to time_limit.
         remaining_time_limit = time_limit
+        latest_best: dict[str, dict] = {}   # the most recent stage's best solution (see _apply_hint)
 
         def _apply_hint(cb: "_SolutionCallback") -> None:
             # Warm-start the next solve from this tier's actual found
@@ -2794,6 +2795,7 @@ class CpsatScheduleGenerator:
             # all — a search-quality artifact, not a feasibility one.
             if not cb.best_values:
                 return
+            latest_best["values"] = cb.best_values
             model.clear_hints()
             for k, v in cb.best_values.items():
                 model.add_hint(shifts[k], v)
@@ -3119,6 +3121,19 @@ class CpsatScheduleGenerator:
             floor_tier_time_limit = min(300.0, max(5.0, time_limit * 0.1))
             floor_expr = sum(1000 * b for b in floor_breadth_terms) + sum(10 * d for d in floor_depth_terms)
             model.maximize(floor_expr)
+
+            def _floor_achieved(values: dict) -> dict[str, int]:
+                return {
+                    pid: sum(
+                        values.get((pid, d_idx, shift.code), 0)
+                        for d_idx in range(len(all_dates))
+                        for block in BLOCKS
+                        for shift in block
+                        if shift.time in ("0600h", "2400h")
+                    )
+                    for pid in zero_zero_floor_info
+                }
+
             floor_solver = _cp_model.CpSolver()
             floor_solver.parameters.max_time_in_seconds = floor_tier_time_limit
             floor_solver.parameters.num_search_workers = num_workers
@@ -3129,22 +3144,128 @@ class CpsatScheduleGenerator:
                 floor_solver.status_name(floor_status),
                 floor_cb.best_objective if floor_cb.best_values else 0.0, floor_solver.wall_time,
             )
-            if floor_status in (_cp_model.OPTIMAL, _cp_model.FEASIBLE) and floor_cb.best_values:
-                model.add(floor_expr >= int(floor_cb.best_objective))
+            remaining_time_limit -= floor_solver.wall_time
+            floor_values = floor_cb.best_values if floor_status in (_cp_model.OPTIMAL, _cp_model.FEASIBLE) else None
+            floor_objective = floor_cb.best_objective if floor_values else 0.0
+            floor_hint_cb = floor_cb
+
+            # Focused pass for whoever the full pass left short (2026-10-12,
+            # cpsatv2-jan7): the full-model pass ended 240 s FEASIBLE with
+            # Lung still at zero, the fourth real run in a row. His night is
+            # a chain -- take an overage night from its holder, hand the
+            # holder one of his day shifts, move his own next-day shift for
+            # the 23 h rule -- and the search never gets there with 77
+            # physicians' variables all open. So fix everyone who cannot be
+            # part of such a chain to the solution just found (CP-SAT's
+            # fix_variables_to_their_hinted_value) and solve the same floor
+            # objective over only the physicians who can: every floor
+            # physician, every holder of an anchor beyond their stated
+            # request, and -- for a short physician who offered that anchor
+            # type on only a handful of dates -- whoever holds that type's
+            # slots on those dates. Stated requests are still locked by
+            # stage A/B, so this can only ever redirect overage. Running it
+            # AFTER the full pass keeps the neighbourhood small: a first
+            # attempt ran it before, when seven physicians were still short,
+            # and their 0600h dates freed 71 of 77 physicians (no gain).
+            _FOCUS_MAX_OFFERED_DATES = 8
+            if floor_values and floor_status != _cp_model.OPTIMAL:
+                achieved_now = _floor_achieved(floor_values)
+                short = [pid for pid, (_v24, _v06, floor_ub) in zero_zero_floor_info.items()
+                         if achieved_now[pid] < floor_ub]
+                if short:
+                    code_time = {shift.code: shift.time for block in BLOCKS for shift in block}
+                    anchors_held: dict[str, dict[str, int]] = {pid: {"2400h": 0, "0600h": 0} for pid in pids}
+                    anchor_holders_by_date: dict[tuple, set] = {}
+                    for (pid, d_idx, code), v in floor_values.items():
+                        t = code_time.get(code)
+                        if v and t in ("2400h", "0600h"):
+                            anchors_held[pid][t] += 1
+                            anchor_holders_by_date.setdefault((all_dates[d_idx], t), set()).add(pid)
+                    free: set = set(zero_zero_floor_info)
+                    stated_by_pid = {pid: dict(reqs) for pid, reqs in anchor_requests_by_pid.items()}
+                    for pid in pids:
+                        cfg_pid = _get_cfg(pid)
+                        for t in ("2400h", "0600h"):
+                            if cfg_pid and ((t == "2400h" and cfg_pid.only_2400h) or (t == "0600h" and cfg_pid.only_0600h)):
+                                continue
+                            if anchors_held[pid][t] > stated_by_pid.get(pid, {}).get(t, 0):
+                                free.add(pid)
+                    for pid in short:
+                        sub_s = self.submissions[pid]
+                        for t, block_idx in _ANCHOR_BLOCK_IDX.items():
+                            offered_dates = [
+                                day.date for day in list(sub_s.days) + list(sub_s.spillover_days)
+                                if any(c.startswith(t) for c in day.requested_shifts) or block_idx in day.available_blocks
+                            ]
+                            if 0 < len(offered_dates) <= _FOCUS_MAX_OFFERED_DATES:
+                                for d in offered_dates:
+                                    free |= anchor_holders_by_date.get((d, t), set())
+                    # Switchable hard targets: a literal per short physician
+                    # that, when ON, requires them to reach their floor. It
+                    # is only ever switched on here (hinted 1 under
+                    # fix_variables_to_their_hinted_value); every later
+                    # stage leaves it free, so the final solve is never
+                    # bound by it. Feasibility with a hard target is a far
+                    # easier search than preferring the same outcome: the
+                    # 2026-10-10 forced replay found Lung's chain where
+                    # 300 s of preference did not.
+                    force_lits: dict[str, object] = {}
+                    for pid in short:
+                        vars_2400, vars_0600, floor_ub = zero_zero_floor_info[pid]
+                        target = 1 if achieved_now[pid] == 0 else floor_ub
+                        lit = model.new_bool_var(f"zzforce_{pid}")
+                        model.add(sum(vars_2400) + sum(vars_0600) >= target).only_enforce_if(lit)
+                        force_lits[pid] = lit
+                    # One physician at a time: forcing several together can
+                    # be jointly infeasible (a 2026-10-12 replay proved
+                    # "Lung >= 1 AND Thirsk >= 2" infeasible in 0.5 s while
+                    # Lung alone had been feasible two days earlier). Each
+                    # success becomes the starting point for the next.
+                    per_pid = max(5.0, floor_tier_time_limit / 2 / max(1, len(short)))
+                    for pid in short:
+                        for label, fixed in (("neighbourhood", True), ("full model", False)):
+                            focused_limit = min(60.0, per_pid)
+                            logger.info(
+                                "CP-SAT lexicographic: anchor minimum floor, focused pass (%s, forcing %s) -- %d of %d physicians free, %.0fs",
+                                label, pid, len(free) if fixed else len(pids), len(pids), focused_limit,
+                            )
+                            model.clear_hints()
+                            for k, v in floor_values.items():
+                                if not fixed or k[0] not in free:
+                                    model.add_hint(shifts[k], v)
+                            for other, lit in force_lits.items():
+                                model.add_hint(lit, 1 if other == pid else 0)
+                            focused_solver = _cp_model.CpSolver()
+                            focused_solver.parameters.max_time_in_seconds = focused_limit
+                            focused_solver.parameters.num_search_workers = num_workers
+                            focused_solver.parameters.fix_variables_to_their_hinted_value = True
+                            focused_cb = _SolutionCallback(shifts, should_stop=cancel_check, live_progress=_make_live_reporter(87))
+                            focused_status = focused_solver.solve(model, focused_cb)
+                            logger.info(
+                                "CP-SAT lexicographic: anchor minimum floor, focused pass (%s, forcing %s) -> status=%s objective=%.0f wall=%.1fs",
+                                label, pid, focused_solver.status_name(focused_status),
+                                focused_cb.best_objective if focused_cb.best_values else 0.0, focused_solver.wall_time,
+                            )
+                            remaining_time_limit -= focused_solver.wall_time
+                            if (focused_status in (_cp_model.OPTIMAL, _cp_model.FEASIBLE) and focused_cb.best_values
+                                    and focused_cb.best_objective > floor_objective):
+                                floor_values, floor_objective, floor_hint_cb = focused_cb.best_values, focused_cb.best_objective, focused_cb
+                                break
+                            if focused_status == _cp_model.INFEASIBLE and not fixed:
+                                break   # proven impossible under the locks; no point retrying
+                    model.clear_hints()
+
+            if floor_values:
+                model.add(floor_expr >= int(floor_objective))
                 # Lock each physician's own achieved combined count, not
                 # just the tier-wide sum -- a sum-only lock would let a
                 # later tier trade one physician's floor for another's of
                 # equal weight (same reasoning as _lock_anchor_floors).
                 still_zero: list[str] = []
                 below_floor: list[str] = []
+                achieved_final = _floor_achieved(floor_values)
                 for pid, (vars_2400, vars_0600, floor_ub) in zero_zero_floor_info.items():
-                    achieved = sum(
-                        floor_cb.best_values.get((pid, d_idx, shift.code), 0)
-                        for d_idx in range(len(all_dates))
-                        for block in BLOCKS
-                        for shift in block
-                        if shift.time in ("0600h", "2400h")
-                    )
+                    achieved = achieved_final[pid]
                     floor_lock = min(achieved, floor_ub)
                     if floor_lock > 0:
                         model.add(sum(vars_2400) + sum(vars_0600) >= floor_lock)
@@ -3156,8 +3277,7 @@ class CpsatScheduleGenerator:
                     "CP-SAT lexicographic: anchor minimum floor -> %d eligible; at zero: %s; below floor: %s",
                     len(zero_zero_floor_info), ", ".join(still_zero) or "none", ", ".join(below_floor) or "none",
                 )
-                _apply_hint(floor_cb)
-            remaining_time_limit -= floor_solver.wall_time
+                _apply_hint(floor_hint_cb)
             remaining_time_limit = max(30.0, remaining_time_limit)
             if progress_callback:
                 progress_callback(87, 100, floor_cb.best_objective if floor_cb.best_values else 0.0)

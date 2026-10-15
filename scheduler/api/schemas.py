@@ -146,6 +146,16 @@ class PhysicianLinkResponse(BaseModel):
     url: str
 
 
+class CalendarLinkRequest(BaseModel):
+    physician_id: str
+
+
+class CalendarLinkResponse(BaseModel):
+    physician_id: str
+    feed_url: str   # the permanent .ics subscription URL (sked signs it; same id -> same URL)
+    live_url: str   # the "check right now" page that reads the same token
+
+
 class SendMonthlyRequestsRequest(BaseModel):
     period_id: str
     label: str

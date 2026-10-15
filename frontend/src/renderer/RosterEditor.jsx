@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
-import { getPhysiciansFull, updatePhysician, createPhysician, removePhysician, setApiBaseUrl, getSkedPeriods, getPhysicianLink } from './api'
+import { getPhysiciansFull, updatePhysician, createPhysician, removePhysician, setApiBaseUrl, getSkedPeriods, getPhysicianLink, getCalendarLink } from './api'
 
 // Mirrors scheduler/backend/config.py's VALID_SITES / GROUP_B_PREFS /
 // VALID_RULE_OVERRIDES, and the non-call shift start times from
@@ -55,6 +55,11 @@ export default function RosterEditor() {
   const [selectedPeriodId, setSelectedPeriodId] = useState('')
   const [linkBusy, setLinkBusy] = useState(false)
   const [linkError, setLinkError] = useState(null)
+  // Calendar links (sked .ics feed + live view) for the selected physician.
+  const [calLink, setCalLink] = useState(null)       // { feed_url, live_url } once generated
+  const [calBusy, setCalBusy] = useState(false)
+  const [calError, setCalError] = useState(null)
+  const [calCopied, setCalCopied] = useState(null)   // 'feed' | 'live' | null
 
   const loadPhysicians = useCallback(() => {
     setLoadError(null)
@@ -94,6 +99,31 @@ export default function RosterEditor() {
       })
       .catch(err => { setPeriods([]); setPeriodsError(err.message) })
   }, [apiBaseResolved])
+
+  // A generated link belongs to one physician: drop it when the selection changes.
+  useEffect(() => { setCalLink(null); setCalError(null); setCalCopied(null) }, [selectedId])
+
+  const handleGenerateCalendarLink = useCallback(() => {
+    if (!form) return
+    setCalBusy(true)
+    setCalError(null)
+    getCalendarLink(form.id)
+      .then(setCalLink)
+      .catch(err => setCalError(err.message))
+      .finally(() => setCalBusy(false))
+  }, [form])
+
+  const copyCalendarLink = useCallback(async (which) => {
+    if (!calLink) return
+    const text = which === 'feed' ? calLink.feed_url : calLink.live_url
+    try {
+      await navigator.clipboard.writeText(text)
+      setCalCopied(which)
+      setTimeout(() => setCalCopied(null), 1500)
+    } catch (err) {
+      setCalError(`Couldn't copy: ${err.message}`)
+    }
+  }, [calLink])
 
   const handleViewPreferences = useCallback(() => {
     if (!form || !selectedPeriodId) return
@@ -548,6 +578,57 @@ export default function RosterEditor() {
                   </div>
                 )}
                 {linkError && <p className="text-xs text-red-600 mt-1">{linkError}</p>}
+              </Section>
+
+              <Section title="Calendar link">
+                <p className="text-xs text-slate-500 mb-2">
+                  A permanent personal calendar for this physician. The feed URL goes into Google or Apple
+                  Calendar as a subscription; the live view shows the current schedule instantly. Both are
+                  the same link every time it is generated, so it can be sent once and kept.
+                </p>
+                {!calLink ? (
+                  <button
+                    onClick={handleGenerateCalendarLink}
+                    disabled={calBusy}
+                    className="px-3 py-1.5 text-sm font-medium text-white bg-sky-600 rounded-md hover:bg-sky-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {calBusy ? 'Generating…' : 'Generate calendar link'}
+                  </button>
+                ) : (
+                  <div className="space-y-2">
+                    <div>
+                      <div className="text-xs font-medium text-slate-600 mb-1">Calendar feed (subscribe by URL)</div>
+                      <div className="flex items-start gap-2">
+                        <code className="flex-1 min-w-0 break-all text-xs bg-slate-50 border border-slate-200 rounded px-2 py-1.5 text-slate-700">{calLink.feed_url}</code>
+                        <button
+                          onClick={() => copyCalendarLink('feed')}
+                          className="px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50 whitespace-nowrap"
+                        >
+                          {calCopied === 'feed' ? 'Copied' : 'Copy'}
+                        </button>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs font-medium text-slate-600 mb-1">Live view</div>
+                      <div className="flex items-start gap-2">
+                        <code className="flex-1 min-w-0 break-all text-xs bg-slate-50 border border-slate-200 rounded px-2 py-1.5 text-slate-700">{calLink.live_url}</code>
+                        <button
+                          onClick={() => copyCalendarLink('live')}
+                          className="px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50 whitespace-nowrap"
+                        >
+                          {calCopied === 'live' ? 'Copied' : 'Copy'}
+                        </button>
+                        <button
+                          onClick={() => window.electronAPI.openExternal(calLink.live_url)}
+                          className="px-2.5 py-1.5 text-xs font-medium text-white bg-sky-600 rounded-md hover:bg-sky-700 whitespace-nowrap"
+                        >
+                          Open
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {calError && <p className="text-xs text-red-600 mt-1">{calError}</p>}
               </Section>
 
               <Section title="Validation rule overrides">

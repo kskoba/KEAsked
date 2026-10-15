@@ -92,6 +92,8 @@ from scheduler.api.schemas import (
     PeriodsResponse,
     PhysicianLinkRequest,
     PhysicianLinkResponse,
+    CalendarLinkRequest,
+    CalendarLinkResponse,
     SendMonthlyRequestsRequest,
     SendMonthlyRequestsResult,
     SendMonthlyRequestsResponse,
@@ -1550,6 +1552,51 @@ def sked_periods(kind: str = "shift_request") -> PeriodsResponse:
         PeriodInfo(id=p["id"], label=p["label"], opens_at=p["opens_at"], closes_at=p["closes_at"])
         for p in periods
     ])
+
+
+@app.post("/api/sked/calendar-link", response_model=CalendarLinkResponse)
+def sked_calendar_link(body: CalendarLinkRequest) -> CalendarLinkResponse:
+    """
+    Mint (or re-mint) one physician's permanent calendar links: the .ics
+    subscription feed and the live "my schedule" page. sked signs the same
+    physician id to the same token every time, so this is safe to call as
+    often as the Roster Editor likes and nothing has to be stored. The
+    live-view page takes the identical token as a query parameter.
+    """
+    sked_config = sked_client.load_sked_config()
+    if sked_config is None or not sked_client.is_fully_configured(sked_config):
+        raise HTTPException(
+            status_code=400,
+            detail="sked is not configured. Copy scheduler/config/sked_template.yaml to sked.yaml "
+                   "(in the physician config folder) and fill it in.",
+        )
+    roster: dict = _state.get("roster") or {}
+    if not roster:
+        try:
+            roster = load_roster()
+            _state["roster"] = roster
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Could not load physician roster: {exc}")
+    if body.physician_id not in roster:
+        raise HTTPException(status_code=404, detail=f"Unknown physician: {body.physician_id!r}")
+    try:
+        feed_url = sked_client.get_calendar_link(sked_config, body.physician_id)
+    except sked_client.SkedApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return CalendarLinkResponse(
+        physician_id=body.physician_id,
+        feed_url=feed_url,
+        live_url=_calendar_live_url(sked_config.base_url, feed_url),
+    )
+
+
+def _calendar_live_url(base_url: str, feed_url: str) -> str:
+    """/api/calendar/<token>.ics -> /my-schedule?token=<token> on the same host."""
+    marker = "/api/calendar/"
+    if marker in feed_url and feed_url.endswith(".ics"):
+        token = feed_url[feed_url.index(marker) + len(marker):-len(".ics")]
+        return f"{base_url.rstrip('/')}/my-schedule?token={token}"
+    return feed_url
 
 
 @app.post("/api/sked/physician-link", response_model=PhysicianLinkResponse)

@@ -234,6 +234,16 @@ export async function getPhysicianLink(physicianId, periodId) {
 }
 
 /**
+ * One physician's permanent calendar links from sked: the .ics subscription
+ * feed and the live "my schedule" page (same token). Deterministic -- calling
+ * it again returns the identical URLs.
+ * @returns {{ physician_id: string, feed_url: string, live_url: string }}
+ */
+export async function getCalendarLink(physicianId) {
+  return request('POST', '/api/sked/calendar-link', { physician_id: physicianId })
+}
+
+/**
  * Pull in shift-preference submissions directly from sked for one period,
  * instead of a directory/flat file of xlsx exports. Returns the same shape
  * as importSubmissions/importFlatFile, plus a not_submitted list (active

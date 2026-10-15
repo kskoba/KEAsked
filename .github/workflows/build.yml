@@ -157,7 +157,10 @@ jobs:
         working-directory: frontend
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          # The repo secret holding the app-specific password is named
+          # APPLE_ID_PASSWORD; reading a non-existent name here silently
+          # skipped notarization on every build through v1.2.0.
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD || secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npx electron-builder --mac --arm64 --publish=never
 

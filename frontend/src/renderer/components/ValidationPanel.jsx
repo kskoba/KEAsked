@@ -670,7 +670,12 @@ function ExportAllModal({ state, periodId, year, month, onChange, onClose }) {
   }
 
   async function handleOpenFolder() {
-    if (window.electronAPI?.openPath) await window.electronAPI.openPath(directory)
+    try {
+      const err = await window.electronAPI.openFolder(directory)
+      if (err) onChange(prev => ({ ...prev, error: err }))
+    } catch (ex) {
+      onChange(prev => ({ ...prev, error: ex.message }))
+    }
   }
 
   const total = progress?.total ?? 0
@@ -762,7 +767,7 @@ function ExportAllModal({ state, periodId, year, month, onChange, onClose }) {
           )}
           {finished && (
             <>
-              {window.electronAPI?.openPath && !remote && (
+              {window.electronAPI?.openFolder && !remote && (
                 <button onClick={handleOpenFolder} className="px-3 py-1.5 text-xs font-semibold rounded-md border border-slate-300 bg-white text-slate-600 hover:bg-slate-100">Open folder</button>
               )}
               <button onClick={onClose} className="px-3 py-1.5 text-xs font-semibold rounded-md border border-sky-600 bg-sky-600 text-white hover:bg-sky-700">Close</button>

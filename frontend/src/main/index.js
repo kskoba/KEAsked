@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, dialog, session, shell } from 'electron'
 import { join } from 'path'
-import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, readFileSync, statSync, writeFileSync } from 'fs'
 import { spawn } from 'child_process'
 import http from 'http'
 
@@ -630,6 +630,22 @@ ipcMain.handle('shell:openPath', async (_event, filePath) => {
     throw new Error(`File not found on this computer: ${filePath}`)
   }
   return shell.openPath(filePath)
+})
+
+// IPC: reveal a folder in the system file manager -- used by the Validate
+// page's "Export All Preferences" result dialog. Restricted to existing
+// directories so a stray string can never launch anything else. Resolves
+// to '' on success or an error message (shell.openPath contract).
+ipcMain.handle('shell:openFolder', async (_event, dirPath) => {
+  if (typeof dirPath !== 'string' || !dirPath) {
+    throw new Error('Refusing to open an empty path')
+  }
+  let stat
+  try { stat = statSync(dirPath) } catch { stat = null }
+  if (!stat || !stat.isDirectory()) {
+    throw new Error(`Folder not found on this computer: ${dirPath}`)
+  }
+  return shell.openPath(dirPath)
 })
 
 // IPC: open (or focus) the physician roster editor window

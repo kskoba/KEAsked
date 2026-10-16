@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setBackendConfig: (cfg) => ipcRenderer.invoke('settings:setBackendConfig', cfg),
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
   openPath: (path) => ipcRenderer.invoke('shell:openPath', path),
+  openFolder: (path) => ipcRenderer.invoke('shell:openFolder', path),
   openRosterWindow: () => ipcRenderer.invoke('window:openRoster'),
   openScheduleViewerWindow: () => ipcRenderer.invoke('window:openScheduleViewer'),
   openMonthlyRequestsWindow: () => ipcRenderer.invoke('window:openMonthlyRequests'),

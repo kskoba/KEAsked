@@ -3,16 +3,46 @@
 Picking up on a different machine / fresh chat? Read this whole file first —
 it's written for a session with zero memory of prior conversations.
 
+Physician names in this file and in `docs/` are replaced by stable P-codes
+(P01, P02, ...). The decode table is the gitignored
+`docs/physician-pseudonyms.md` (P-code -> roster id, in `physicians.yaml`
+order). Never put real names back into tracked files.
+
 ## ⭐ Next task — start here
+
+**2026-10-16 — "Export All Preferences to .xlsx" (Validate page) + sked
+export now template-faithful:**
+- sked `76575c5`/`349c769` (deployed): the physician Export button and
+  the admin `physician-export` patch the physician's cells into the
+  period's real template (`sked/src/lib/xlsxPatch.ts`, fflate) instead of
+  rebuilding a bare workbook -- hidden rows 30-37, hidden col AH, widths,
+  fills, formulas all survive; A1 carries the physician's name; filename
+  `<Name> - <Period label>.xlsx`. New `POST /api/export` uses the current
+  client state. Files import cleanly through `importer.py`.
+- KEAsked: button beside Generate Error Report (`ValidationPanel.jsx`,
+  enabled only when the month was pulled from sked -- `directory` is
+  `sked:<period>`). Folder chosen EVERY time via `dialog:openDirectory`
+  (typed path on a remote backend; the folder is on the backend machine).
+  Confirm step (names `<RosterId> - <Month YYYY>.xlsx`, existing files
+  replaced, "Include drafts" checkbox, default off). Backend
+  `POST /api/sked/export-all` runs in a thread, `GET .../progress` polled
+  every 500 ms for the progress bar, `POST .../cancel` stops after the
+  current file. `_state["sked_period_id"]` is now remembered at import.
+  Tests: `test_sked_export_all.py` (5). Verified live against sked period
+  2027-01 (two drafts written and re-imported).
+- Note: January 2027 on sked has NO submitted physicians (collected by
+  email that month) -- only drafts from P60 and the scheduler. The first
+  real use is the next month collected through sked.
+
 
 **2026-10-12 — cpsatv2-jan7 (first run on 4bbb3c2) and the focused floor
 pass; UNCOMMITTED as of this writing (`git status`):**
 - jan7 verdict vs jan6/human: requests 630 filled, 10 one-short (spread
-  works), anchors all stated met except HansenR 2/3, 3 nights beyond
-  stated (Fisher 6/5, LamN 4/3, Velji 4/3 -- same three), A/B fully
+  works), anchors all stated met except P39 2/3, 3 nights beyond
+  stated (P31 6/5, P51 4/3, P92 4/3 -- same three), A/B fully
   balanced, splits 7, over cap 27 (25 by one), FSU 36 vs human 32, runs
   with no acute 1 (human 19), on-call 54/62 with 9/23 weekend calls
-  isolated. **Lung still 0/2**; docker log showed the new floor stage ran
+  isolated. **P57 still 0/2**; docker log showed the new floor stage ran
   240 s (10% of 40 min) FEASIBLE and left him at zero -- the 300 s cap
   alone is not reliable.
 - **Focused floor pass** (`generator_cpsat.py`, inside the floor stage,
@@ -27,13 +57,13 @@ pass; UNCOMMITTED as of this writing (`git status`):**
   model; one physician at a time. Lessons from local replays: (a)
   running it BEFORE the full pass freed 71/77 physicians (7 short) --
   useless; (b) a preference-only focused pass (25/77 free, 60 s) found
-  nothing; (c) forcing Lung AND Thirsk together was proven INFEASIBLE in
-  0.5 s while Lung alone had been feasible -> per-physician forcing. The
+  nothing; (c) forcing P57 AND P89 together was proven INFEASIBLE in
+  0.5 s while P57 alone had been feasible -> per-physician forcing. The
   per-physician version, validated on a 20-min local replay (after
   killing two orphaned `workerd` processes from sked's `wrangler dev`
-  that had held ~20 GB for 6 days): forcing Lung on the full model was
+  that had held ~20 GB for 6 days): forcing P57 on the full model was
   **proven INFEASIBLE in 0.5 s** under that run's stage-B locks, and so
-  was Thirsk's 2nd 0600h; the neighbourhood attempts ended UNKNOWN. The
+  was P89's 2nd 0600h; the neighbourhood attempts ended UNKNOWN. The
   2026-10-10 forced run had been feasible under a different stage-B
   arrangement. Conclusion: with January's nights oversubscribed by
   stated requests, whether a night-only floor physician can get one
@@ -41,27 +71,27 @@ pass; UNCOMMITTED as of this writing (`git status`):**
   rule forbids re-laying them at anyone's expense. The pass is kept
   because it is cheap (<= ~60 s), succeeds when the layout allows, and
   otherwise PROVES the floor impossible for that run (the log says
-  `INFEASIBLE`), which beats silently coming up short. If Lung at 0
-  must be fixed by hand, the swap is: an overage night (Velji/N Lam/
-  Fisher) on one of his dates plus whatever his own next-day shift
+  `INFEASIBLE`), which beats silently coming up short. If P57 at 0
+  must be fixed by hand, the swap is: an overage night (P92/P51/
+  P31) on one of his dates plus whatever his own next-day shift
   needs for the 23 h rule.
 - Stage logging now also covers the focused pass. Floor/rule/repair/
   shortfall test files pass on this code (19 + 9).
 
-**2026-10-10 — Lung's 0/2 anchors (jan4/5/6), fixed in
+**2026-10-10 — P57's 0/2 anchors (jan4/5/6), fixed in
 `generator_cpsat.py`; UNCOMMITTED as of this writing (`git status`):**
-- Diagnosis (same solo-vs-joint technique): solo, Lung's real January
+- Diagnosis (same solo-vs-joint technique): solo, P57's real January
   sheet gets 4 nights, so no hard rule blocks him. His only anchor
   availability is 2400h on 5 weekend dates (Jan 2, 8, 9, 15, 16). In the
   joint solve January's 120 night slots carry 118 stated 2400h requests
-  (126 with the Lam/Rico merge), and the 0/0 floor was solved only in its
-  own stage AFTER stage B had locked every requester's slots -- so Lung's
+  (126 with the P52/P53 merge), and the 0/0 floor was solved only in its
+  own stage AFTER stage B had locked every requester's slots -- so P57's
   first night needed a multi-swap chain. A local replay showed that floor
-  stage ending FEASIBLE (unproven) at its 60 s cap with Lung and Chee at
-  zero, Lucyk/Rosenblum 1/2 -- exactly jan6. Forcing Lung >= 1 inside it
+  stage ending FEASIBLE (unproven) at its 60 s cap with P57 and P17 at
+  zero, P56/P76 1/2 -- exactly jan6. Forcing P57 >= 1 inside it
   with 300 s found a schedule, so the night was reachable; the stage just
-  never found it. Meanwhile N Lam and Velji each held a 4th night against
-  3 requested (overage), which is what Lung should have had.
+  never found it. Meanwhile P51 and P92 each held a 4th night against
+  3 requested (overage), which is what P57 should have had.
 - **User rule (2026-10-10)**: floor physicians must NOT outweigh anyone's
   stated anchor request ("someone requesting 2 2400h gets 2 2400h");
   the floor only takes anchors that would otherwise be overage. A first
@@ -73,10 +103,10 @@ pass; UNCOMMITTED as of this writing (`git status`):**
      depth) at a weight strictly below every stated unit (requester
      weights scaled by floor-count + 1, floor got1 weight 1), with a
      per-physician lock after stage B. On real data this alone did NOT
-     reach Lung (stage B is 60 s FEASIBLE and the scaled requester terms
+     reach P57 (stage B is 60 s FEASIBLE and the scaled requester terms
      dominate), kept because it costs nothing and helps easy cases.
   2. **Floor stage cap 60 s -> 300 s** (`floor_tier_time_limit`). This is
-     what works: the same stage, unforced, found Lung's night (Jan 8 RAH
+     what works: the same stage, unforced, found P57's night (Jan 8 RAH
      B) at 300 s where 60 s left him at zero. Costs up to 4 extra minutes
      of a 45-60 min run's final solve.
   3. New post-solve pass `scheduler/backend/anchor_floor_repair.py`
@@ -86,8 +116,8 @@ pass; UNCOMMITTED as of this writing (`git status`):**
      nights can be split between two floor physicians at once. Rule-
      checked through the generator plus HC-10 and HC-13b (never leaves
      the holder an isolated night). Honest result on real data: **0
-     trades** on jan6 and on this morning's replay -- Velji's Jan 2 needs
-     Lung's Jan 3 moved too (23 h spacing) and N Lam's Jan 9 would orphan
+     trades** on jan6 and on this morning's replay -- P92's Jan 2 needs
+     P57's Jan 3 moved too (23 h spacing) and P51's Jan 9 would orphan
      his Jan 10 with nobody offering it: 3-move chains, which only the
      CP-SAT floor stage finds. The pass is kept for the simple cases
      (unpaired nights, 0600h overage -- jan2 had 7 0600h beyond request).
@@ -105,11 +135,11 @@ pass; UNCOMMITTED as of this writing (`git status`):**
   files re-run: 32/32 plus the route round trips.
 - **No floor below 3 requested shifts** (user rule 2026-10-10:
   `_ANCHOR_MIN_FLOOR_MIN_REQUESTED = 3` in the solver, mirrored by
-  `_FLOOR_MIN_REQUESTED` in the repair pass): 0 requested (Chee, a casual)
+  `_FLOOR_MIN_REQUESTED` in the repair pass): 0 requested (P17, a casual)
   or 1-2 requested carries no mandatory anchor. Tests:
   `test_no_floor_for_two_or_fewer_requested_shifts` (contested, 0
   anchors) and the floor_target unit cases (3 -> 1, 2 -> 0, 0 -> 0).
-- KLam shows 16 nights for 8 requested only because the Lam/Rico merge
+- P52 shows 16 nights for 8 requested only because the P52/P53 merge
   doubles the request (correct, not overage).
 
 **2026-10-09 (later) — call rest rules relaxed to department practice
@@ -161,8 +191,8 @@ November and January schedules:**
 - November run report (cpsatv2-nov2, 45 min, first run with the shortfall
   + anchor-heavy rules and October carry-over):
   https://claude.ai/code/artifact/d38a4f91-d66a-4a26-a1a2-c77819e9eb20
-  Watch item from it: Fisher 3/5 nights while Bacon/Lung/Gunawan each got
-  2 unrequested nights; A Hanson 0/10 nights and Taylor 0/1 0600h are
+  Watch item from it: P31 3/5 nights while P06/P57/P37 each got
+  2 unrequested nights; P02 0/10 nights and P88 0/1 0600h are
   sheet data issues.
 
 
@@ -171,7 +201,7 @@ cpsatv2-jan3 review, UNCOMMITTED as of this writing (`git status`):**
 - **Escalating shortfall** (`_SHORTFALL_STEPS = (0, 300, 600, 1000)` in
   `generator_cpsat.py`): per physician, the 2nd/3rd/4th+ shift under their
   request costs extra, so when requests exceed slots (January: 640 vs 630)
-  the shortfall spreads one per physician. Krisik had landed 6/8 with 13
+  the shortfall spreads one per physician. P49 had landed 6/8 with 13
   open days while seven colleagues sat exactly at request.
 - **Casual-priority tiers reworked to make that stick there too.** The
   tiers freeze every physician's count before the final objective, so the
@@ -188,7 +218,7 @@ cpsatv2-jan3 review, UNCOMMITTED as of this writing (`git status`):**
 - **Anchor-heavy first step** (`_ANCHOR_SHARE_OVERAGE_STEPS_HEAVY =
   (1000, 1050, 1100)`, `_ANCHOR_HEAVY_SHARE = 0.5`): when a physician's
   STATED anchors exceed half their requested shifts, the first anchor
-  beyond target costs 1000 instead of 500 (Fisher: 7 of 11 asked, got a
+  beyond target costs 1000 instead of 500 (P31: 7 of 11 asked, got a
   6th night). Exempt: roster `anchor_preference`, `only_0600h/only_2400h`,
   `anchor_floor_exempt`. All steps stay under the 1100 0600h slot payoff.
 - Tests: `test_shortfall_and_anchor_heavy.py` (3; each verified to FAIL
@@ -247,7 +277,7 @@ xlsx and load it; everything else is built and tested (76/76 backend tests).
     fell below the Group A target by ≥1 whole shift gets one extra acute
     unit this month at weight 120 (`_ACUTE_CARRYOVER_WEIGHT`), on top of
     the normal 30-per-unit A-floor target. Skipped when every acute site
-    is in `forbidden_sites` (Krisik, Francescutti) via
+    is in `forbidden_sites` (P49, P32) via
     `trailing.acute_eligible`.
   - *Repeat overage*: a physician scheduled over their requested count
     last month pays 150 (`_OVERAGE_CARRYOVER_PENALTY`) per shift beyond
@@ -285,16 +315,16 @@ xlsx and load it; everything else is built and tested (76/76 backend tests).
   Same week-boundary fix applied to `_parse_schedule_xlsx`. Now parses all
   651 slots (630 filled, 21 unfilled, 50 on-calls). Tests in
   `test_master_sheet_reader.py`. Full suite 76/76.
-- **`Lam-Rico` alias added to KLam** in `physicians.yaml` (gitignored real
+- **`P52-P53 (shared position)` alias added to P52** in `physicians.yaml` (gitignored real
   config -- needs `./scripts/sync-config-to-unraid.sh` to reach Unraid).
-  The master sheet records the shared Lam/Rico position under that name
+  The master sheet records the shared P52/P53 position under that name
   and the reader hard-errors on an unresolved name.
-- **December preference folder**: Zhang's submission was the anonymous
+- **December preference folder**: P100's submission was the anonymous
   Numbers-exported `.xls`; converted (values only, via xlrd) to
-  `Zhang - December 2026.xlsx`, imports cleanly (10/9/10). Still **no
+  `P100 - December 2026.xlsx`, imports cleanly (10/9/10). Still **no
   December preference sheet** for 7 physicians who worked December per the
-  master sheet: Deol (6 shifts), Johnston (9), Mason (7), Rawe (6),
-  Rozmahel (1), Sharma (9), Thirsk (6, PDF-only). Their requested counts
+  master sheet: P21 (6 shifts), P44 (9), P61 (7), P73 (6),
+  P102 (1), P83 (9), P89 (6, PDF-only). Their requested counts
   are unknown, so the repeat-overage carry-over is inert for them; the
   acute-debt term still works (needs only the schedule).
 - **`scripts/kea.sh`** -- terminal control of the dev stack
@@ -304,16 +334,16 @@ xlsx and load it; everything else is built and tested (76/76 backend tests).
 - **Unraid is stale**: `http://192.168.0.5:5000/api/trailing-schedule`
   returns 404 (container predates this session). Needs: user `git push`,
   then the `update-unraid-backend` procedure (SSH -- ask first), plus
-  config sync for the KLam alias, plus `sync-preferences-to-unraid.sh` for
+  config sync for the P52 alias, plus `sync-preferences-to-unraid.sh` for
   whichever month folder is used as `/config/<Month>`.
 
 **Also 2026-10-07 (afternoon, from the user's review of `Tests/cpsatv2-jan1.xlsx`):**
 - **Anchor-share fairness** (`generator_cpsat.py`, config `anchor_shifts.
   anchor_share_target: 0.40`, `anchor_min_floor_full_threshold: 8`). Root
   cause found in that solve: a BLANK 0600h cell was free (no cap, no
-  penalty) while an explicit 0 cost 500/unit -- so Garcea (blank) got 8 of
-  8 shifts as 0600h, Bacon 60% anchors, while 0/0 physicians with 8 shifts
-  (Wittmeier, Thirsk) sat at 1. Now every physician has `anchor_target =
+  penalty) while an explicit 0 cost 500/unit -- so P33 (blank) got 8 of
+  8 shifts as 0600h, P06 60% anchors, while 0/0 physicians with 8 shifts
+  (P96, P89) sat at 1. Now every physician has `anchor_target =
   max(stated anchor requests, floor(0.40 x requested))`: unrequested
   anchors within it cost 150 (60 for their preferred type), anchors beyond
   it cost 500/800/1100 escalating -- for everyone, blank or stated. Stated
@@ -322,7 +352,7 @@ xlsx and load it; everything else is built and tested (76/76 backend tests).
   carry my share"). The 0/0 floor is 2 at >= 8 requested (was 10) and uses
   the new caps, so a no-nights physician can actually reach 2.
 - **Exactly-one-night requests** are exempt from HC-13b (no isolated
-  nights): Grishin asked for 1 2400h and got 0 because the rule demanded a
+  nights): P36 asked for 1 2400h and got 0 because the rule demanded a
   2nd, penalised night. (The user's note said "1x 0600h"; the data shows
   it was the 2400h -- his 6 requested 0600h were all granted, all on RAH B.)
 - **Post-solve RAH A <-> RAH B balance pass** (`scheduler/backend/
@@ -330,9 +360,9 @@ xlsx and load it; everything else is built and tested (76/76 backend tests).
   on-calls): trades same date+time A/B pairs between two physicians when it
   lowers total |A-B|, respecting forbidden_sites, HC-10 adjacent same code,
   max_consecutive_same_site, and never introducing a same-site repeat in a
-  run. In that solve ~15 physicians were 0 on one acute side (N Lam 0/4,
-  Grishin 0/5, Schindler 4/0, Whiteside 4/0 ...).
-- Tests: `test_anchor_fairness.py` (13). N Lam's "NEHC, RAH B, NEHC" run:
+  run. In that solve ~15 physicians were 0 on one acute side (P51 0/4,
+  P36 0/5, P81 4/0, P94 4/0 ...).
+- Tests: `test_anchor_fairness.py` (13). P51's "NEHC, RAH B, NEHC" run:
   NEHC is now included in the no-repeat-in-a-run penalty at a third of the
   weight (50 vs 150, `_CLUSTER_NEHC_REPEAT_PENALTY`) -- user decision,
   since NEHC has 7 slots/day so some repetition there is unavoidable.
@@ -343,21 +373,21 @@ xlsx and load it; everything else is built and tested (76/76 backend tests).
   checks/assigns each into the other's slot; frontend swap flow rewired.
   `test_swap.py` (7). Backend restarted locally so it's live.
 - **Real-data check of the fairness work** (4-min local solve, 8.7% gap):
-  Bacon 60% -> 40% anchors (no unwanted 0600h); Wittmeier/Thirsk/Lucyk/
-  Krisik 1 -> 2 anchors; lopsided acute sides 14 -> 2 after 26 A/B trades
-  (N Lam 2/2, Grishin 2/3; Brenneis 0/4 and Rawe 3/0 remain -- no legal
+  P06 60% -> 40% anchors (no unwanted 0600h); P96/P89/P56/
+  P49 1 -> 2 anchors; lopsided acute sides 14 -> 2 after 26 A/B trades
+  (P51 2/2, P36 2/3; P09 0/4 and P73 3/0 remain -- no legal
   same-slot partner). Two that did NOT move were roster, not solver:
-  - Garcea 8/8 0600h is `only_0600h: true` in physicians.yaml -- correct.
+  - P33 8/8 0600h is `only_0600h: true` in physicians.yaml -- correct.
     Exposed a flaw: fair-share penalties on an only-one-anchor-type
     physician are dead weight that could starve them; they're now exempt
     (target = their whole request). Test added.
-  - Grishin 0 nights: `max_consecutive_nights: 0` in physicians.yaml (from
+  - P36 0 nights: `max_consecutive_nights: 0` in physicians.yaml (from
     the survey's typical_2400h 0) hard-bans nights, overriding his January
     request for 1. Fixed generally: an explicit >=1 night request in the
     month's submission lifts a roster night cap of 0 to 1 (the roster zero
     is a standing assumption; the dated request is the fresher signal).
     Physicians who truly can never work nights should carry
-    `forbidden_shift_times: [2400h]` (Francescutti does), which still wins.
+    `forbidden_shift_times: [2400h]` (P32 does), which still wins.
 
 **Also 2026-10-07 (evening), from the user's review of `Tests/cpsatv2-jan2.xlsx`:**
 - jan2 verdict: anchors fixed (no unmet requests; only 4 physicians 1 night
@@ -365,16 +395,16 @@ xlsx and load it; everything else is built and tested (76/76 backend tests).
   lopsided vs 14 in jan1), weekends: 33 over the proportional cap but the
   month is structurally short (Jan 1 is a Friday, Jan 31 a Sunday -> 48% of
   slots are weekend slots; caps allow ~110 physician-weekends, ~162 needed)
-  and 30 of 33 are over by exactly 1; the 3 outliers (McKinnon 4 vs cap 1,
-  Fisher/Lefebvre 4 vs 2) offered mostly weekends themselves. **User
+  and 30 of 33 are over by exactly 1; the 3 outliers (P63 4 vs cap 1,
+  P31/P55 4 vs 2) offered mostly weekends themselves. **User
   decided: do NOT change the weekend cap.**
 - **Anchor floor extended to blank cells**: floor now applies to anyone with
   no positive anchor request of either type (explicit 0, blank, or mixed),
-  not just explicit 0/0 -- blank/blank physicians (MacGougan, Gunawan,
-  Rawe, Rosenblum) had carried zero anchors while 0/0 carried 2.
+  not just explicit 0/0 -- blank/blank physicians (P58, P37,
+  P73, P76) had carried zero anchors while 0/0 carried 2.
 - **`anchor_floor_exempt` roster toggle** ("Admin role -- exempt from
   mandatory anchors" in the Roster Editor): no floor, no fair share; target
-  = exactly what they requested. Set for MacGougan, Bly, MacLean, Haager in
+  = exactly what they requested. Set for P58, P07, P60, P38 in
   physicians.yaml (gitignored -> needs config sync to Unraid).
 - Optimality gap discussion: the badge thresholds (<1 near-optimal, <5
   good, >=5 sub-optimal in `Sidebar.jsx`) were calibrated on the old
@@ -390,7 +420,7 @@ the human November schedule (user asked for options 1 and 3, not the cap):**
   solver's 156 (34 full Fri+Sat+Sun weekends vs 23; 37 lone Fridays vs 27,
   22 of the solver's being Thu+Fri tails worth +10). Those 9 extra touches
   ARE the extra cap breaches (31 vs 24) and splits (12 vs 8). The
-  prefer_weekends physicians were also under-used (KLam 6/16 weekend
+  prefer_weekends physicians were also under-used (P52 6/16 weekend
   nights vs the human's 9/16).
 - **`_WEEKEND_CLUMP_PENALTY` 15 -> 70** (per weekend cluster touched, non-
   prefer_weekends only): opening a new weekend for one shift now clearly
@@ -486,7 +516,7 @@ the human November schedule (user asked for options 1 and 3, not the cap):**
    2026)" in the solver card, paste the December master-sheet link, Browse
    to the December requests folder — `/home/cid/Dropbox/KEA Scheduling/December`
    (renamed 2026-10-07 to `<RosterId> - December 2026.xlsx`, 72 files, all
-   resolve; originals in `December - pre-rename backup 2026-10-07`; Thirsk
+   resolve; originals in `December - pre-rename backup 2026-10-07`; P89
    is PDF-only and one anonymous `.xls` was left untouched) — click Load. Without `google_sheets.yaml`
    the sheet must be link-shared (view) for the public export path to work.
    (Equivalent API: `POST /api/trailing-schedule {"sheet_url", "year":
@@ -526,24 +556,24 @@ solves, each one a genuine structural fix, not a tuning tweak:
    real data (5/7 eligible physicians still got 0 anchor shifts). Rebuilt as
    its own guaranteed lexicographic stage instead of a soft bonus, same
    treatment the existing anchor-fulfillment guarantee already uses.
-2. **Dickey, then a pattern** — his 0/4-nights bug (from an earlier session)
+2. **P24, then a pattern** — his 0/4-nights bug (from an earlier session)
    had the wrong fix (`prefer_singleton_nights`, which fights his actual
    stated preference for back-to-back nights). Replaced with
    `allow_repeat_shift_codes` + `allow_isolated_nights`. Then found the SAME
    underlying contradiction — HC-13b demands a run of ≥2 nights, but some
    other constraint caps a physician below that — recurring for different
    reasons across five more physicians:
-   - **Braun**: two real available days 4 days apart, never adjacent →
+   - **P08**: two real available days 4 days apart, never adjacent →
      `allow_isolated_nights: true` added.
-   - **Lung**: explicit "0 2400h" caps him at 1 total, but HC-13b needs ≥2
+   - **P57**: explicit "0 2400h" caps him at 1 total, but HC-13b needs ≥2
      if any → floor-eligible physicians now auto-exempted from HC-13b.
-   - **Breton, McKinnon, Schindler**: `max_consecutive_nights == 1` makes a
+   - **P10, P63, P81**: `max_consecutive_nights == 1` makes a
      2+-night run impossible by definition → physicians with that exact cap
      are now auto-exempted from HC-13b too.
-   - **McKinnon** also had a separate, unrelated issue: `forbidden_shift_times:
+   - **P63** also had a separate, unrelated issue: `forbidden_shift_times:
      [0600h, 2400h]` on his roster directly contradicted his own submission
      requesting both — removed.
-3. Along the way: seniority weighting (`hire_year`), the Lam/Rico
+3. Along the way: seniority weighting (`hire_year`), the P52/P53
    combined-submission merge, a `_parse_schedule_xlsx` name-resolution bug
    fix, and a public `/sample` playground + plain-English rulebook shipped
    on sked.keatools.org.
@@ -559,7 +589,7 @@ data case — not speculative tuning:
 - **Escalating weekend-overage penalty** (250/500/800/1000 by 1st/2nd/3rd/4th+
   weekend over cap, replacing a flat 250) — fixes a real redistribution bug
   where a flat penalty gave the solver no reason to spread overage instead
-  of dumping 5 weekends on one physician (McKinnon) while 15 weekdays sat
+  of dumping 5 weekends on one physician (P63) while 15 weekdays sat
   untouched.
 - **Universal Fri+Sun-without-Saturday split penalty (150)**, extended from
   `prefer_weekends`-only to everyone — 11.9% of all weekend touches in a
@@ -568,7 +598,7 @@ data case — not speculative tuning:
   first float shift, 35 after) so "at least one" actually holds.
 - **4-day-run penalty 35→60** — 35 was found to be net *positive* (an
   inversion bug: outweighed by the adjacency bonuses it was meant to
-  offset). Exempts `prefer_clustered_nights` (KLam).
+  offset). Exempts `prefer_clustered_nights` (P52).
 - **`avoid_weekday`/`avoid_mondays` solver term removed** — confirmed as a
   no-op (a -5 penalty outweighed by a +6 site tie-break). The roster field
   is now informational only; real "can't work Wednesdays" must come from
@@ -581,16 +611,16 @@ data case — not speculative tuning:
   worth a deliberate look before trusting it on a long run.
 - **Importer's ambiguous-range anchor parsing flipped from high-end to
   low-end** ("6-8" → 6, not 8) + spelled-out number words ("two" → 2). Fixes
-  RScheirer's float-shift contradiction (his "6/8" was consuming his entire
+  P71's float-shift contradiction (his "6/8" was consuming his entire
   month as nights). This is a roster-wide policy change, not just his case.
 - **New `scripts/sync-preferences-to-unraid.sh`** — mirrors a month's real
   xlsx submissions to Unraid (not just YAML config), with real safety
   guards (refuses to mirror an empty folder, dry-run shown first,
   confirmation required). Closes the stale-import gap behind the
-  MacGougan/Braun data-mismatch confusion from 2026-10-06.
+  P58/P08 data-mismatch confusion from 2026-10-06.
 - **Hard rule**: a 1600h/1800h start now also blocks a 0600h shift two days
   later (previously only 2000h+ starts triggered extended rest) — real case:
-  K Smith, 1800h → day off → 0600h, home ~4am then back at 6am.
+  P87, 1800h → day off → 0600h, home ~4am then back at 6am.
 - **Soft rule**: no repeated site within a run of consecutive days (RAH
   A/B/I/F, not NEHC), plus a penalty for a 2+-day run with zero acute
   shifts anywhere in it.
@@ -628,7 +658,7 @@ issue — go find which two hard constraints are fighting. See
 - The 0/0 anchor floor's weight (400) was tuned against one synthetic
   contested test, not a full real joint solve with the new guaranteed-stage
   design — worth eyeballing on a real run.
-- `McKinnon`'s general anchor-shift issue is resolved, but his
+- `P63`'s general anchor-shift issue is resolved, but his
   `rest_after_late_shift` flag is a real, separate constraint on his
   schedule shape — not a bug, just worth remembering if his numbers look
   odd later.

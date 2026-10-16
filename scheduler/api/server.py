@@ -11,6 +11,7 @@ Usage (standalone):
 from __future__ import annotations
 
 import asyncio
+import threading
 import calendar
 import datetime
 import io
@@ -30,6 +31,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from scheduler.api.schemas import (
+    SkedExportAllRequest, SkedExportAllProgress,
     AssignmentSchema,
     CandidateSchema,
     CandidatesResponse,
@@ -242,8 +244,8 @@ def _resolve_pid(gen, physician_id: str) -> str:
       3. Case-insensitive match on physician_name inside submissions
       4. Cross-reference via current schedule: find physician_name for this id
          in the current result, then match that name against submission names.
-         Handles cases where per-xlsx ids (e.g. "AYeung") differ from
-         flat-file or synthetic submission keys (e.g. "Alex Yeung").
+         Handles cases where per-xlsx ids (e.g. "JRoe") differ from
+         flat-file or synthetic submission keys (e.g. "Jane Roe").
 
     Raises HTTPException(400) if no match is found.
     """
@@ -362,9 +364,9 @@ def _clean_filename_candidate(sub: PhysicianSubmission) -> str:
     stem = Path(sub.source_file).stem if sub.source_file else sub.physician_id
     cleaned = _FILENAME_BOILERPLATE.sub(" ", stem)
     cleaned = " ".join(cleaned.split())
-    # Trailing revision marker (a resubmission renamed "Taylor-1", "Taylor 2",
-    # "Taylor(1)", etc. — see _revision_score) isn't part of the physician's
-    # name; strip it so "Taylor-1" resolves the same as "Taylor" instead of
+    # Trailing revision marker (a resubmission renamed "Doe-1", "Doe 2",
+    # "Doe(1)", etc. — see _revision_score) isn't part of the physician's
+    # name; strip it so "Doe-1" resolves the same as "Doe" instead of
     # ending up unresolved. Deliberately narrow (1-2 digits, at the very end,
     # after a separator) so it can't eat a real 4-digit year or a digit that's
     # actually part of someone's name.
@@ -389,13 +391,13 @@ def _resolve_submission_id(sub: PhysicianSubmission, index: dict) -> str | None:
          filename stem.
       4. physician_id with common filename boilerplate stripped (month
          names, "Master Preferences", "with 0600 and night Q", revision
-         markers like "(1)") — so e.g. "October 2026 Brian Whiteside.xlsx"
-         resolves via the remaining "Brian Whiteside".
+         markers like "(1)") — so e.g. "October 2026 Jane Doe.xlsx"
+         resolves via the remaining "Jane Doe".
 
     Row-1 content (1-2) is tried before any filename-derived candidate
     (3-4) deliberately: a filename can be ambiguous in ways a physician's
-    own typed name isn't (e.g. a bare "LAM" in a filename could mean
-    either Lam physician, but row 1 saying "Kenneth Lam" is unambiguous).
+    own typed name isn't (e.g. a bare shared surname in a filename could mean
+    either of two physicians, but row 1 saying the full name is unambiguous).
     """
     for candidate in (sub.physician_name, *sub.raw_name_candidates):
         resolved = resolve_physician_id(candidate, index)
@@ -414,8 +416,8 @@ def _revision_score(sub: PhysicianSubmission) -> int:
     Higher wins. "updated" anywhere in the filename is a strong deliberate
     signal; a trailing revision number — "(N)" (e.g. from a browser
     appending a number to a duplicate download) or a bare "-N"/" N" (this
-    practice's own resubmission convention, e.g. "Taylor-1.xlsx" for
-    Michael Taylor's 2nd version) — is a weaker but still meaningful
+    practice's own resubmission convention, e.g. "Doe-1.xlsx" for
+    Jane Doe's 2nd version) — is a weaker but still meaningful
     "later" signal — N itself is used so 2/(2) beats 1/(1) beats no marker.
     The bare form is deliberately narrow (1-2 digits, right before the
     extension, after a separator) so it can't mistake a 4-digit year for a
@@ -491,7 +493,7 @@ def _apply_combined_submissions(submissions: list[PhysicianSubmission], roster: 
     """
     Merge a physician's submission into another physician's when
     physicians.yaml says they're a shared position (see
-    PhysicianConfig.combined_with) -- e.g. KLam and MRico each submit
+    PhysicianConfig.combined_with) -- e.g. P52 and P53 each submit
     their own share of the same role's total. Must run right after
     _apply_roster (physician_id already resolved to a real roster id,
     duplicates already dropped) and before any shift-count/casual
@@ -506,7 +508,7 @@ def _apply_combined_submissions(submissions: list[PhysicianSubmission], roster: 
     being willing/able to work a slot makes it available to the combined
     position. The secondary physician's own submission is then dropped
     from `submissions` entirely; they are never separately scheduled.
-    Confirmed real case (2026-10, January): KLam and MRico each submitted
+    Confirmed real case (2026-10, January): P52 and P53 each submitted
     8 requested shifts for the same month -- the combined position wants
     the sum, 16, scheduled across the union of both their marked
     availability, not just whichever file happened to resolve as the
@@ -1047,7 +1049,7 @@ def update_physician(physician_id: str, body: PhysicianUpdateRequest) -> Physici
     # editor's form, so they must be carried forward from the existing
     # config rather than left to default away — otherwise any unrelated
     # edit through the UI silently wipes them (confirmed: this is exactly
-    # what happened to MacGougan's default_shifts_requested).
+    # what happened to P58's default_shifts_requested).
     existing = roster[physician_id]
 
     cfg = PhysicianConfig(
@@ -1231,7 +1233,7 @@ def _apply_shift_count_overrides(submissions: list[PhysicianSubmission], roster:
       reports their own count every month should always have that number
       honored, even if this field is still set from an earlier month
       where their reporting genuinely was unreliable -- confirmed as a
-      real bug (2026-09-29, MacGougan): this used to override a real,
+      real bug (2026-09-29, P58): this used to override a real,
       correctly-filled-in 10 with a stale default of 9. shifts_max is
       floored to at least the applied value too, so a stale lower max
       can't silently undercut it.
@@ -1262,11 +1264,11 @@ def _apply_casual_availability_default(submissions: list[PhysicianSubmission], r
     monthly shift-count (shifts_requested == 0) hasn't said "I want zero
     shifts" — they just didn't state a number. Treat their requested count
     as however many days they marked available (wants_to_work), matching
-    how the human scheduler has read this in practice (e.g. Felicity Brown
+    how the human scheduler has read this in practice (e.g. P11
     marked 2 days available with no stated count and was scheduled for
     exactly 2 shifts).
 
-    A casual physician who DOES state a count (e.g. Gill) keeps that value
+    A casual physician who DOES state a count (e.g. P35) keeps that value
     as their max, unaffected by this — this only fills in a genuinely
     unstated number. Only applies to casual physicians; a non-casual
     physician's blank submission is left for the existing
@@ -1571,7 +1573,10 @@ def sked_calendar_link(body: CalendarLinkRequest) -> CalendarLinkResponse:
                    "(in the physician config folder) and fill it in.",
         )
     roster: dict = _state.get("roster") or {}
-    if not roster:
+    # The cached roster can predate an edit made to physicians.yaml outside
+    # the app (the Roster Editor itself reads the file), so re-read it before
+    # calling an id unknown.
+    if body.physician_id not in roster:
         try:
             roster = load_roster()
             _state["roster"] = roster
@@ -1936,7 +1941,8 @@ def sked_import(body: SkedImportRequest) -> ImportDirectoryResponse:
     _apply_casual_availability_default(submissions, roster)
     results = _build_import_results(submissions, unresolved, roster)
     _state.update(submissions=submissions, roster=roster, scheduler_config=scheduler_cfg,
-                  year=body.year, month=body.month, directory=f"sked:{body.period_id}", source_file=None)
+                  year=body.year, month=body.month, directory=f"sked:{body.period_id}", source_file=None,
+                  sked_period_id=body.period_id)
 
     for err in fetch_errors:
         print(f"[sked_import] WARNING: {err}")
@@ -1947,6 +1953,91 @@ def sked_import(body: SkedImportRequest) -> ImportDirectoryResponse:
         physicians=results, total_physicians=len(results), valid_physicians=valid_count,
         not_submitted=not_submitted,
     )
+
+
+# ---------------------------------------------------------------------------
+# Export every submitted sked preference sheet to individual xlsx files
+# ---------------------------------------------------------------------------
+# Same per-physician fetch /api/sked/import does into a temp dir, but written
+# to a user-chosen folder and never parsed. sked's export is the period's
+# real template with the physician's cells patched in, so the folder ends
+# up identical in shape to a hand-collected month. Runs in a worker thread
+# with polled progress (80 fetches take 20-40 s). Names follow the
+# `<RosterId> - <Month YYYY>.xlsx` convention the roster resolver matches on.
+
+def _sked_export_progress() -> SkedExportAllProgress:
+    return SkedExportAllProgress(**(_state.get("sked_export") or {}))
+
+
+def _run_sked_export_all(sked_config, body: SkedExportAllRequest, roster: dict) -> None:
+    prog = _state["sked_export"]
+    try:
+        active = {cfg.id: cfg for cfg in roster.values() if cfg.active}
+        rows = sked_client.list_period_submissions(sked_config, body.period_id)
+        by_physician = {r["physicianId"]: r for r in rows}
+        todo: list[str] = []
+        for pid, cfg in active.items():
+            row = by_physician.get(pid)
+            if row is None:
+                prog["skipped_not_submitted"].append(pid)
+            elif row.get("status") != "submitted" and not body.include_drafts:
+                prog["skipped_draft"].append(pid)
+            else:
+                todo.append(pid)
+        prog["total"] = len(todo)
+        month_label = f"{calendar.month_name[body.month]} {body.year}"
+        out_dir = Path(body.directory)
+        for pid in todo:
+            if _state.get("sked_export_cancel"):
+                prog["cancelled"] = True
+                break
+            prog["physician"] = pid
+            try:
+                data = sked_client.fetch_physician_export(sked_config, pid, body.period_id)
+                target = out_dir / f"{pid} - {month_label}.xlsx"
+                target.write_bytes(data)
+                prog["written"].append(str(target))
+            except Exception as exc:  # one failure must not stop the rest
+                prog["errors"].append(f"{pid}: {exc}")
+            prog["current"] += 1
+    except Exception as exc:
+        prog["error"] = str(exc)
+    finally:
+        prog["physician"] = ""
+        prog["running"] = False
+        prog["finished"] = True
+
+
+@app.post("/api/sked/export-all", response_model=SkedExportAllProgress)
+def sked_export_all(body: SkedExportAllRequest) -> SkedExportAllProgress:
+    """Start writing every submitted physician's sked preference xlsx into
+    `directory`. Returns the initial progress; poll GET /api/sked/export-all/progress."""
+    sked_config = sked_client.load_sked_config()
+    if sked_config is None or not sked_client.is_fully_configured(sked_config):
+        raise HTTPException(status_code=400, detail="sked is not configured (scheduler/config/sked.yaml).")
+    if (_state.get("sked_export") or {}).get("running"):
+        raise HTTPException(status_code=409, detail="An export is already running.")
+    out_dir = Path(body.directory)
+    if not out_dir.is_dir():
+        raise HTTPException(status_code=400, detail=f"Folder not found on the backend machine: {body.directory}")
+    roster = load_roster()
+    _state["sked_export_cancel"] = False
+    _state["sked_export"] = SkedExportAllProgress(
+        running=True, directory=str(out_dir), period_id=body.period_id,
+    ).model_dump()
+    threading.Thread(target=_run_sked_export_all, args=(sked_config, body, roster), daemon=True).start()
+    return _sked_export_progress()
+
+
+@app.get("/api/sked/export-all/progress", response_model=SkedExportAllProgress)
+def sked_export_all_progress() -> SkedExportAllProgress:
+    return _sked_export_progress()
+
+
+@app.post("/api/sked/export-all/cancel", response_model=SkedExportAllProgress)
+def sked_export_all_cancel() -> SkedExportAllProgress:
+    _state["sked_export_cancel"] = True
+    return _sked_export_progress()
 
 
 # ---------------------------------------------------------------------------
@@ -2815,8 +2906,8 @@ def _parse_schedule_xlsx(path: Path, roster: dict) -> ScheduleResult:
     # name_to_id dict here only ever checked against cfg.name ("First
     # Last") or its lowercase, which never matches "Last, F" -- so every
     # single reimported schedule silently fell back to using the raw
-    # display string itself as physician_id (e.g. "Lam, K" instead of
-    # "KLam"), corrupting every downstream stat keyed by physician_id.
+    # display string itself as physician_id (e.g. "P52" instead of
+    # "P52"), corrupting every downstream stat keyed by physician_id.
     # An unresolved name is now a hard error, matching every other import
     # path in this file (_apply_roster, _resolve_submission_id) and
     # physician_resolver's own documented intent -- never silently guess.

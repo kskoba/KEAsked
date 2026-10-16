@@ -260,6 +260,26 @@ export async function importFromSked(periodId, year, month) {
 }
 
 /**
+ * Start writing every submitted physician's sked preference xlsx for a
+ * period into `directory` (a folder on the backend's machine, chosen by
+ * the user each time). Returns the initial progress; poll
+ * getSkedExportAllProgress() until `finished`.
+ */
+export async function startSkedExportAll(periodId, year, month, directory, includeDrafts) {
+  return request('POST', '/api/sked/export-all', {
+    period_id: periodId, year, month, directory, include_drafts: Boolean(includeDrafts),
+  })
+}
+
+export async function getSkedExportAllProgress() {
+  return request('GET', '/api/sked/export-all/progress')
+}
+
+export async function cancelSkedExportAll() {
+  return request('POST', '/api/sked/export-all/cancel')
+}
+
+/**
  * Regenerate one physician's shift-request link and email it. Only for the
  * "not submitted yet" highlight list -- backend looks up their address from
  * physicians.yaml.

@@ -234,6 +234,34 @@ class SkedImportRequest(BaseModel):
     month: int
 
 
+class SkedExportAllRequest(BaseModel):
+    """Write every submitted physician's filled preference xlsx for a sked
+    period into `directory` (a folder on the BACKEND's filesystem, chosen by
+    the user each time -- never a default). Drafts are skipped unless
+    include_drafts."""
+    period_id: str
+    year: int
+    month: int
+    directory: str
+    include_drafts: bool = False
+
+
+class SkedExportAllProgress(BaseModel):
+    running: bool = False
+    finished: bool = False
+    cancelled: bool = False
+    current: int = 0            # physicians processed so far
+    total: int = 0              # physicians to process (after draft/not-submitted filtering)
+    physician: str = ""         # the one being fetched right now
+    directory: str = ""
+    period_id: str = ""
+    written: list[str] = []     # file paths written
+    skipped_not_submitted: list[str] = []
+    skipped_draft: list[str] = []
+    errors: list[str] = []
+    error: str | None = None    # fatal error (period listing failed, etc.)
+
+
 class ResendMonthlyRequestRequest(BaseModel):
     period_id: str
     physician_id: str
@@ -533,7 +561,7 @@ class PhysicianUpdateRequest(PhysicianDetail):
 
 
 class CreatePhysicianRequest(BaseModel):
-    id: str            # single-word roster id, e.g. "Dickey"
+    id: str            # single-word roster id, e.g. "P24"
     first_name: str
     last_name: str
 

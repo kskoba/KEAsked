@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import {
   overrideIssue, overrideClear, overrideAll, getValidationSummary,
   getByteBlocPreview, sendByteBlocRequests, getEmailStatus, sendReminderEmail, getApiBaseUrl,
+  startSkedExportAll, getSkedExportAllProgress, cancelSkedExportAll,
 } from '../api'
 
 // The backend reports where each submission xlsx lives on ITS filesystem;
@@ -29,6 +30,24 @@ export default function ValidationPanel({ importResult, onImportResultUpdate }) 
   const [busy, setBusy] = useState(null)     // key of the in-flight override action, or null
   const [report, setReport] = useState(null) // null | { loading, error, items }
   const [byteBloc, setByteBloc] = useState(null) // null | { loading, error, preview, sendResult }
+  // "Export all preferences to .xlsx": only meaningful when this month's
+  // submissions were pulled from sked (directory is "sked:<period id>").
+  const skedPeriodId = typeof importResult.directory === 'string' && importResult.directory.startsWith('sked:')
+    ? importResult.directory.slice(5)
+    : null
+  const [exportAll, setExportAll] = useState(null) // null | { directory, includeDrafts, progress, error }
+
+  async function handleExportAllOpen() {
+    // The folder is chosen every time -- there is deliberately no default.
+    let directory = null
+    if (window.electronAPI?.openDirectory && !isRemoteBackend()) {
+      directory = await window.electronAPI.openDirectory()
+    } else {
+      directory = prompt('Folder on the backend machine to write the xlsx files into:')
+    }
+    if (!directory) return
+    setExportAll({ directory, includeDrafts: false, progress: null, error: null })
+  }
 
   const validCount = physicians.filter(p => p.is_valid).length
   const totalCount = total_physicians ?? physicians.length
@@ -117,6 +136,16 @@ export default function ValidationPanel({ importResult, onImportResultUpdate }) 
             title="List every remaining (non-overridden) error, grouped by physician"
           >
             Generate Error Report
+          </button>
+          <button
+            onClick={handleExportAllOpen}
+            disabled={!skedPeriodId}
+            className="px-3 py-1.5 text-xs font-semibold rounded-md border border-slate-300 bg-white text-slate-600 hover:bg-slate-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            title={skedPeriodId
+              ? "Write every submitted physician's preference sheet for this month into a folder you choose, one .xlsx each"
+              : 'Available after pulling this month\'s requests from sked'}
+          >
+            Export All Preferences to .xlsx
           </button>
           <button
             onClick={handleOpenByteBloc}
@@ -321,6 +350,16 @@ export default function ValidationPanel({ importResult, onImportResultUpdate }) 
 
       {report && (
         <ErrorReportModal report={report} onClose={() => setReport(null)} />
+      )}
+      {exportAll && (
+        <ExportAllModal
+          state={exportAll}
+          periodId={skedPeriodId}
+          year={importResult.year}
+          month={importResult.month}
+          onChange={setExportAll}
+          onClose={() => setExportAll(null)}
+        />
       )}
 
       {byteBloc && (
@@ -584,5 +623,153 @@ function IssueIcon({ severity }) {
     <svg className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
     </svg>
+  )
+}
+
+
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+
+/**
+ * Export every submitted physician's sked preference sheet into the folder
+ * the user just picked. Three phases: confirm (folder + include-drafts),
+ * running (polled progress bar, cancellable), done (written / skipped /
+ * failed). Files are named "<RosterId> - <Month YYYY>.xlsx" and existing
+ * files with those names in the folder are replaced.
+ */
+function ExportAllModal({ state, periodId, year, month, onChange, onClose }) {
+  const { directory, includeDrafts, progress, error } = state
+  const running = Boolean(progress?.running)
+  const finished = Boolean(progress?.finished)
+  const remote = isRemoteBackend()
+  const label = `${MONTH_NAMES[(month ?? 1) - 1]} ${year}`
+
+  useEffect(() => {
+    if (!running) return undefined
+    const timer = setInterval(async () => {
+      try {
+        const p = await getSkedExportAllProgress()
+        onChange(prev => prev ? { ...prev, progress: p } : prev)
+      } catch (err) {
+        onChange(prev => prev ? { ...prev, error: err.message } : prev)
+      }
+    }, 500)
+    return () => clearInterval(timer)
+  }, [running, onChange])
+
+  async function handleStart() {
+    try {
+      const p = await startSkedExportAll(periodId, year, month, directory, includeDrafts)
+      onChange(prev => ({ ...prev, progress: p, error: null }))
+    } catch (err) {
+      onChange(prev => ({ ...prev, error: err.message }))
+    }
+  }
+
+  async function handleCancel() {
+    try { await cancelSkedExportAll() } catch { /* progress poll will report */ }
+  }
+
+  async function handleOpenFolder() {
+    if (window.electronAPI?.openPath) await window.electronAPI.openPath(directory)
+  }
+
+  const total = progress?.total ?? 0
+  const current = progress?.current ?? 0
+  const pct = total ? Math.round((current / total) * 100) : 0
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={running ? undefined : onClose}>
+      <div
+        className="bg-white rounded-xl shadow-xl border border-slate-200 w-full max-w-xl mx-4 max-h-[80vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+          <h2 className="font-semibold text-slate-800 text-sm">Export All Preferences to .xlsx — {label}</h2>
+          {!running && <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-lg leading-none">✕</button>}
+        </div>
+
+        <div className="px-5 py-4 overflow-auto flex-1 text-sm text-slate-700 space-y-3">
+          <p>
+            Folder: <code className="font-mono text-xs bg-slate-100 px-1 py-0.5 rounded break-all">{directory}</code>
+            {remote && <span className="block text-xs text-amber-700 mt-1">The backend is remote, so this folder is on the backend machine.</span>}
+          </p>
+
+          {!progress && (
+            <>
+              <p>
+                One file per physician who has <strong>submitted</strong> on sked for {label}, named{' '}
+                <code className="font-mono text-xs">&lt;RosterId&gt; - {label}.xlsx</code>.
+                Files with those names already in the folder will be <strong>replaced</strong>.
+              </p>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={includeDrafts}
+                  onChange={(e) => onChange(prev => ({ ...prev, includeDrafts: e.target.checked }))}
+                />
+                Include drafts (saved but not yet submitted by the physician)
+              </label>
+            </>
+          )}
+
+          {progress && (
+            <div>
+              <div className="flex justify-between text-xs text-slate-500 mb-1">
+                <span>
+                  {running
+                    ? `Exporting ${current} of ${total}${progress.physician ? ` — ${progress.physician}` : ''}`
+                    : progress.cancelled ? `Cancelled after ${current} of ${total}` : `Done: ${current} of ${total}`}
+                </span>
+                <span>{pct}%</span>
+              </div>
+              <div className="w-full h-2 bg-slate-200 rounded overflow-hidden">
+                <div className="h-2 bg-sky-500 transition-all" style={{ width: `${pct}%` }} />
+              </div>
+            </div>
+          )}
+
+          {finished && (
+            <div className="space-y-2 text-xs">
+              <p className="text-emerald-700 font-semibold">{progress.written.length} file{progress.written.length === 1 ? '' : 's'} written.</p>
+              {progress.skipped_draft.length > 0 && (
+                <p className="text-slate-600">Skipped (draft, not submitted): {progress.skipped_draft.join(', ')}</p>
+              )}
+              {progress.skipped_not_submitted.length > 0 && (
+                <p className="text-slate-600">Skipped (no submission): {progress.skipped_not_submitted.join(', ')}</p>
+              )}
+              {progress.errors.length > 0 && (
+                <div className="text-rose-700">
+                  <p className="font-semibold">Failed:</p>
+                  <ul className="list-disc pl-5">{progress.errors.map((e, i) => <li key={i}>{e}</li>)}</ul>
+                </div>
+              )}
+              {progress.error && <p className="text-rose-700 font-semibold">Export stopped: {progress.error}</p>}
+            </div>
+          )}
+
+          {error && <p className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-md px-3 py-2">{error}</p>}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-slate-200">
+          {!progress && (
+            <>
+              <button onClick={onClose} className="px-3 py-1.5 text-xs font-semibold rounded-md border border-slate-300 bg-white text-slate-600 hover:bg-slate-100">Cancel</button>
+              <button onClick={handleStart} className="px-3 py-1.5 text-xs font-semibold rounded-md border border-sky-600 bg-sky-600 text-white hover:bg-sky-700">Export</button>
+            </>
+          )}
+          {running && (
+            <button onClick={handleCancel} className="px-3 py-1.5 text-xs font-semibold rounded-md border border-slate-300 bg-white text-slate-600 hover:bg-slate-100">Stop after current file</button>
+          )}
+          {finished && (
+            <>
+              {window.electronAPI?.openPath && !remote && (
+                <button onClick={handleOpenFolder} className="px-3 py-1.5 text-xs font-semibold rounded-md border border-slate-300 bg-white text-slate-600 hover:bg-slate-100">Open folder</button>
+              )}
+              <button onClick={onClose} className="px-3 py-1.5 text-xs font-semibold rounded-md border border-sky-600 bg-sky-600 text-white hover:bg-sky-700">Close</button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
   )
 }

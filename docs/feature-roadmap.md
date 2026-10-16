@@ -70,7 +70,7 @@ Then the Unraid box needs its usual `git pull` + rebuild (see the `update-unraid
 
 ## Export all sked preferences to individual .xlsx files
 
-**Status**: planned 2026-10-16, decisions settled with the user, not started. Build on the user's word.
+**Status**: BUILT 2026-10-16 (same day). Backend `POST /api/sked/export-all` + progress/cancel routes, `ValidationPanel.jsx` button + modal, `test_sked_export_all.py`. Kept here for the design record.
 
 **What it is**: a button "Export all preferences to .xlsx" beside Generate Error Report on the Validate page. Prompts for a folder, then writes one file per physician who submitted on sked for the loaded month -- each file is the physician's filled template exactly as sked's admin export produces it (template-faithful since sked `76575c5`: hidden rows/cols, widths, fills, formulas intact). Result: a folder identical in shape to the hand-collected monthly folders, which imports back the same way.
 

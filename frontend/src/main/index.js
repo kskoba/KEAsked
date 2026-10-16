@@ -622,6 +622,24 @@ ipcMain.handle('shell:openExternal', (_event, url) => {
 // paths that exist, so a stray string from the backend can never launch
 // anything else. Resolves to '' on success or an error message (Electron's
 // shell.openPath contract).
+// Hand a path to the system opener WITHOUT blocking the main process. On
+// Linux, Electron's shell.openPath runs xdg-open and waits for it to exit;
+// a file manager that stalls on startup (seen 2026-10-16 with Nautilus
+// under Hyprland: it failed its display connection, loaded its Dropbox
+// extension, then exited) froze the whole app long enough for the
+// compositor to offer to terminate it. A detached xdg-open returns at once
+// and inherits the display environment. macOS (Finder) and Windows
+// (Explorer) keep shell.openPath, which does not block there.
+function openWithSystem(targetPath) {
+  if (process.platform === 'linux') {
+    const child = spawn('xdg-open', [targetPath], { detached: true, stdio: 'ignore' })
+    child.on('error', (err) => console.warn('[main] xdg-open failed:', err.message))
+    child.unref()
+    return Promise.resolve('')
+  }
+  return shell.openPath(targetPath)
+}
+
 ipcMain.handle('shell:openPath', async (_event, filePath) => {
   if (typeof filePath !== 'string' || !/\.xlsx$/i.test(filePath)) {
     throw new Error(`Refusing to open non-xlsx path: ${filePath}`)
@@ -629,7 +647,7 @@ ipcMain.handle('shell:openPath', async (_event, filePath) => {
   if (!existsSync(filePath)) {
     throw new Error(`File not found on this computer: ${filePath}`)
   }
-  return shell.openPath(filePath)
+  return openWithSystem(filePath)
 })
 
 // IPC: reveal a folder in the system file manager -- used by the Validate
@@ -645,7 +663,7 @@ ipcMain.handle('shell:openFolder', async (_event, dirPath) => {
   if (!stat || !stat.isDirectory()) {
     throw new Error(`Folder not found on this computer: ${dirPath}`)
   }
-  return shell.openPath(dirPath)
+  return openWithSystem(dirPath)
 })
 
 // IPC: open (or focus) the physician roster editor window

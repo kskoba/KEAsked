@@ -6,16 +6,16 @@ Things identified during real work on the scheduler that are deliberately **not*
 
 ## 1. Parse row 6 ("Preferred") — per-day shift/anchor preference
 
-**Status**: deferred, not started. Identified 2026-09-22 while investigating a 2400h allocation asymmetry in `cpsat-oct12.xlsx` (RScheirer requested 6 nights, got 0).
+**Status**: deferred, not started. Identified 2026-09-22 while investigating a 2400h allocation asymmetry in `cpsat-oct12.xlsx` (P71 requested 6 nights, got 0).
 
-**What it is**: physician submission sheets (`scheduler/backend/importer.py`'s layout) have a row 6 labeled "Preferred" that physicians fill in per-day — free text, e.g. `"N"` for "I'd prefer a night here specifically", or a literal shift code like `"16RA"` for a specific shift they want that day. Confirmed present and actively used in real submissions (RScheirer's October sheet has 6 days marked "N" and 2 marked with a specific code).
+**What it is**: physician submission sheets (`scheduler/backend/importer.py`'s layout) have a row 6 labeled "Preferred" that physicians fill in per-day — free text, e.g. `"N"` for "I'd prefer a night here specifically", or a literal shift code like `"16RA"` for a specific shift they want that day. Confirmed present and actively used in real submissions (P71's October sheet has 6 days marked "N" and 2 marked with a specific code).
 
 **Current state**: `importer.py` never reads row 6 at all — confirmed via full grep, no `_ROW_6` or row-6 reference anywhere in the parsing code. The signal exists in every submission file and is silently discarded before it ever reaches the solver. Today the solver only sees *monthly totals* (`shifts_2400h_requested`, `shifts_0600h_requested` — cells AK59/AK61) with zero information about which specific days a physician prefers those shifts to land on.
 
 **Why it matters**: the anchor-fulfillment bonus (`generator_cpsat.py`, `_ANCHOR_FULFILLMENT_BONUS`) only rewards hitting the aggregate count — it has no way to prefer specific days. Adding row-6 as a per-day steering signal would likely improve both correctness (physicians actually get nights on days they can plan around) and the solver's ability to satisfy anchor requests at all, independent of the floor-mechanism work below.
 
 **Scope this needs when picked up**:
-- Add `_PREFERRED_ROW = 6` to `importer.py`, parse it per day (need to decide: is "N" the only night-marker convention, or are there other shorthand codes in use across the roster? — survey a sample of real submissions first, not just RScheirer's).
+- Add `_PREFERRED_ROW = 6` to `importer.py`, parse it per day (need to decide: is "N" the only night-marker convention, or are there other shorthand codes in use across the roster? — survey a sample of real submissions first, not just P71's).
 - Add a field to `DayAvailability` (e.g. `preferred_shift: str | None`) to carry it.
 - Wire a soft per-day bonus into `generator_cpsat.py`'s objective when a physician's actual assignment matches their row-6 preference for that day.
 - Check how many other physicians actually use row 6 (found via this investigation but not yet surveyed roster-wide) before sizing the real-world impact.
@@ -39,7 +39,7 @@ Not started.
 - `scheduler/api/schemas.py` — new `PeriodInfo`, `PeriodsResponse`, `PhysicianLinkRequest`, `PhysicianLinkResponse`.
 - `scheduler/api/server.py` — two new endpoints, both live-tested against the real deployed sked (`sked.keatools.org`), not just imported/compiled:
   - `GET /api/sked/periods?kind=shift_request` — list of real existing periods `[{id, label, opens_at, closes_at}]`. **Confirmed working**: returned `test-period`, `2026-12`, `2027-01` (×2, one stray duplicate-looking id `2027-01-01` — probably worth a quick look, not investigated), `2026-11`. Note **October 2026 is not in this list** — that month's real physician submissions predate sked's existence (built 2026-09-22) and came in via the old individual-xlsx-file process, not through sked at all. This feature will only work for periods actually sent out *through* sked going forward.
-  - `POST /api/sked/physician-link` (`{physician_id, period_id}` → `{url}`) — generates a link via the same `sked_client.generate_period_links()` call the existing send/resend flows use, just returns the URL instead of emailing it. **Confirmed working**: tested live with `{"physician_id":"RScheirer","period_id":"test-period"}`, got back a real signed `https://sked.keatools.org/?token=...` URL.
+  - `POST /api/sked/physician-link` (`{physician_id, period_id}` → `{url}`) — generates a link via the same `sked_client.generate_period_links()` call the existing send/resend flows use, just returns the URL instead of emailing it. **Confirmed working**: tested live with `{"physician_id":"P71","period_id":"test-period"}`, got back a real signed `https://sked.keatools.org/?token=...` URL.
 - `frontend/src/main/index.js` — new `shell:openExternal` IPC handler (didn't exist before this — no prior "open URL in browser" capability anywhere in the app). Deliberately restricted to `http(s)://` only (throws otherwise), so a renderer bug or bad backend response can never hand the OS a `file://` or custom-protocol string.
 - `frontend/src/preload/index.js` — exposes it as `window.electronAPI.openExternal(url)`.
 - `frontend/src/renderer/api.js` — `getSkedPeriods(kind)`, `getPhysicianLink(physicianId, periodId)`.
@@ -65,3 +65,36 @@ Then the Unraid box needs its usual `git pull` + rebuild (see the `update-unraid
 
 ## on the individual schedule tab in app, when viewing someone's finalized schedule underneath it should show: requested number of shifts, max shifts, number of nights, number of 0600h and any specific rules for that person. also the individual schedules should show actually what shift they have on that day, not just the time 
 
+
+---
+
+## Export all sked preferences to individual .xlsx files
+
+**Status**: planned 2026-10-16, decisions settled with the user, not started. Build on the user's word.
+
+**What it is**: a button "Export all preferences to .xlsx" beside Generate Error Report on the Validate page. Prompts for a folder, then writes one file per physician who submitted on sked for the loaded month -- each file is the physician's filled template exactly as sked's admin export produces it (template-faithful since sked `76575c5`: hidden rows/cols, widths, fills, formulas intact). Result: a folder identical in shape to the hand-collected monthly folders, which imports back the same way.
+
+**Source of the files**: sked's `GET /api/admin/physician-export` -- the same per-physician fetch `/api/sked/import` already does into a temp dir before parsing (`sked_client.fetch_physician_export`). This feature is that loop writing to the chosen folder and skipping the parse. Nothing new on the sked side.
+
+**Naming**: `<RosterId> - <Month YYYY>.xlsx` (e.g. `Krisik - January 2027.xlsx`), the convention the December/January folders were renamed to and the roster resolver matches on. The combined P52/P53 pair exports as two individual files, as sked holds them.
+
+**Decisions (user, 2026-10-16)**:
+1. Drafts are excluded by default (not technically submitted); an "Include drafts" checkbox adds them.
+2. Write ONLY to the folder the user picks, prompted every time. No default folder, no auto-created subfolder. Existing files with the same name in that folder are overwritten (sked is the record of truth) -- the confirm step must say so and show the count.
+3. A progress indicator is required: ~80 fetches take 20-40 s and a frozen-looking button is not acceptable.
+
+**Backend** (`server.py`, `schemas.py`):
+- `POST /api/sked/export-all {period_id, year, month, directory, include_drafts}` starts the job in a worker thread (same pattern as `/api/generate` + `/api/generate-progress`) and returns immediately.
+- `GET /api/sked/export-all/progress` -> `{running, current, total, physician, written, skipped_not_submitted, skipped_draft, errors:[{physician, message}], files:[...]}`; the renderer polls it every 500 ms. A failing fetch records an error and continues.
+- Remember the sked period id in `_state` at import time (today it is not kept) so the button knows what to export.
+- Files are written by the backend to a path on the backend's filesystem -- the same convention as `/api/import {directory}`. On a remote backend (Unraid) the folder is therefore on that machine; the UI must say so.
+
+**Frontend** (`ValidationPanel.jsx`, `api.js`):
+- Button enabled only when the current import came from sked (tooltip otherwise). Folder via the existing `dialog:openDirectory` IPC locally; typed path when the app points at a remote backend (as `PreviousMonthPanel.jsx` does).
+- Confirm dialog: "Write N files to <folder>? Existing files with the same names will be replaced." + Include-drafts checkbox.
+- Progress: bar + "Exporting 23 of 77 -- Krisik" from the polled route; Cancel stops after the current file.
+- Result dialog: written / skipped (not submitted, draft) / failed lists, "Open folder" via `shell.openPath`.
+
+**Tests**: backend route with `sked_client` mocked -- naming, draft default vs include, one failing fetch not blocking the rest, overwrite of an existing file, progress payload shape. UI by hand (no frontend test infra).
+
+**Effort**: about half a day.

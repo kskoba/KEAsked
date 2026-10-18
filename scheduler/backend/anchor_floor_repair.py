@@ -7,11 +7,11 @@ User rule (2026-10-10): a physician with no positive anchor request (the
 2400h/0600h request -- "floor physicians should only be given a shift to
 avoid making others go over their requested number of anchor shifts".
 
-Real case: Lung (10 shifts, explicit 0/0, nights offered on five weekend
-dates only) sat at 0 of 2 anchors in cpsatv2-jan4/5/6 while N Lam and
-Velji each held a 4th night against 3 requested and Fisher a 6th against
-5 -- on Lung's own dates. January's 120 night slots carry more stated
-night requests than that, so a night for Lung can only come from such an
+Real case: P57 (10 shifts, explicit 0/0, nights offered on five weekend
+dates only) sat at 0 of 2 anchors in cpsatv2-jan4/5/6 while P51 and
+P92 each held a 4th night against 3 requested and P31 a 6th against
+5 -- on P57's own dates. January's 120 night slots carry more stated
+night requests than that, so a night for P57 can only come from such an
 overage night, and reaching it inside CP-SAT means a multi-swap chain
 (his own same-day shift has to move for the 23 h spacing rule, and so
 on). The solver's floor stage ended its 60 s unproven with him at zero
@@ -240,9 +240,9 @@ def repair_anchor_floors(gen, result: ScheduleResult, max_rounds: int = 3) -> tu
                 # leave the other night isolated (HC-13b). Split the pair
                 # between TWO floor physicians -- p takes this night, a
                 # second floor physician r takes the pair-mate, the holder
-                # gets a non-anchor shift back from each. Real case: Velji's
-                # Jan 2+3 (4th night for 3 requested) with Lung offering
-                # Jan 2 and Gunawan most nights.
+                # gets a non-anchor shift back from each. Real case: P92's
+                # Jan 2+3 (4th night for 3 requested) with P57 offering
+                # Jan 2 and P37 most nights.
                 if theirs.shift.time != "2400h":
                     continue
                 orphan_day = _orphaned_night(gen, q, theirs.date)

@@ -1,13 +1,13 @@
 """
 Tests for allow_repeat_shift_codes (HC-10 per-physician exception) and
 allow_isolated_nights (decoupled half of prefer_singleton_nights' HC-13b
-exemption, without its anti-clustering penalty). Added for Dickey
+exemption, without its anti-clustering penalty). Added for P24
 (2027-01): his submission only ever offers one 2400h site, and he
 explicitly prefers back-to-back nights at that one site -- the original
 fix (prefer_singleton_nights) actively discouraged exactly that.
 
 Solo/uncontested synthetic models, same technique used for the original
-Dickey/RScheirer singleton-night diagnosis this session.
+P24/P71 singleton-night diagnosis this session.
 """
 
 from __future__ import annotations
@@ -50,27 +50,27 @@ def _night_count(result, pid: str) -> int:
 
 def test_allow_repeat_shift_codes_permits_clustered_same_site_nights():
     cfg = PhysicianConfig(
-        id="Dickey", name="Dickey", max_consecutive_nights=2,
+        id="P24", name="P24", max_consecutive_nights=2,
         allow_repeat_shift_codes=[NIGHT_CODE], allow_isolated_nights=True,
         prefer_clustered_nights=True,
     )
-    sub = _single_site_night_submission("Dickey", 4)
-    gen = CpsatScheduleGenerator([sub], {"Dickey": cfg}, {}, trailing_assignments=None)
+    sub = _single_site_night_submission("P24", 4)
+    gen = CpsatScheduleGenerator([sub], {"P24": cfg}, {}, trailing_assignments=None)
     result = gen.generate(YEAR, MONTH, time_limit=15.0, num_workers=4)
 
-    assert _night_count(result, "Dickey") == 4
+    assert _night_count(result, "P24") == 4
 
 
 def test_allow_isolated_nights_permits_a_genuine_solo_night():
     cfg = PhysicianConfig(
-        id="Dickey", name="Dickey", max_consecutive_nights=2,
+        id="P24", name="P24", max_consecutive_nights=2,
         allow_repeat_shift_codes=[NIGHT_CODE], allow_isolated_nights=True,
     )
-    sub = _single_site_night_submission("Dickey", 1)
-    gen = CpsatScheduleGenerator([sub], {"Dickey": cfg}, {}, trailing_assignments=None)
+    sub = _single_site_night_submission("P24", 1)
+    gen = CpsatScheduleGenerator([sub], {"P24": cfg}, {}, trailing_assignments=None)
     result = gen.generate(YEAR, MONTH, time_limit=15.0, num_workers=4)
 
-    assert _night_count(result, "Dickey") == 1
+    assert _night_count(result, "P24") == 1
 
 
 def test_without_allow_repeat_shift_codes_single_site_still_deadlocked():
@@ -105,14 +105,14 @@ def test_prefer_singleton_nights_physicians_unaffected():
 
 
 def test_max_consecutive_nights_of_one_is_automatically_isolation_exempt():
-    """Reproduces a third real failure (Breton/McKinnon/Schindler, real
+    """Reproduces a third real failure (P10/P63/P81, real
     January data): max_consecutive_nights=1 hard-caps any night run at 1
     (via HC-13 itself), but HC-13b otherwise requires >=2 adjacent nights
     for ANY 2400h at all -- a contradiction that's mathematically
     impossible regardless of availability, with no per-physician flag
     needed to trigger it (the cap value itself is the signal). Full
     multi-site availability here specifically to isolate this exemption
-    from the separate single-site/HC-10 deadlock Dickey's fix covers."""
+    from the separate single-site/HC-10 deadlock P24's fix covers."""
     days = [
         DayAvailability(
             date=datetime.date(YEAR, MONTH, d),

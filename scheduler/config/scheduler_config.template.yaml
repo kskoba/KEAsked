@@ -136,7 +136,7 @@ run_group_mix: true
 # Additionally, the forbidden_time_pairs combinations are never
 # allowed on the same day regardless of gap.
 timed_separation:
-  - physicians: [Brenneis, Fanaeian]
+  - physicians: [PhysicianA, PhysicianB]
     min_hours_gap: 6
     forbidden_time_pairs:
       - [1700h, 2400h]
@@ -146,7 +146,7 @@ timed_separation:
 #   no_shared_weekends: true  → they cannot both work Fri/Sat/Sun
 #   weekday_requires_one_at   → on a weekday, one of them must be at this time
 conditional_cowork:
-  - physicians: [Edgecumbe, Houston]
+  - physicians: [PhysicianC, PhysicianD]
     no_shared_weekends: true
     weekday_requires_one_at: "0600h"
 
@@ -157,7 +157,7 @@ conditional_cowork:
 # to one physician's own day-to-day sequence apply across their
 # COMBINED sequence too.
 linked_rest_pairs:
-  - physicians: [KLam, MRico]   # Kenneth Lam & Michelle Rico
+  - physicians: [PhysicianE, PhysicianF]   # two physicians sharing one position
 
 # ----------------------------------------------------------
 # Linked-pair constraints

@@ -3,14 +3,14 @@ Two user rules from the cpsatv2-jan3 review (2026-10-07):
 
   * Shortfall is spread, never piled: when requests exceed the slots on
     offer, nobody should finish more than one shift under their request
-    while someone else sits at theirs (Krisik got 6 of 8 with 13 open
+    while someone else sits at theirs (P49 got 6 of 8 with 13 open
     days while seven colleagues were exactly at request). Implemented as
     escalating per-physician shortfall steps -- in the final objective
     and inside the casual-priority tiers, which freeze each physician's
     count before the final objective runs.
   * An anchor-heavy physician (stated anchors above half their requested
     shifts) pays double for the first anchor beyond their target, so an
-    unavoidable extra night goes to someone lighter first (Fisher: 7 of
+    unavoidable extra night goes to someone lighter first (P31: 7 of
     11 anchors asked, handed a 6th night). Roster anchor people
     (anchor_preference / only_* / anchor_floor_exempt) are not affected.
 """

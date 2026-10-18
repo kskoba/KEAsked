@@ -101,14 +101,14 @@ class PhysicianConfig:
 
     # Structured name parts for display formatting (e.g. "Lastname, F").
     # Not always fully known — first_name may be empty (surname-only on
-    # file), an initial ("F"), or a full first name ("Amanda"), depending
+    # file), an initial ("F"), or a full first name ("Jane"), depending
     # on what's actually recorded for this physician.
     last_name: str = ""
     first_name: str = ""
 
     # Other id/name strings this physician might appear under in imported
-    # submission files (e.g. a flat-file sheet using "Hanson A" for the
-    # physician whose canonical roster name is "Amanda Hanson"). Matched
+    # submission files (e.g. a flat-file sheet using "Doe J" for the
+    # physician whose canonical roster name is "Jane Doe"). Matched
     # case-insensitively by physician_resolver.py — see that module for
     # why this is exact-match only, never fuzzy.
     aliases: list[str] = field(default_factory=list)
@@ -147,7 +147,7 @@ class PhysicianConfig:
     # actively pursues this many F shifts specifically, without a hard
     # constraint (which could make some months infeasible given the
     # 1-per-day scarcity). None (default) means no such target.
-    # Added for Rick Scheirer (2026-09-29): float is more desirable to him
+    # Added for P71 (2026-09-29): float is more desirable to him
     # than RAH I, and whichever few non-2400h shifts he ends up with in a
     # month should be float ones whenever the solver has to choose.
     float_shift_target: Optional[int] = None
@@ -161,8 +161,8 @@ class PhysicianConfig:
 
     # Symmetric counterpart to only_2400h: if True, physician may only be
     # assigned 0600h shifts. Added from the Sept 2026 preferences survey --
-    # only_2400h existed but nothing let a 0600h-only physician (e.g. Deol,
-    # Mrochuk) express the same restriction.
+    # only_2400h existed but nothing let a 0600h-only physician (e.g. P21,
+    # P67) express the same restriction.
     only_0600h: bool = False
 
     # Soft scheduling preferences.
@@ -182,7 +182,7 @@ class PhysicianConfig:
     # applies the minimum-anchor floor nor expects a fair share from them;
     # any anchor they didn't ask for is treated as overage from the first
     # one. An explicit positive anchor request is still honoured normally.
-    # Added 2026-10-07 for MacGougan, Bly, MacLean, Haager.
+    # Added 2026-10-07 for P58, P07, P60, P38.
     anchor_floor_exempt: bool = False
 
     # If True, solver will not penalise isolated 2400h nights for this physician
@@ -192,7 +192,7 @@ class PhysicianConfig:
     # Opposite of prefer_singleton_nights: if True, the solver specifically
     # rewards a night-shift run that reaches this physician's own full
     # max_consecutive_nights length, not just any adjacent pair. Added for
-    # KLam (2026-09-29), who wants 4 consecutive 2400h nights rather than
+    # P52 (2026-09-29), who wants 4 consecutive 2400h nights rather than
     # shorter clusters. The generic pair-clustering bonus everyone already
     # gets isn't always assertive enough on its own to prefer a full-length
     # run over several shorter ones, so this adds a direct, larger bonus
@@ -215,17 +215,17 @@ class PhysicianConfig:
     # physician, WITHOUT also pulling in prefer_singleton_nights' -400
     # anti-clustering penalty. For a physician who's happy either way
     # (clustered OR solo) rather than one who specifically dislikes
-    # clustering -- see Dickey (2027-01), who prefers back-to-back nights
+    # clustering -- see P24 (2027-01), who prefers back-to-back nights
     # but offered a one-off solo night as a fallback too.
     # prefer_singleton_nights itself still implies this independently (kept
     # for backward compat with physicians who truly want isolation, e.g.
-    # Brenneis) -- this flag just lets a physician get the same exemption
+    # P09) -- this flag just lets a physician get the same exemption
     # on its own.
     allow_isolated_nights: bool = False
 
     # Per-physician exception to HC-10 ("never the same shift-code on
     # adjacent days") for specific shift codes only, e.g. ["2400h RAH I
-    # side"]. Added for Dickey (2027-01): his submission only ever offers
+    # side"]. Added for P24 (2027-01): his submission only ever offers
     # one 2400h site, so HC-10 made a 2+-night run (needed to satisfy
     # HC-13b's "every night needs an adjacent night" without
     # allow_isolated_nights/prefer_singleton_nights) structurally
@@ -260,7 +260,7 @@ class PhysicianConfig:
     # If True, this physician has a standing scheduling limitation serious
     # enough that their monthly submission's validation errors are expected
     # and should be auto-overridden at import time rather than making a
-    # human click through them every month (e.g. Francescutti/Krisik — a
+    # human click through them every month (e.g. P32/P49 — a
     # site or shift-type restriction that will always fail the generic
     # min_valid_days/min_valid_blocks/etc. thresholds). Overridden issues
     # still show up in the Validate page's expandable detail, just already
@@ -280,7 +280,7 @@ class PhysicianConfig:
     # as this value, overriding whatever their submission actually says
     # (including a blank/zero submission). For a physician whose submitted
     # count is unreliable but who should still get normal scheduling
-    # priority every month (e.g. MacGougan — always request 10). None means
+    # priority every month (e.g. P58 — always request 10). None means
     # no override; use whatever the submission reports, as normal.
     default_shifts_requested: Optional[int] = None
 
@@ -289,7 +289,7 @@ class PhysicianConfig:
     # one submission survives import-time id resolution, and its
     # shifts_requested/min/max need multiplying by this factor to reflect
     # everyone behind the identity). 1 (default) means normal, no scaling.
-    # Not the mechanism for KLam/MRico specifically — they're two separate
+    # Not the mechanism for P52/P53 specifically — they're two separate
     # roster ids now, each submitting their own real (non-duplicate) sheet
     # with their own share of the total; see combined_with below for that
     # case. This field stays for the narrower case of a genuinely single,
@@ -302,9 +302,9 @@ class PhysicianConfig:
     # server.py's _apply_combined_submissions sums their shift-count
     # fields and unions their day-by-day availability into the target
     # physician's submission, then drops this one. Set on the inactive/
-    # secondary member only (e.g. MRico.combined_with = "KLam") — the
+    # secondary member only (e.g. P53.combined_with = "P52") — the
     # active target physician itself leaves this unset. Confirmed real
-    # case (2026-10, January): KLam and MRico each submitted their own
+    # case (2026-10, January): P52 and P53 each submitted their own
     # file requesting 8 shifts; the combined position wants the sum, 16,
     # scheduled across the union of both their marked availability, not
     # just whichever file's id happened to resolve as "the" submission.
@@ -314,7 +314,7 @@ class PhysicianConfig:
     # (see generator_cpsat.py's per-physician requested-count bonus). 1.0
     # (default) is normal priority. Use > 1.0 for a physician who should
     # get more say over reaching their own requested count than the
-    # general population — e.g. a department chief (Haager, MacGougan)
+    # general population — e.g. a department chief (P38, P58)
     # whose preferences carry more institutional weight. Never applies to
     # a casual physician regardless of this value — casual physicians stay
     # in their own separate, strictly-lower priority tier (see `casual`).
@@ -326,7 +326,7 @@ class PhysicianConfig:
     # own requested shift count. None (default, most physicians today)
     # means "unknown" and contributes no seniority bonus at all — never
     # treated as "hired this year." Deliberately separate from
-    # honor_all_requests (MacGougan's flag, about honoring his *specific*
+    # honor_all_requests (P58's flag, about honoring his *specific*
     # per-day picks) — this is about the *volume* of his requested count
     # getting met, a different axis entirely.
     hire_year: Optional[int] = None

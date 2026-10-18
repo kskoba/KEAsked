@@ -246,7 +246,7 @@ class CpsatScheduleGenerator:
         self._anchor_share_target: float = float(anchor_cfg.get("anchor_share_target", 0.40))
         # Below this requested-shift count the 0/0 minimum-anchor floor is 1
         # shift; at or above it, 2. Was a hard-coded 10; lowered to 8 by
-        # user instruction (Wittmeier/Thirsk, 8 shifts each, "should have
+        # user instruction (P96/P89, 8 shifts each, "should have
         # come up to 2").
         self._anchor_min_floor_full_threshold: int = int(anchor_cfg.get("anchor_min_floor_full_threshold", 8))
         self._max_weekends: int = (
@@ -287,7 +287,7 @@ class CpsatScheduleGenerator:
                 # shift-cells happen to still be marked available on it --
                 # a stray checked cell on a non-Z day isn't a real offer to
                 # work that day. Confirmed as a real gap (not just a
-                # theoretical one): MacGougan was assigned a shift on a day
+                # theoretical one): P58 was assigned a shift on a day
                 # he never marked Z, because this index used to key off
                 # available_blocks/requested_shifts alone. wants_to_work is
                 # the actual "I might work this day at all" signal; the
@@ -509,7 +509,7 @@ class CpsatScheduleGenerator:
 
         def _eff_max_weekends(pid: str) -> int:
             # prefer_weekends means "no weekend cap, period" -- this used to
-            # require a manual max_weekends override (e.g. KLam/MRico were
+            # require a manual max_weekends override (e.g. P52/P53 were
             # set to 5, "exceeds any month's cluster count") to work around
             # the overage penalty below; the flag itself now waives it
             # directly, so a manual max_weekends is no longer needed for
@@ -749,7 +749,7 @@ class CpsatScheduleGenerator:
             # in that case gap=1 rules between d_idx/d_idx+1 and between
             # d_idx+1/d_idx+2 already fully govern the rest requirement, and
             # this skip-ahead pairwise check becomes a false conflict.
-            # Confirmed as a real bug, not theoretical: forcing KLam (or any
+            # Confirmed as a real bug, not theoretical: forcing P52 (or any
             # physician) into any 3+-night consecutive run always came back
             # INFEASIBLE, even solo/uncontested with every other constraint
             # relaxed -- traced to exactly this, e.g. a night on day 13 and
@@ -820,7 +820,7 @@ class CpsatScheduleGenerator:
 
         # ----------------------------------------------------------------
         # HC-9a: Linked-rest pairs (scheduler_config.yaml's
-        # linked_rest_pairs, e.g. Kenneth Lam / Michelle Rico). Two
+        # linked_rest_pairs, e.g. P52 / P53). Two
         # physicians who are separate roster identities for shift-count
         # and priority purposes but must be treated as a single combined
         # timeline for rest spacing, shift-time-swing, and consecutive-run
@@ -912,7 +912,7 @@ class CpsatScheduleGenerator:
 
         # ----------------------------------------------------------------
         # HC-9b: Conditional co-working (scheduler_config.yaml's
-        # conditional_cowork, e.g. Edgecumbe/Houston). Ported from the
+        # conditional_cowork, e.g. P27/P42). Ported from the
         # greedy generator's soft check (generator.py _check_constraints,
         # rule "cowork_condition") into hard CP-SAT constraints — previously
         # this config existed but was never enforced by the CP-SAT solver.
@@ -945,7 +945,7 @@ class CpsatScheduleGenerator:
 
         # ----------------------------------------------------------------
         # HC-9c: Timed separation (scheduler_config.yaml's timed_separation,
-        # e.g. Brenneis/Fanaeian). If both physicians work the same day,
+        # e.g. P09/P29). If both physicians work the same day,
         # their shift start times must be at least min_hours_gap apart, and
         # any (time1, time2) combination listed in forbidden_time_pairs is
         # banned outright regardless of gap. Hard rule, ported from the
@@ -972,7 +972,7 @@ class CpsatScheduleGenerator:
                             )
 
             # Same rule extended across adjacent days, both directions --
-            # e.g. Brenneis/Fanaeian: a late shift for one of them
+            # e.g. P09/P29: a late shift for one of them
             # shouldn't be followed by an early shift for the other the
             # next day either, not just a same-day clash. Reuses the exact
             # same min_hours_gap/forbidden_time_pairs as the same-day
@@ -991,7 +991,7 @@ class CpsatScheduleGenerator:
 
         # ----------------------------------------------------------------
         # HC-9d: Forbidden precursor shift-times (scheduler_config.yaml's
-        # forbidden_precursor_shifts, e.g. Esterhuizen: only a 1700h-or-
+        # forbidden_precursor_shifts, e.g. P28: only a 1700h-or-
         # earlier shift, or nothing at all, may precede a 2400h shift --
         # 1800h/2000h forbidden as the immediately preceding day's shift.
         # Same shape as timed_separation (HC-9c) but for one physician's
@@ -1015,7 +1015,7 @@ class CpsatScheduleGenerator:
 
         # ----------------------------------------------------------------
         # Soft: night-chain ramp-in (scheduler_config.yaml's
-        # night_chain_ramp_in, e.g. Velji: doesn't want to start a run of
+        # night_chain_ramp_in, e.g. P92: doesn't want to start a run of
         # 2400h shifts cold off a day off -- wants a shift the day before,
         # ideally at preferred_precursor_time (1800h). Only checked at the
         # START of a night run (the day before a 2400h shift that isn't
@@ -1064,7 +1064,7 @@ class CpsatScheduleGenerator:
 
         # ----------------------------------------------------------------
         # Soft: prefer_clustered_nights (PhysicianConfig.prefer_clustered_nights,
-        # e.g. KLam). Rewards actually completing a night-shift run of this
+        # e.g. P52). Rewards actually completing a night-shift run of this
         # physician's own full max_consecutive_nights length -- the generic
         # pair-clustering bonus below (weekend_clump_penalty_terms is a
         # different thing; see the "+18 per consecutive 2400h pair" term in
@@ -1095,7 +1095,7 @@ class CpsatScheduleGenerator:
         # ----------------------------------------------------------------
         # HC-10: Same-shift-code on adjacent days forbidden -- except for a
         # physician's own allow_repeat_shift_codes (PhysicianConfig), a
-        # narrow per-physician exception added for Dickey (2027-01): his
+        # narrow per-physician exception added for P24 (2027-01): his
         # submission only ever offers one 2400h site, so this rule
         # otherwise made a 2+-night run structurally impossible for him
         # (he could never repeat the only site he has), despite him
@@ -1119,7 +1119,7 @@ class CpsatScheduleGenerator:
         # ----------------------------------------------------------------
         # The global anchor_max is a FALLBACK for physicians who have not
         # explicitly requested specific numbers of anchor shifts.  For
-        # physicians like LamRico who request 16 2400h shifts, the global
+        # physicians like P52P53 who request 16 2400h shifts, the global
         # cap of 4 must NOT override their explicit per-physician request —
         # doing so is the bug that caused them to receive only 4-6 shifts.
         #
@@ -1168,7 +1168,7 @@ class CpsatScheduleGenerator:
         _ANCHOR_FULFILLMENT_BONUS = 90
         # Weight for the 0/0-stated minimum-anchor floor below. Empirically
         # tuned against a solo/uncontested synthetic test (same technique
-        # used for the Dickey/RScheirer singleton-night diagnosis): 70-350
+        # used for the P24/P71 singleton-night diagnosis): 70-350
         # all achieved ZERO effect even with full availability and nothing
         # else competing for the slot -- an isolated anchor shift disrupts
         # an otherwise-smooth personal schedule enough (stacked
@@ -1187,7 +1187,7 @@ class CpsatScheduleGenerator:
         # below). 10 per explicit user instruction.
         _ANCHOR_MIN_FLOOR_FULL_THRESHOLD = self._anchor_min_floor_full_threshold
         # No floor at all below 3 requested shifts (user rule, 2026-10-10):
-        # a casual asking for 0 (Chee: floor_target 1 on a 0-shift request
+        # a casual asking for 0 (P17: floor_target 1 on a 0-shift request
         # showed up as "still at zero" in every January replay) or someone
         # asking for 1-2 shifts is not expected to carry an anchor.
         _ANCHOR_MIN_FLOOR_MIN_REQUESTED = 3
@@ -1210,7 +1210,7 @@ class CpsatScheduleGenerator:
         _ANCHOR_UNREQUESTED_PENALTY_PREFERRED = 60
         _ANCHOR_SHARE_OVERAGE_STEPS = (500, 800, 1100)
         # Anchor-heavy physicians (user rule, 2026-10-07, from cpsatv2-jan3:
-        # Fisher asked for 7 anchors of 11 and was handed a 6th night on a
+        # P31 asked for 7 anchors of 11 and was handed a 6th night on a
         # thin weekend because the 500-point first step was the cheapest way
         # out). When a physician's STATED anchors already exceed half their
         # requested shifts, the first excess anchor costs double, so the
@@ -1260,7 +1260,7 @@ class CpsatScheduleGenerator:
         # availability is one site, deadlocked against HC-13b's "every
         # night needs an adjacent night" by HC-10's "never the same site on
         # adjacent days") — those need prefer_singleton_nights fixed in the
-        # roster data itself; see the RScheirer/Dickey fixes this was found
+        # roster data itself; see the P71/P24 fixes this was found
         # from.
         #
         # anchor_requests_by_pid: pid -> [("2400h", requested), ...] for
@@ -1340,7 +1340,7 @@ class CpsatScheduleGenerator:
                 # _anchor_share_target): a fraction of their own requested
                 # count, or their explicit anchor request if that's larger.
                 # An explicit anchor request above the share is honoured in
-                # full (KLam's 16 nights of 16 are his target, not overage).
+                # full (P52's 16 nights of 16 are his target, not overage).
                 eff_req_anchor = sub.shifts_requested or min(10, sub.shifts_max)
                 req_anchors = (
                     (sub.shifts_2400h_requested if sub.shifts_2400h_stated else 0)
@@ -1349,7 +1349,7 @@ class CpsatScheduleGenerator:
                 fair_share = int(math.floor(self._anchor_share_target * eff_req_anchor))
                 anchor_target = max(req_anchors, fair_share)
                 # A physician restricted to one anchor type (only_0600h /
-                # only_2400h, e.g. Garcea, Deol, Mrochuk, KLam) can ONLY
+                # only_2400h, e.g. P33, P21, P67, P52) can ONLY
                 # work anchors: every shift they take is one. Fair-share
                 # accounting is meaningless for them and, left in place,
                 # would make their 4th+ shift cost more than it earns and
@@ -1495,7 +1495,7 @@ class CpsatScheduleGenerator:
                 # explicit 0" to "no positive anchor request of either
                 # type" -- a blank cell, an explicit 0, or one of each. In
                 # the real jan2 solve, blank/blank physicians with 7-10
-                # shifts (MacGougan, Gunawan, Rawe, Rosenblum) carried ZERO
+                # shifts (P58, P37, P73, P76) carried ZERO
                 # anchors while the explicit-0/0 physicians carried their
                 # floor of 2: a blank means "no preference", and no
                 # preference shouldn't rank below "I'd rather not".
@@ -1557,7 +1557,7 @@ class CpsatScheduleGenerator:
         # Raised from 35 -- at that level this was getting swamped by
         # fill-rate bonuses in the 1000s. At 250, re-tested against real Oct
         # 2026 data, the roster-wide over-cap rate dropped from 50% to 37%,
-        # but two physicians (Breton, Sachs) still landed on 4 weekends
+        # but two physicians (P10, P77) still landed on 4 weekends
         # despite a cap of 2 -- traced to real weekday-slot contention from
         # other physicians, not infeasibility on their end. Went to 500
         # briefly to chase that further, then back to 250 here so the
@@ -1568,9 +1568,9 @@ class CpsatScheduleGenerator:
         # a wash when redistributing: moving one weekend from a physician
         # who is 4 over cap to one who is 1 over saves 250 and costs 250,
         # so the solver has no reason to spread the overage -- confirmed
-        # on real Jan 2027 data where McKinnon landed on 5/5 weekends
+        # on real Jan 2027 data where P63 landed on 5/5 weekends
         # (cap 1) while holding 15 untouched weekday 1600h/1700h days, and
-        # earlier in the Breton/Sachs 4-weekend case noted above. With
+        # earlier in the P10/P77 4-weekend case noted above. With
         # increasing steps the same move is net +500, so overage is spread
         # as thinly as the roster allows. The top step is kept below a
         # weekend slot's fill weight (1000 base + 200 weekend) so the solver
@@ -1756,7 +1756,7 @@ class CpsatScheduleGenerator:
         # physician actually marked as their pick for that day (the
         # "Preferred" row -- see DayAvailability.preferred_shifts), not
         # every cell they merely left available. Confirmed as a real bug
-        # (2026-09-29, MacGougan): this used to give the same +150 to
+        # (2026-09-29, P58): this used to give the same +150 to
         # every available cell regardless of whether it was his actual
         # preference, which both diluted what the flag was supposed to
         # mean and rewarded cells on days he hadn't specifically asked
@@ -1831,7 +1831,7 @@ class CpsatScheduleGenerator:
         # below); only its weight is prefer_weekends-specific.
         #
         # (a) is skipped for a physician who ALSO has
-        # prefer_clustered_nights set (only KLam today) -- confirmed on
+        # prefer_clustered_nights set (only P52 today) -- confirmed on
         # real data that the per-shift weekend reward directly fights
         # completing a full-length night run: with every shift a 2400h
         # night, the solver found it more lucrative to touch nearly every
@@ -1905,7 +1905,7 @@ class CpsatScheduleGenerator:
         # cap vs. someone still far below it — both are worth the same +1
         # marginal unit — so scarce slots can end up spread thin across many
         # people instead of actually closing anyone's gap (confirmed via a
-        # real run: Lam-Rico and MacGougan, both with real availability and
+        # real run: P52-P53 and P58, both with real availability and
         # a real target, landed far under it while other physicians got
         # topped up instead). Weighting the first half higher makes closing
         # a large existing gap worth more than incrementally topping off
@@ -1935,7 +1935,7 @@ class CpsatScheduleGenerator:
         effective_requested_by_pid: dict[str, int] = {}
         deficit_penalty_terms = []
         # Escalating shortfall (user rule, 2026-10-07, from cpsatv2-jan3:
-        # Krisik landed 2 under her 8 while seven other physicians sat
+        # P49 landed 2 under her 8 while seven other physicians sat
         # exactly at request -- she had 13 open days, the solver simply
         # had no reason to prefer two people one short over one person
         # two short). Per physician, ordered step booleans count how many
@@ -2104,8 +2104,8 @@ class CpsatScheduleGenerator:
             # total), so it's a genuine "one more than you'd otherwise be
             # steered toward", not a re-weighting of the normal target.
             # Skipped for physicians structurally barred from every acute
-            # site (forbidden_sites covers RAH A and B -- Krisik,
-            # Francescutti), who can't repay the debt and shouldn't be
+            # site (forbidden_sites covers RAH A and B -- P49,
+            # P32), who can't repay the debt and shouldn't be
             # nagged about it. Soft only: a slot is still worth 1000+.
             prior = self._prior_month.get(pid)
             if prior is not None and prior.acute_debt(self._group_a_target) > 0 and acute_eligible(_get_cfg(pid)):
@@ -2146,7 +2146,7 @@ class CpsatScheduleGenerator:
         # Capped at the target (not open-ended) so it stops competing once
         # met, same pattern as the A-floor bonus above. No hard constraint,
         # since 1-per-day scarcity could make a hard minimum infeasible in
-        # some months. Added for Rick Scheirer (2026-09-29).
+        # some months. Added for P71 (2026-09-29).
         for pid in pids:
             cfg = _get_cfg(pid)
             target_f = cfg.float_shift_target if cfg else None
@@ -2233,11 +2233,11 @@ class CpsatScheduleGenerator:
         # above (per-physician, via prefer_singleton_nights) and this would
         # fight it. For every other time code, two mechanisms discourage a
         # physician's month from settling on one start-time with no
-        # variation (confirmed on real Oct 2026 data: Farfus got 3
-        # consecutive noons, Lung got the same 1800h slot 9 of 10 shifts):
-        #   (a) a same-time-two-days-running penalty (catches Farfus's case)
+        # variation (confirmed on real Oct 2026 data: P30 got 3
+        # consecutive noons, P57 got the same 1800h slot 9 of 10 shifts):
+        #   (a) a same-time-two-days-running penalty (catches P30's case)
         #   (b) a proportional per-time overage penalty across the whole
-        #       month (catches Lung's case: scattered, not consecutive, but
+        #       month (catches P57's case: scattered, not consecutive, but
         #       still almost entirely one time)
         _VARIETY_REPEAT_PENALTY = 40
         _VARIETY_OVERAGE_PENALTY = 60
@@ -2306,7 +2306,7 @@ class CpsatScheduleGenerator:
         for pid in pids:
             pid_cfg = _get_cfg(pid)
             # Also exempt 0/0-stated anchor-floor-eligible physicians
-            # automatically, even without the flag set. Found via Lung
+            # automatically, even without the flag set. Found via P57
             # (real January data): an explicit "0 2400h" caps him at
             # requested(0) + anchor_tol(1) = 1 total -- but without this
             # exemption, HC-13b requires >=2 (an adjacent pair) for ANY
@@ -2320,21 +2320,21 @@ class CpsatScheduleGenerator:
             # Also exempt anyone whose own max_consecutive_nights is 1 --
             # a cap that low makes a 2+-night run (what HC-13b otherwise
             # requires for any 2400h at all) mathematically impossible
-            # regardless of availability, full stop. Found via Breton,
-            # McKinnon, and Schindler (real January data, all three with
+            # regardless of availability, full stop. Found via P10,
+            # P63, and P81 (real January data, all three with
             # genuine unmet 2400h demand and real availability, all
             # structurally blocked at 0 even solo): max_consecutive_nights
             # == 1 is itself an unambiguous signal multi-night runs were
             # never happening for this physician, so forcing the
             # contradiction instead of exempting it serves no one. Checked
             # roster-wide: 6 physicians share this combination; 3 have
-            # real 2400h demand this month (Breton, McKinnon, Schindler).
+            # real 2400h demand this month (P10, P63, P81).
             _max_nights_forces_isolation = pid_cfg and self._effective_max_nights(pid, pid_cfg) == 1
             # Also exempt anyone who explicitly asked for exactly ONE 2400h
             # shift: a lone night is precisely what they requested, and
             # requiring an adjacent pair would cost them a 2nd (unwanted,
             # penalised) night -- so the solver gave them zero instead.
-            # Found via Grishin (real January data: requested 1, got 0).
+            # Found via P36 (real January data: requested 1, got 0).
             _sub13 = self.submissions.get(pid)
             _single_night_requested = bool(
                 _sub13 and _sub13.shifts_2400h_stated and _sub13.shifts_2400h_requested == 1
@@ -2407,7 +2407,7 @@ class CpsatScheduleGenerator:
         # Anti-clustering penalty for prefer_singleton_nights physicians.
         # These physicians want isolated 2400h shifts, so consecutive nights are penalised.
         # Raised -30->-200->-400. At -200, re-tested against a real Oct 2026
-        # solve, Brenneis (who has this flag) again got 2 consecutive
+        # solve, P09 (who has this flag) again got 2 consecutive
         # midnights (Oct 25/26) despite having 16 widely-spread 2400h-
         # available days that month and requesting only 3 -- confirmed she
         # had plenty of mutually non-adjacent options available (e.g. days
@@ -2569,7 +2569,7 @@ class CpsatScheduleGenerator:
         # a physician whose SIAR is set to 4 may genuinely prefer 4 in a row
         # and must still be able to get it when it buys anything real.
         # Physicians who explicitly asked for full-length runs
-        # (prefer_clustered_nights -- KLam) are exempt entirely: for them
+        # (prefer_clustered_nights -- P52) are exempt entirely: for them
         # the 4-run IS the goal (see _CLUSTERED_NIGHTS_BONUS).
         _RUN4_PENALTY = 60
         run_penalty_terms = []
@@ -2603,13 +2603,13 @@ class CpsatScheduleGenerator:
         #       Different start times at the same site still count; HC-10
         #       already hard-bans the identical shift CODE on adjacent days.
         #   (b) a run of 2+ days with no acute (RAH A/B) shift anywhere in
-        #       it is penalized -- e.g. Velji's Jan 1-3 0900h/1200h/1500h
+        #       it is penalized -- e.g. P92's Jan 1-3 0900h/1200h/1500h
         #       NEHC, which the time-variety penalty above (time only, by
         #       design) and the A->A alternation penalty (acute only) both
         #       saw as fine.
         # "Run" = a maximal stretch of consecutive worked days; a day off
         # ends it (a 5th/7th pair is two runs, confirmed OK). Shift codes in
-        # allow_repeat_shift_codes (Dickey's single-site nights) are exempt
+        # allow_repeat_shift_codes (P24's single-site nights) are exempt
         # from (a). Days before the 1st are treated as off (the previous
         # month's trailing run isn't considered). Weight matches the
         # weekend-split penalty: above the per-day shape tie-breaks, below
@@ -2617,7 +2617,7 @@ class CpsatScheduleGenerator:
         _CLUSTER_SITE_REPEAT_PENALTY = 150
         _CLUSTER_NO_ACUTE_PENALTY = 150
         # NEHC repeats within a run are discouraged too, but at a third of
-        # the weight (user decision 2026-10-07, after N Lam's "NEHC, RAH B,
+        # the weight (user decision 2026-10-07, after P51's "NEHC, RAH B,
         # NEHC" run): NEHC has 7 slots a day, so some repetition there is
         # unavoidable in a way a 2nd RAH F or RAH A in one run never is.
         _CLUSTER_NEHC_REPEAT_PENALTY = 50
@@ -2732,7 +2732,7 @@ class CpsatScheduleGenerator:
         #   - Fully merged (bonus_high + bonus_low together): fixed that,
         #     but casual usage roughly doubled vs. the human schedule (9 vs
         #     5 shifts) while several normal physicians landed notably under
-        #     their own requested count (Breton -3, Norum -3, others -1) --
+        #     their own requested count (P10 -3, P68 -3, others -1) --
         #     opening a normal physician's entire second-half demand
         #     (bonus_low, up to half their request) to casual competition
         #     was simply too much room to give up.
@@ -2850,7 +2850,7 @@ class CpsatScheduleGenerator:
                 # weight — e.g. dropping someone a shift below their own
                 # request to buy a group-balance or clustering bonus
                 # elsewhere, since the total sum is unchanged either way.
-                # Confirmed via a real run: Keyes landed a shift under his
+                # Confirmed via a real run: P45 landed a shift under his
                 # own stated request even though a sum-only lock was
                 # respected. Capped at each physician's own
                 # effective_requested so this can never ratchet in an
@@ -2914,7 +2914,7 @@ class CpsatScheduleGenerator:
         #
         # First implementation here was a single tier maximizing the SUM
         # of anchor-fulfillment across everyone — re-tested against the
-        # same real data and it did NOT fix the problem (RScheirer stayed
+        # same real data and it did NOT fix the problem (P71 stayed
         # at 0/6). Root cause: a pure sum is fairness-blind — it's exactly
         # as "optimal" whether the total is spread across many physicians
         # or concentrated on a few, since nothing in a flat sum objective
@@ -3016,19 +3016,19 @@ class CpsatScheduleGenerator:
             # Stage B — depth: maximize total units on top of stage A's floor.
             #
             # The 0/0 floor's FIRST unit is decided HERE too (2026-10-10,
-            # real case: Lung, cpsatv2-jan4/5/6), at a weight strictly
+            # real case: P57, cpsatv2-jan4/5/6), at a weight strictly
             # below every stated unit: requester weights are scaled by
             # (floor physicians + 1) so even all floor units together
             # cannot buy one stated unit. User rule: a floor physician
             # never displaces anyone's stated 2400h/0600h request; the
             # floor only takes anchors that would otherwise be handed out
-            # as overage (N Lam 4 nights for 3 requested, Velji 4 for 3,
-            # in jan6 while Lung sat at 0). Before, the floor was solved
+            # as overage (P51 4 nights for 3 requested, P92 4 for 3,
+            # in jan6 while P57 sat at 0). Before, the floor was solved
             # only in its own stage after this one had locked every
             # requester's slots, so a night-only floor physician's first
             # night needed a multi-swap chain that the 60 s floor pass
             # never found (three real runs; a local replay ended that
-            # stage FEASIBLE with Lung at zero, and forcing Lung >= 1 in
+            # stage FEASIBLE with P57 at zero, and forcing P57 >= 1 in
             # it with 300 s did find a schedule -- reachable, not found).
             # Solving it inside the depth search, before any slot is
             # locked, is what makes it findable.
@@ -3084,7 +3084,7 @@ class CpsatScheduleGenerator:
         # 0 anchor shifts despite the bonus (weight 400, well above every
         # everyday secondary term) -- and that same deficit was exactly
         # what concentrated anchor load onto whoever was cheapest to use
-        # instead (one physician alone, Wrubleski, ended up with 64% of
+        # instead (one physician alone, P98, ended up with 64% of
         # his whole month as anchor shifts). Runs independently of whether
         # the stage A/B block above even executed -- this is a different
         # population (0/0-stated, not explicit-requesters).
@@ -3111,9 +3111,9 @@ class CpsatScheduleGenerator:
                     floor_depth_terms.append(fill)
 
             # 300 s cap (was 60, 2026-10-10): on real January data the floor
-            # stage ended its minute FEASIBLE with Lung at zero three runs
+            # stage ended its minute FEASIBLE with P57 at zero three runs
             # running -- his only route to a night was redirecting an
-            # overage night held inside a pair (Velji Jan 2+3), a multi-swap
+            # overage night held inside a pair (P92 Jan 2+3), a multi-swap
             # chain. The same stage given 300 s found it unforced (Jan 8,
             # RAH B). This stage runs after stage B has locked every stated
             # anchor request, so the extra time can only ever redirect
@@ -3151,7 +3151,7 @@ class CpsatScheduleGenerator:
 
             # Focused pass for whoever the full pass left short (2026-10-12,
             # cpsatv2-jan7): the full-model pass ended 240 s FEASIBLE with
-            # Lung still at zero, the fourth real run in a row. His night is
+            # P57 still at zero, the fourth real run in a row. His night is
             # a chain -- take an overage night from its holder, hand the
             # holder one of his day shifts, move his own next-day shift for
             # the 23 h rule -- and the search never gets there with 77
@@ -3207,7 +3207,7 @@ class CpsatScheduleGenerator:
                     # stage leaves it free, so the final solve is never
                     # bound by it. Feasibility with a hard target is a far
                     # easier search than preferring the same outcome: the
-                    # 2026-10-10 forced replay found Lung's chain where
+                    # 2026-10-10 forced replay found P57's chain where
                     # 300 s of preference did not.
                     force_lits: dict[str, object] = {}
                     for pid in short:
@@ -3218,8 +3218,8 @@ class CpsatScheduleGenerator:
                         force_lits[pid] = lit
                     # One physician at a time: forcing several together can
                     # be jointly infeasible (a 2026-10-12 replay proved
-                    # "Lung >= 1 AND Thirsk >= 2" infeasible in 0.5 s while
-                    # Lung alone had been feasible two days earlier). Each
+                    # "P57 >= 1 AND P89 >= 2" infeasible in 0.5 s while
+                    # P57 alone had been feasible two days earlier). Each
                     # success becomes the starting point for the next.
                     per_pid = max(5.0, floor_tier_time_limit / 2 / max(1, len(short)))
                     for pid in short:
@@ -3773,7 +3773,7 @@ class CpsatScheduleGenerator:
         lifted to 1 when THIS month's submission explicitly requests >= 1
         2400h shift -- the dated request is the fresher signal than a
         standing assumption, and a hard 0 silently made such a request
-        unfulfillable (Grishin, real January data: requested 1, got 0 even
+        unfulfillable (P36, real January data: requested 1, got 0 even
         solo). A physician who truly can never work nights should carry
         forbidden_shift_times: [2400h], which still wins here.
         """

@@ -216,11 +216,11 @@ class ScheduleGenerator:
             config.get("conditional_cowork", pairs_cfg.get("conditional_cowork", []))
         )
 
-        # Case-insensitive lookups so flat-file names (e.g. "BRAUN") match
-        # roster IDs (e.g. "Braun") and config pair names (e.g. "Houston").
+        # Case-insensitive lookups so flat-file names (e.g. "DOE") match
+        # roster IDs (e.g. "Doe") and config pair names (e.g. "Roe").
         self._roster_lower: dict = {k.lower(): v for k, v in roster.items()}
-        # Also index by config .name field so flat-file names like "R Scheirer"
-        # resolve to the config keyed by "RScheirer".
+        # Also index by config .name field so flat-file names like "J Doe"
+        # resolve to the config keyed by "JDoe".
         self._roster_by_name: dict = {v.name.lower(): v for v in roster.values()}
         self._pid_lower: dict[str, str] = {pid.lower(): pid for pid in self.submissions}
 
@@ -988,7 +988,7 @@ class ScheduleGenerator:
                     ),
                 ))
 
-        # 10. Timed separation (Brenneis/Fanaeian: ≥6h gap, no 1700/1800 + 2400)
+        # 10. Timed separation (P09/P29: ≥6h gap, no 1700/1800 + 2400)
         for rule in self._timed_separation:
             phys = [self._resolve_pid(p) for p in rule.get("physicians", [])]
             phys = [p for p in phys if p]
@@ -1020,7 +1020,7 @@ class ScheduleGenerator:
                                 ),
                             ))
 
-        # 10b. Conditional co-working (Edgecumbe/Houston)
+        # 10b. Conditional co-working (P27/P42)
         for rule in self._conditional_cowork:
             phys = [self._resolve_pid(p) for p in rule.get("physicians", [])]
             phys = [p for p in phys if p]
@@ -1472,7 +1472,7 @@ class ScheduleGenerator:
     def _eff_max_weekends(self, pid: str, sub: PhysicianSubmission) -> int:
         """
         Weekend cap for *pid* this month: an explicit per-physician
-        `max_weekends` override always wins (e.g. KLam/MRico are set to 5 --
+        `max_weekends` override always wins (e.g. P52/P53 are set to 5 --
         "works every weekend"). Otherwise, scale max_weekends_per_month by
         how many shifts this physician actually requested relative to a
         full-time month (full_time_shifts_per_month), so a physician

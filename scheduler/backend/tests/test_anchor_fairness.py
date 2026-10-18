@@ -3,15 +3,15 @@ Anchor-shift fairness + related fixes from the 2026-10-07 real January solve
 (cpsatv2-jan1.xlsx):
 
   * a physician who left the 0600h cell BLANK got 8 of 8 shifts as 0600h
-    (Garcea), another got 2 unwanted 0600h on top of 4 requested nights
-    (Bacon, 60% anchors), while explicit 0/0 physicians with 8 shifts
-    (Wittmeier, Thirsk) sat at 1 anchor each -- blanks were free, explicit
+    (P33), another got 2 unwanted 0600h on top of 4 requested nights
+    (P06, 60% anchors), while explicit 0/0 physicians with 8 shifts
+    (P96, P89) sat at 1 anchor each -- blanks were free, explicit
     zeros cost 500, so the solver dumped anchors on whoever left the box
     empty. Now: everyone carries up to a fair share (40% of requested)
     before anyone is pushed past their own share, blank or not.
   * the 0/0 floor is 2 at >= 8 requested (was 10), and is no longer stuck
     at 1 for someone who can only work one anchor type.
-  * a physician who asks for exactly ONE 2400h shift gets it (Grishin got
+  * a physician who asks for exactly ONE 2400h shift gets it (P36 got
     0: the no-isolated-night rule demanded a 2nd, penalised, night).
   * post-solve RAH A <-> RAH B trades even out lopsided acute sides.
 """
@@ -67,55 +67,55 @@ def _solve(subs, roster, time_limit=20.0):
 # --------------------------------------------------------------------------- #
 
 def test_blank_anchor_cell_is_no_longer_a_free_dumping_ground():
-    """Garcea shape: 8 shifts, 0600h blank, 2400h explicit 0, nights impossible.
+    """P33 shape: 8 shifts, 0600h blank, 2400h explicit 0, nights impossible.
     Solo with full availability the solver prefers anchor slots (they carry a
     higher fill weight), so without a cost on blanks she'd come out ~8/8."""
-    sub = _sub("Garcea", 8, s0600=False, r2400=0, s2400=True)
-    roster = {"Garcea": _cfg("Garcea", max_consecutive_nights=0, forbidden_shift_times=["2400h"])}
+    sub = _sub("P33", 8, s0600=False, r2400=0, s2400=True)
+    roster = {"P33": _cfg("P33", max_consecutive_nights=0, forbidden_shift_times=["2400h"])}
     res = _solve([sub], roster)
-    n = _anchors(res, "Garcea")
+    n = _anchors(res, "P33")
     assert n <= 3, n               # fair share of 8 is 3; must not blow past it (solo, nothing forces any)
 
 
 def test_zero_zero_physician_with_eight_shifts_reaches_floor_of_two():
-    """Wittmeier shape: 8 shifts, explicit 0/0, no nights. Used to be stuck at 1
+    """P96 shape: 8 shifts, explicit 0/0, no nights. Used to be stuck at 1
     because the per-type cap (0 + tolerance 1) made 2 unreachable."""
-    sub = _sub("Wittmeier", 8, r0600=0, s0600=True, r2400=0, s2400=True)
-    roster = {"Wittmeier": _cfg("Wittmeier", max_consecutive_nights=0, forbidden_shift_times=["2400h"])}
+    sub = _sub("P96", 8, r0600=0, s0600=True, r2400=0, s2400=True)
+    roster = {"P96": _cfg("P96", max_consecutive_nights=0, forbidden_shift_times=["2400h"])}
     res = _solve([sub], roster)
-    assert _anchors(res, "Wittmeier") >= 2
+    assert _anchors(res, "P96") >= 2
 
 
 def test_blank_blank_physician_gets_the_same_floor_as_an_explicit_zero_zero():
-    """MacGougan shape (jan2): both anchor cells blank, 10 shifts, 0 anchors
+    """P58 shape (jan2): both anchor cells blank, 10 shifts, 0 anchors
     while explicit 0/0 physicians carried 2. A blank is "no preference" and
     must not rank below "I'd rather not": same floor of 2 at >= 8 shifts."""
-    sub = _sub("MacGougan", 10, s0600=False, s2400=False)
-    res = _solve([sub], {"MacGougan": _cfg("MacGougan")})
-    assert _anchors(res, "MacGougan") >= 2
+    sub = _sub("P58", 10, s0600=False, s2400=False)
+    res = _solve([sub], {"P58": _cfg("P58")})
+    assert _anchors(res, "P58") >= 2
 
 
 def test_blank_0600h_with_explicit_zero_nights_gets_the_floor_too():
-    """Rosenblum shape (jan2): 0600h blank, 2400h explicit 0, 8 shifts, 0 anchors."""
-    sub = _sub("Rosenblum", 8, s0600=False, r2400=0, s2400=True)
-    res = _solve([sub], {"Rosenblum": _cfg("Rosenblum")})
-    assert _anchors(res, "Rosenblum") >= 2
+    """P76 shape (jan2): 0600h blank, 2400h explicit 0, 8 shifts, 0 anchors."""
+    sub = _sub("P76", 8, s0600=False, r2400=0, s2400=True)
+    res = _solve([sub], {"P76": _cfg("P76")})
+    assert _anchors(res, "P76") >= 2
 
 
 def test_admin_anchor_exempt_physician_is_not_brought_up_to_the_floor():
-    """MacGougan with the admin toggle: blank/blank, 10 shifts -> no floor, no
+    """P58 with the admin toggle: blank/blank, 10 shifts -> no floor, no
     fair share; solo he takes no anchors at all."""
-    sub = _sub("MacGougan", 10, s0600=False, s2400=False)
-    res = _solve([sub], {"MacGougan": _cfg("MacGougan", anchor_floor_exempt=True)})
-    assert _anchors(res, "MacGougan") == 0
-    assert sum(1 for a in res.assignments if a.physician_id == "MacGougan") == 10
+    sub = _sub("P58", 10, s0600=False, s2400=False)
+    res = _solve([sub], {"P58": _cfg("P58", anchor_floor_exempt=True)})
+    assert _anchors(res, "P58") == 0
+    assert sum(1 for a in res.assignments if a.physician_id == "P58") == 10
 
 
 def test_admin_anchor_exempt_still_honours_an_explicit_anchor_request():
-    """Haager with the toggle but a real request for 2 0600h still gets them."""
-    sub = _sub("Haager", 9, r0600=2, s0600=True, r2400=0, s2400=True)
-    res = _solve([sub], {"Haager": _cfg("Haager", anchor_floor_exempt=True)})
-    assert sum(1 for a in res.assignments if a.physician_id == "Haager" and a.shift.time == "0600h") == 2
+    """P38 with the toggle but a real request for 2 0600h still gets them."""
+    sub = _sub("P38", 9, r0600=2, s0600=True, r2400=0, s2400=True)
+    res = _solve([sub], {"P38": _cfg("P38", anchor_floor_exempt=True)})
+    assert sum(1 for a in res.assignments if a.physician_id == "P38" and a.shift.time == "0600h") == 2
 
 
 def test_excess_anchors_spread_to_fair_share_before_anyone_goes_over():
@@ -148,22 +148,22 @@ def test_excess_anchors_spread_to_fair_share_before_anyone_goes_over():
 
 
 def test_explicit_large_anchor_request_is_still_honoured_in_full():
-    """KLam shape: 16 nights of 16 requested is his target, not overage."""
-    sub = _sub("KLam", 16, r2400=16, s2400=True, r0600=0, s0600=True)
-    roster = {"KLam": _cfg("KLam", only_2400h=True, max_consecutive_nights=4, max_consecutive_shifts=4,
+    """P52 shape: 16 nights of 16 requested is his target, not overage."""
+    sub = _sub("P52", 16, r2400=16, s2400=True, r0600=0, s0600=True)
+    roster = {"P52": _cfg("P52", only_2400h=True, max_consecutive_nights=4, max_consecutive_shifts=4,
                            prefer_clustered_nights=True)}
     res = _solve([sub], roster, time_limit=30.0)
-    assert _nights(res, "KLam") >= 12
+    assert _nights(res, "P52") >= 12
 
 
 def test_only_0600h_physician_is_exempt_from_fair_share_and_fully_scheduled():
-    """Garcea's real shape: only_0600h in the roster, 0600h cell blank, 8
+    """P33's real shape: only_0600h in the roster, 0600h cell blank, 8
     requested. Every shift she can work is an anchor, so fair-share penalties
     must not apply (they'd make her 4th+ shift cost more than it earns)."""
-    sub = _sub("Garcea", 8, s0600=False, r2400=0, s2400=True)
-    roster = {"Garcea": _cfg("Garcea", only_0600h=True, max_consecutive_nights=0)}
+    sub = _sub("P33", 8, s0600=False, r2400=0, s2400=True)
+    roster = {"P33": _cfg("P33", only_0600h=True, max_consecutive_nights=0)}
     res = _solve([sub], roster)
-    mine = [a for a in res.assignments if a.physician_id == "Garcea"]
+    mine = [a for a in res.assignments if a.physician_id == "P33"]
     assert len(mine) == 8
     assert all(a.shift.time == "0600h" for a in mine)
 
@@ -173,27 +173,27 @@ def test_only_0600h_physician_is_exempt_from_fair_share_and_fully_scheduled():
 # --------------------------------------------------------------------------- #
 
 def test_physician_requesting_exactly_one_night_gets_it():
-    """Grishin shape: requested 2400h = 1 (stated). Previously 0, because the
+    """P36 shape: requested 2400h = 1 (stated). Previously 0, because the
     no-isolated-night rule needed a 2nd night the overage penalty forbade."""
-    sub = _sub("Grishin", 12, r0600=6, s0600=True, r2400=1, s2400=True)
-    res = _solve([sub], {"Grishin": _cfg("Grishin")}, time_limit=30.0)
-    assert _nights(res, "Grishin") == 1
+    sub = _sub("P36", 12, r0600=6, s0600=True, r2400=1, s2400=True)
+    res = _solve([sub], {"P36": _cfg("P36")}, time_limit=30.0)
+    assert _nights(res, "P36") == 1
 
 
 def test_roster_night_cap_of_zero_yields_to_an_explicit_night_request():
-    """Grishin's real shape: physicians.yaml says max_consecutive_nights: 0
+    """P36's real shape: physicians.yaml says max_consecutive_nights: 0
     (from the survey), but his January submission asks for 1 night. The
     dated request wins: he gets his night."""
-    sub = _sub("Grishin", 12, r0600=6, s0600=True, r2400=1, s2400=True)
-    res = _solve([sub], {"Grishin": _cfg("Grishin", max_consecutive_nights=0)}, time_limit=30.0)
-    assert _nights(res, "Grishin") == 1
+    sub = _sub("P36", 12, r0600=6, s0600=True, r2400=1, s2400=True)
+    res = _solve([sub], {"P36": _cfg("P36", max_consecutive_nights=0)}, time_limit=30.0)
+    assert _nights(res, "P36") == 1
 
 
 def test_forbidden_night_time_still_wins_over_a_night_request():
-    sub = _sub("Francescutti", 6, r0600=1, s0600=True, r2400=1, s2400=True)
-    cfg = _cfg("Francescutti", max_consecutive_nights=0, forbidden_shift_times=["2000h", "2400h"])
-    res = _solve([sub], {"Francescutti": cfg}, time_limit=20.0)
-    assert _nights(res, "Francescutti") == 0
+    sub = _sub("P32", 6, r0600=1, s0600=True, r2400=1, s2400=True)
+    cfg = _cfg("P32", max_consecutive_nights=0, forbidden_shift_times=["2000h", "2400h"])
+    res = _solve([sub], {"P32": cfg}, time_limit=20.0)
+    assert _nights(res, "P32") == 0
 
 
 # --------------------------------------------------------------------------- #
@@ -243,16 +243,16 @@ def test_balance_pass_never_creates_an_adjacent_same_code_or_run_repeat():
 # --------------------------------------------------------------------------- #
 
 def test_nehc_is_not_repeated_within_a_run_when_an_alternative_exists():
-    """N Lam shape: a 3-day run that came out NEHC, RAH B, NEHC. Offer three
+    """P51 shape: a 3-day run that came out NEHC, RAH B, NEHC. Offer three
     distinct sites on three consecutive days; the run should use each once."""
     codes = {"1200h NEHC", "1000h RAH I side", "1200h RAH A side"}
-    sub = _sub("LamN", 3, codes=codes)
+    sub = _sub("P51", 3, codes=codes)
     for d in sub.days:
         if d.date.day not in (4, 5, 6):
             d.wants_to_work = False
             d.available_blocks = frozenset()
             d.requested_shifts = frozenset()
-    res = _solve([sub], {"LamN": _cfg("LamN")})
-    sites = [a.shift.site for a in sorted(res.assignments, key=lambda a: a.date) if a.physician_id == "LamN"]
+    res = _solve([sub], {"P51": _cfg("P51")})
+    sites = [a.shift.site for a in sorted(res.assignments, key=lambda a: a.date) if a.physician_id == "P51"]
     assert len(sites) == 3
     assert len(set(sites)) == 3, sites

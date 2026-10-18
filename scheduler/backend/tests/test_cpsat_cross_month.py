@@ -133,7 +133,7 @@ def test_niar_still_forbids_an_isolated_night_with_no_trailing_data():
     adjacent night anywhere is still forbidden for a non-singleton physician,
     confirming trailing_assignments=None doesn't weaken this rule. Requests
     2 nights: a physician asking for exactly ONE is deliberately exempt from
-    HC-13b since 2026-10-07 (Grishin), so 1 would no longer test the rule."""
+    HC-13b since 2026-10-07 (P36), so 1 would no longer test the rule."""
     sub = _jan1_only_submission(
         "Test", shifts_2400h_requested=2, shifts_2400h_stated=True,
     )

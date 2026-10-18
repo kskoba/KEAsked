@@ -4,7 +4,7 @@ PriorMonthSummary + the two "carry-over" soft terms in generator_cpsat.py):
 
   * acute debt -- someone who worked a disproportionately non-acute month
     gets extra weight on an additional acute (RAH A/B) shift next month,
-    unless structurally barred from acute sites (Krisik/Francescutti).
+    unless structurally barred from acute sites (P49/P32).
   * repeat overage -- someone scheduled over their requested count last
     month is discouraged from going over again this month.
 
@@ -126,10 +126,10 @@ def test_acute_eligibility_follows_forbidden_sites():
 
 
 def test_prior_month_summary_line_names_the_carryover_physicians():
-    roster = {"Krisik": _cfg("Krisik", forbidden_sites=["RAH A side", "RAH B side"])}
+    roster = {"P49": _cfg("P49", forbidden_sites=["RAH A side", "RAH B side"])}
     summaries = {
         "Debt": trailing_mod.PriorMonthSummary(10, 0),
-        "Krisik": trailing_mod.PriorMonthSummary(8, 0),           # in debt on paper, but can't work acute
+        "P49": trailing_mod.PriorMonthSummary(8, 0),           # in debt on paper, but can't work acute
         "Over": trailing_mod.PriorMonthSummary(10, 4, shifts_requested=8),
     }
     line = trailing_mod.summarize_prior_month(summaries, roster, GROUP_A_TARGET)
@@ -161,20 +161,20 @@ def test_acute_debt_wins_the_contested_acute_slot_both_ways():
 
 
 def test_acute_debt_is_ignored_for_a_physician_barred_from_acute_sites():
-    """Krisik-shaped roster entry: in debt on paper, but every acute site is
+    """P49-shaped roster entry: in debt on paper, but every acute site is
     forbidden, so the carry-over must not be built (and the solve must still
     place her on the one site she can work)."""
     avail = {1: frozenset({A_SIDE.code, NEHC.code})}
-    subs = [_submission("Krisik", avail, 1, 1), _submission("Beta", avail, 1, 1)]
+    subs = [_submission("P49", avail, 1, 1), _submission("Beta", avail, 1, 1)]
     roster = {
-        "Krisik": _cfg("Krisik", forbidden_sites=["RAH A side", "RAH B side", "RAH I side", "RAH F side"]),
+        "P49": _cfg("P49", forbidden_sites=["RAH A side", "RAH B side", "RAH I side", "RAH F side"]),
         "Beta": _cfg("Beta"),
     }
-    prior = {"Krisik": trailing_mod.PriorMonthSummary(shifts_worked=8, acute_shifts=0)}
+    prior = {"P49": trailing_mod.PriorMonthSummary(shifts_worked=8, acute_shifts=0)}
     gen = CpsatScheduleGenerator(subs, roster, CFG, prior_month=prior)
     result = gen.generate(YEAR, MONTH, time_limit=10.0, num_workers=4)
     got = _by_pid(result)
-    assert [a.shift.code for a in got["Krisik"]] == [NEHC.code]
+    assert [a.shift.code for a in got["P49"]] == [NEHC.code]
     assert [a.shift.code for a in got["Beta"]] == [A_SIDE.code]
 
 

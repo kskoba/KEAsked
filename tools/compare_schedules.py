@@ -107,8 +107,8 @@ def load_physician_max_consec(yaml_path: str = _PHYSICIANS_YAML) -> dict[str, in
     Keyed by id (not by `name`) specifically so callers can resolve *any*
     spelling a schedule uses for a physician — via build_roster_key_map's
     canon_name(variant) -> id mapping — to the same entry. Looking this up
-    by whatever display name a report happens to be using (e.g. "Hanson A"
-    when physicians.yaml's `name` is "Amanda Hanson") used to silently miss
+    by whatever display name a report happens to be using (e.g. "Doe J"
+    when physicians.yaml's `name` is "Jane Doe") used to silently miss
     and fall back to the generic default instead of the physician's real,
     often lower, personal cap.
     """
@@ -209,10 +209,10 @@ def canon_name(name: str) -> str:
     Canonical key for matching physician names across schedules.
 
     Handles:
-      - Case differences:      "ZHANG"  == "Zhang"
-      - Reversed order:        "Brown T" == "TBrown"
-      - CamelCase vs spaced:   "LamRico" == "Lam-Rico"
-      - Hyphen / space:        "Lam-Rico" == "Lam Rico"
+      - Case differences:      "DOE"  == "Doe"
+      - Reversed order:        "Doe J" == "JDoe"
+      - CamelCase vs spaced:   "DoeRoe" == "Doe-Roe"
+      - Hyphen / space:        "Doe-Roe" == "Doe Roe"
 
     Algorithm: split into tokens on whitespace, hyphens, underscores, and
     camelCase boundaries; lowercase each token; sort alphabetically; join.
@@ -226,10 +226,10 @@ def canon_name(name: str) -> str:
         if not part:
             continue
         if part.isupper() or part.islower():
-            # All-caps (e.g. "ZHANG") or all-lowercase — treat as single token
+            # All-caps (e.g. "DOE") or all-lowercase — treat as single token
             tokens.append(part.lower())
         else:
-            # Mixed case — split on camelCase: "TBrown" → ["T", "Brown"]
+            # Mixed case — split on camelCase: "JDoe" → ["J", "Doe"]
             sub = re.findall(r'[A-Z][a-z]*|[A-Z]+(?=[A-Z]|$)|[a-z]+', part)
             tokens.extend(t.lower() for t in sub) if sub else tokens.append(part.lower())
     return ''.join(sorted(tokens))
@@ -245,9 +245,9 @@ def build_roster_key_map(yaml_path: str = _PHYSICIANS_YAML) -> dict[str, str]:
 
     This is what actually resolves cases the generic canon_name() token
     match cannot, because the two sides use fundamentally different name
-    fields for the same person — e.g. one export using "Hanson A" (last
-    name + first initial) and the other "Amanda Hanson" (full first name)
-    produce different sorted-token keys ("ahanson" vs "amandahanson") that
+    fields for the same person — e.g. one export using "Doe J" (last
+    name + first initial) and the other "Jane Doe" (full first name)
+    produce different sorted-token keys ("doej" vs "janedoe") that
     no amount of case/order normalisation will unify on their own. The
     roster is the one place that already records both spellings belong to
     the same physician (physicians.yaml's own `aliases` field exists for
@@ -256,8 +256,8 @@ def build_roster_key_map(yaml_path: str = _PHYSICIANS_YAML) -> dict[str, str]:
     consult the roster for identity at all).
 
     Maps to the roster's physician *id*, not its `name` field: `name`
-    formatting is itself inconsistent across entries ("Aref Yeung" vs.
-    "Yeung Alex" vs. "E Chang", First-Last / Last-First / Last-Initial all
+    formatting is itself inconsistent across entries ("Jack Roe" vs.
+    "Roe Jane" vs. "E Doe", First-Last / Last-First / Last-Initial all
     mixed) so it makes a poor display string. unify_physician_names uses
     this map only to decide which raw names are the same physician; the
     string actually shown still comes from one of the two schedule files.
@@ -278,8 +278,8 @@ def build_roster_key_map(yaml_path: str = _PHYSICIANS_YAML) -> dict[str, str]:
         first = (phys.get("first_name") or "").strip()
         last = (phys.get("last_name") or "").strip()
         if last and first:
-            variants.add(f"{last} {first[0]}")   # "Hanson A" style
-            variants.add(f"{first} {last}")       # "Amanda Hanson" style
+            variants.add(f"{last} {first[0]}")   # "Doe J" style
+            variants.add(f"{first} {last}")       # "Jane Doe" style
         for v in variants:
             v = str(v).strip()
             if not v:

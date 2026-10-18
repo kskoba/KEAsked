@@ -3,7 +3,7 @@ Physician identity resolution.
 
 The same physician can appear under different name/ID strings across input
 sources — a per-physician xlsx filename, a name typed into a flat submission
-file, etc. (e.g. "Amanda Hanson" vs "Hanson A"). This module is the single
+file, etc. (e.g. "Jane Doe" vs "Doe J"). This module is the single
 place that maps any such variant string to the canonical roster ID, using
 physicians.yaml's `id`, `name`, and `aliases` fields.
 
@@ -23,8 +23,8 @@ from scheduler.backend.config import PhysicianConfig
 
 
 def _normalize(s: str) -> str:
-    # Commas and periods are treated as whitespace so "Williamson, Ian" and
-    # "J. Gunawan" normalize the same as "Williamson Ian" / "J Gunawan".
+    # Commas and periods are treated as whitespace so "Doe, Jane" and
+    # "J. Roe" normalize the same as "Doe Jane" / "J Roe".
     cleaned = str(s).replace(",", " ").replace(".", " ")
     return " ".join(cleaned.split()).casefold()
 
@@ -36,16 +36,16 @@ def build_alias_index(roster: dict[str, PhysicianConfig]) -> dict[str, str]:
     Matchable variants per physician:
       - id, name, aliases, as literally recorded in physicians.yaml
       - "First Last", "Last First", "Last I", "I Last", and the same four
-        forms with no space (e.g. "FBrown", "BrownF") — derived from the
+        forms with no space (e.g. "JDoe", "DoeJ") — derived from the
         structured last_name/first_name fields, when both are known, to
         cover submission files that use a different name order/format
-        than whatever happens to be in `name` (e.g. roster name "Yeung
-        Alex" but a submission says "Alex Yeung") or a filename-stem-style
-        id with no separator (e.g. roster id "BrownF" but a submission
-        file is named "FBrown.xlsx")
+        than whatever happens to be in `name` (e.g. roster name "Doe
+        Jane" but a submission says "Jane Doe") or a filename-stem-style
+        id with no separator (e.g. roster id "DoeJ" but a submission
+        file is named "JDoe.xlsx")
       - bare last_name alone — but ONLY when that surname is unique across
-        the whole roster (e.g. "Skoblenick"); a shared surname like
-        "Chang" or "Yeung" is deliberately never added bare, since which
+        the whole roster (e.g. "Onlyone"); a shared surname like
+        "Doe" or "Roe" is deliberately never added bare, since which
         physician it means would be a guess, not a lookup
 
     If two different physicians would ever produce the identical
@@ -55,10 +55,10 @@ def build_alias_index(roster: dict[str, PhysicianConfig]) -> dict[str, str]:
     wrong match is not.
 
     Literal fields (id/name/aliases) always take priority over derived
-    variants: e.g. AYeung (Aref) and YeungAlex (Alex) share first initial
-    "A", so YeungAlex's derived no-space "Initial+Surname" form is also
-    the literal string "AYeung" — that must never be allowed to knock out
-    AYeung's own id resolving to itself, so derived variants are only
+    variants: e.g. JRoe (Jack) and RoeJane (Jane) share first initial
+    "J", so RoeJane's derived no-space "Initial+Surname" form is also
+    the literal string "JRoe" — that must never be allowed to knock out
+    JRoe's own id resolving to itself, so derived variants are only
     added where no literal field has already claimed that key.
 
     Build once per roster and reuse across a batch of lookups (e.g. one
@@ -125,8 +125,8 @@ def build_display_names(roster: dict[str, PhysicianConfig]) -> dict[str, str]:
 
     Uses just the first initial by default. Falls back to the full first
     name only for physicians whose "Lastname, Initial" form collides with
-    another physician's (e.g. "Yeung, Aref" and "Yeung, Alex" both reduce
-    to "Yeung, A") — and only when the full first name is actually known;
+    another physician's (e.g. "Roe, Jack" and "Roe, Jane" both reduce
+    to "Roe, J") — and only when the full first name is actually known;
     if it isn't, the bare last name is the best available fallback.
 
     A physician with no last_name on file (shouldn't normally happen once

@@ -12,7 +12,7 @@ against real January data: 5 of 7 eligible physicians still got 0 anchor
 shifts despite the bonus, and that deficit is exactly what concentrated
 anchor load onto whoever was cheapest to use instead (one physician alone
 ended up with 64% of his month as anchor shifts). The solo tests below
-use the same uncontested technique as the Dickey/RScheirer singleton-night
+use the same uncontested technique as the P24/P71 singleton-night
 diagnosis; test_floor_survives_contention below is the one that actually
 reproduces the real-data failure mode and proves the guaranteed stage
 holds up against it.
@@ -130,7 +130,7 @@ def test_floor_survives_contention_from_uncapped_blank_physicians():
     """Reproduces the real-data failure mode this floor was redesigned to
     fix: a 0/0-stated physician competing against physicians with blank
     (unstated, uncapped) anchor fields -- exactly the shape that let one
-    real physician (Wrubleski, real January data) absorb 64% of his month
+    real physician (P98, real January data) absorb 64% of his month
     as anchor shifts while 5 of 7 0/0-stated physicians got zero. The
     soft-bonus-only version of this floor failed this exact scenario in
     production; the guaranteed lexicographic stage must not."""
@@ -155,7 +155,7 @@ def test_floor_survives_contention_from_uncapped_blank_physicians():
 
 
 def test_floor_eligible_physician_is_automatically_isolation_exempt():
-    """Reproduces a second real failure (Lung, real January data): an
+    """Reproduces a second real failure (P57, real January data): an
     explicit "0 2400h" caps total 2400h at requested(0) + anchor_tol(1) =
     1 -- but HC-13b normally requires >=2 (an adjacent pair) for ANY
     2400h at all, which 1 can never satisfy. That combination was always
@@ -165,7 +165,7 @@ def test_floor_eligible_physician_is_automatically_isolation_exempt():
     physicians must be automatically isolation-exempt (without needing
     allow_isolated_nights set), or this floor can silently force 0 total
     shifts for anyone whose only real anchor avenue is 2400h."""
-    days_with_pairs = {1, 2, 8, 9, 15, 16}  # Lung's real shape: adjacent pairs, 2400h only
+    days_with_pairs = {1, 2, 8, 9, 15, 16}  # P57's real shape: adjacent pairs, 2400h only
     days = []
     for d in range(1, DAYS_IN_MONTH + 1):
         if d in days_with_pairs:
@@ -180,17 +180,17 @@ def test_floor_eligible_physician_is_automatically_isolation_exempt():
                 available_blocks=frozenset(), requested_shifts=frozenset(),
             ))
     sub = PhysicianSubmission(
-        physician_id="Lung", physician_name="Lung", year=YEAR, month=MONTH,
+        physician_id="P57", physician_name="P57", year=YEAR, month=MONTH,
         shifts_requested=10, shifts_min=0, shifts_max=10,
         shifts_2400h_stated=True, shifts_2400h_requested=0,
         shifts_0600h_stated=True, shifts_0600h_requested=0,
         days=days,
     )
-    roster = {"Lung": PhysicianConfig(id="Lung", name="Lung", max_consecutive_nights=2)}
+    roster = {"P57": PhysicianConfig(id="P57", name="P57", max_consecutive_nights=2)}
     gen = CpsatScheduleGenerator([sub], roster, {}, trailing_assignments=None)
     result = gen.generate(YEAR, MONTH, time_limit=20.0, num_workers=4)
 
-    assert _anchor_total(result, "Lung") >= 1
+    assert _anchor_total(result, "P57") >= 1
 
 
 def test_no_floor_for_two_or_fewer_requested_shifts():

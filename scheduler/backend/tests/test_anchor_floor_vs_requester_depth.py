@@ -1,13 +1,13 @@
 """
-0/0 anchor floor vs. stated requesters (real case: Lung, cpsatv2-jan4/5/6).
+0/0 anchor floor vs. stated requesters (real case: P57, cpsatv2-jan4/5/6).
 
-Lung (10 shifts, explicit 0/0) offered 2400h on five weekend dates only.
+P57 (10 shifts, explicit 0/0) offered 2400h on five weekend dates only.
 January's 120 night slots carried 118 stated 2400h requests and the floor
 was solved only in its own stage AFTER stage B had locked every
 requester's slots, so his first night needed a multi-swap chain the 60 s
 floor pass never found (FEASIBLE, unproven, in a local replay; forcing
-Lung >= 1 in that stage with 300 s did find a schedule). Three runs in a
-row left him at 0 of 2 while N Lam and Velji held a 4th night against 3
+P57 >= 1 in that stage with 300 s did find a schedule). Three runs in a
+row left him at 0 of 2 while P51 and P92 held a 4th night against 3
 requested.
 
 User rule (2026-10-10): a floor physician NEVER displaces a stated
@@ -59,7 +59,7 @@ def _nights(result, pid: str) -> int:
 
 
 def _solve(subs):
-    # Requesters may work a lone night (Braun-style roster flag) so the
+    # Requesters may work a lone night (P08-style roster flag) so the
     # fixture's single-night days are legal for them; a floor-eligible
     # physician is isolation-exempt already.
     roster = {s.physician_id: PhysicianConfig(id=s.physician_id, name=s.physician_id,
@@ -84,8 +84,8 @@ def test_floor_takes_the_night_that_would_otherwise_be_someones_overage():
     """Same shape, but the requesters asked for ONE night each: day 20
     covers every stated unit, so day 10's four slots can only be filled by
     overage (a 2nd, unrequested night) or by the floor physician. The
-    floor's first unit must win one of them -- the Lung case: N Lam and
-    Velji held a 4th night for 3 requested while he had none."""
+    floor's first unit must win one of them -- the P57 case: P51 and
+    P92 held a 4th night for 3 requested while he had none."""
     requesters = [_sub(f"Req{i}", 6, {10, 20}, shifts_2400h_stated=True, shifts_2400h_requested=1)
                   for i in range(4)]
     result = _solve([_zz({10})] + requesters)

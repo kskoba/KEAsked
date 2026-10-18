@@ -395,7 +395,7 @@ normally the blank time-code row with learner names instead of leaving
 them empty:
 
 ```
-RAH A          Sachs      Wittmeier   Lali        Davis    Rosenblum
+RAH A          P77      P96   P50        P20    P76
 0600-1200  →   Wang       Brooke H.   Compagna    —        —          (learner row; "No Learner" when none)
 ```
 

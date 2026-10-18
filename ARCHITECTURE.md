@@ -9,7 +9,7 @@ There are **three separate systems** in play, each with its own codebase and its
 | System | What it is | Where it runs | Who touches it |
 |---|---|---|---|
 | **KEAsked** | The scheduling engine itself — imports preferences, validates them, runs the solver, exports a schedule | Electron desktop app (local machine) + a Python FastAPI backend, either spawned locally or run as a container on Unraid | The scheduling coordinator only |
-| **sked** (sked.keatools.org) | Physician-facing web tool — magic-link shift-preference grid, "My Rules" view | Cloudflare Worker + D1 database | Physicians (via emailed links) and the coordinator (via KEAsked's admin calls into it) |
+| **sked** (sked.keatools.org) | Physician-facing web tool — magic-link shift-preference grid, "My Rules" view, an optional per-month comment to the scheduler (shown on KEAsked's Validate page) | Cloudflare Worker + D1 database | Physicians (via emailed links) and the coordinator (via KEAsked's admin calls into it) |
 | **ByteBloc** | The hospital's actual live scheduling/on-call system | External, not ours | Where the final "unavailable"/"available" signal ends up so ByteBloc's own UI reflects it |
 
 None of these three share a database or a login system. They're bridged entirely by KEAsked making authenticated HTTP calls out to the other two — sked and ByteBloc have no way to reach back into KEAsked on their own initiative.
@@ -76,7 +76,7 @@ All five are gitignored (real org data / secrets) with an annotated `*_template.
 | **`physicians.yaml`** | One entry per physician: identity, aliases, and every per-person scheduling preference (see next section) | Roster Editor window, or by hand |
 | **`scheduler_config.yaml`** | Global solver settings (site-balance targets, spacing rules, default caps) plus **person-specific pair/sequencing rules** — `timed_separation`, `conditional_cowork`, `forbidden_precursor_shifts`, `night_chain_ramp_in`, `linked_rest_pairs` | By hand only — no UI writes to this file. View current rules (read-only) via the Scheduling Rules window |
 | **`bytebloc.yaml`** | ByteBloc connection: `group_code`, `location_code`, separate `read_security_token`/`write_security_token`, `requester_id`, `shift_map` (KEAsked shift code → ByteBloc `{site_id, shift_id}`), `provider_map` (KEAsked physician id → ByteBloc provider id) | By hand, seeded from real `getShiftDetails`/`getUserDetails` calls |
-| **`sked.yaml`** | sked connection: `base_url`, `survey_base_url`, `admin_secret`, `link_days_valid` | By hand |
+| **`sked.yaml`** | sked connection: `base_url`, `survey_base_url`, `admin_secret`, `link_days_valid`. `link_days_valid` is the expiry of every emailed magic link (monthly shift-request AND annual survey); an expired link can no longer load or save the preference grid until a resend mints a fresh one. It is independent of the period's close date, which sked shows but never enforces. The per-physician calendar feed / live schedule view use a separate permanent token (fixed year-2099 expiry) and are unaffected | By hand |
 | **`email.yaml`** | SMTP settings for the app's own outgoing mail (magic-link emails) | By hand |
 
 Both `physicians.yaml` and `scheduler_config.yaml` are read fresh on every request — **no backend restart needed** after editing either one, on either local or remote. A restart is only needed after a *code* change.

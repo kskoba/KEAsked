@@ -1,8 +1,8 @@
 # Weighted soft-preference ranking — design discussion (not started)
 
-**Status**: early design thinking only, 2026-09-23. Explicitly not to be built yet — this is a "sit with it" document, not an implementation plan. Triggered by Aref Yeung's real ranked-preference list (below), sent while discussing having each roster member rank their soft preferences by importance.
+**Status**: early design thinking only, 2026-09-23. Explicitly not to be built yet — this is a "sit with it" document, not an implementation plan. Triggered by P05's real ranked-preference list (below), sent while discussing having each roster member rank their soft preferences by importance.
 
-Aref's actual list, verbatim:
+P05's actual list, verbatim:
 
 > 1) Paired nights or none at all. 4pts
 > 2) NE over RAZ (but I'll do RAZ if needed) 3pts
@@ -11,7 +11,7 @@ Aref's actual list, verbatim:
 
 ## The core tension: weighting is not the same as guaranteeing
 
-This connects directly to the RScheirer anchor-fulfillment bug from 2026-09-22 (see `kea-oct2026-scheduling-rules` project memory / git history around commit `4a6bb27`). A flat, or weighted, **sum** objective is fairness-blind at the individual level — it optimizes the *aggregate*, not any one physician's outcome. Scaling a term's coefficient by a stated "7/10" doesn't change that structurally; it only changes how much that one term contributes to the same shared pot everything else gets summed into.
+This connects directly to the P71 anchor-fulfillment bug from 2026-09-22 (see `kea-oct2026-scheduling-rules` project memory / git history around commit `4a6bb27`). A flat, or weighted, **sum** objective is fairness-blind at the individual level — it optimizes the *aggregate*, not any one physician's outcome. Scaling a term's coefficient by a stated "7/10" doesn't change that structurally; it only changes how much that one term contributes to the same shared pot everything else gets summed into.
 
 **Does a 7/10 always beat a 2/10?** Not with a naive weighted sum. A 7 can still lose to a *combination* of other terms stacked against it in the same giant objective (other physicians' preferences, fill-rate, group-balance, every existing soft rule), especially since those terms currently span wildly different numeric ranges — fill bonuses run ~1000-1500, existing soft rules ~15-40 (`_ANCHOR_FULFILLMENT_BONUS = 90`, `_SWING_PENALTY = 35`, `_WEEKEND_CLUMP_PENALTY = 15`, etc. — see `generator_cpsat.py`). A "7" only means something relative to everything else it's competing with in the sum; on its own it's a bigger nudge, not a promise.
 
@@ -25,18 +25,18 @@ A real guarantee ("7 reliably wins a head-to-head conflict with a 2") needs some
 
 ## Refinement: shared-resource preferences aren't *uniformly* zero-sum
 
-Caught via a specific example: if Aref's available for a block containing both an NEHC and a RAH-I ("RAZ") option that day, a nudge toward NEHC only actually costs someone else something when there's *low slack* for RAH-I that day (few other physicians eligible to cover it instead). When slack is high, the nudge is close to free — someone else fills RAH-I, indifferent or even preferring it, and nobody's worse off.
+Caught via a specific example: if P05's available for a block containing both an NEHC and a RAH-I ("RAZ") option that day, a nudge toward NEHC only actually costs someone else something when there's *low slack* for RAH-I that day (few other physicians eligible to cover it instead). When slack is high, the nudge is close to free — someone else fills RAH-I, indifferent or even preferring it, and nobody's worse off.
 
-This is exactly why the existing `group_b_site_preference` mechanism (confirmed live for Aref right now — `group_b_site_preference: nehc` is already in his roster entry, and *is* his stated "NE over RAZ" preference, item #2, with zero new work needed) uses such a light weight: `+6` per preferred-site shift, against fill-rate bonuses in the 1000s (`generator_cpsat.py` line ~1034). It's cheap enough to get absorbed by ordinary schedule slack most months, and yields gracefully the rare times it can't — not pretending to be intrinsic, but calibrated to *behave like* it in the common case.
+This is exactly why the existing `group_b_site_preference` mechanism (confirmed live for P05 right now — `group_b_site_preference: nehc` is already in his roster entry, and *is* his stated "NE over RAZ" preference, item #2, with zero new work needed) uses such a light weight: `+6` per preferred-site shift, against fill-rate bonuses in the 1000s (`generator_cpsat.py` line ~1034). It's cheap enough to get absorbed by ordinary schedule slack most months, and yields gracefully the rare times it can't — not pretending to be intrinsic, but calibrated to *behave like* it in the common case.
 
 So the earlier hard (A) vs (B) split is better understood as a spectrum: **weight size × typical slack for that resource** determines where a given preference actually lands in practice. A heavily-weighted shared-resource preference behaves like a real trade-off; a lightly-weighted one behaves almost intrinsically even though it's mechanically the same *kind* of claim underneath. Worth keeping this in mind when picking coefficients for any new weighted preferences — the number chosen matters as much as which category the preference falls into.
 
-## Aref's list, mapped
+## P05's list, mapped
 
 | # | Preference | Category | Notes |
 |---|---|---|---|
 | 1 | Paired nights or none (4pts) | (A) personal structure | Possibly **already free** — the existing hard rule (`HC-13b` in `generator_cpsat.py`) already requires "every night has an adjacent night" as the *default* for anyone without `prefer_singleton_nights` set. His 4 points might really mean "never let this get overridden under pressure," not something wholly new. Worth checking his actual roster flags before assuming this needs new machinery. |
-| 2 | NE over RAZ, will do RAZ if needed (3pts) | (B) shared resource | **Already live, confirmed** — `group_b_site_preference: nehc` is already set in his roster entry, wired into the objective at `+6` per preferred-site shift. This *is* his stated preference; zero new work needed. (`RAZ` likely means a specific Group B site he's comparing NEHC against — probably RAH I side given the context, but not confirmed against the actual site-code convention (`RA`/`RB`/`RI`/`NE` suffixes seen elsewhere); also used by Keyes/Edgecumbe informally. Doesn't block anything here since `group_b_site_preference` already covers "prefer NEHC over whichever other Group B site" regardless of exactly which one RAZ refers to.) |
+| 2 | NE over RAZ, will do RAZ if needed (3pts) | (B) shared resource | **Already live, confirmed** — `group_b_site_preference: nehc` is already set in his roster entry, wired into the objective at `+6` per preferred-site shift. This *is* his stated preference; zero new work needed. (`RAZ` likely means a specific Group B site he's comparing NEHC against — probably RAH I side given the context, but not confirmed against the actual site-code convention (`RA`/`RB`/`RI`/`NE` suffixes seen elsewhere); also used by P45/P27 informally. Doesn't block anything here since `group_b_site_preference` already covers "prefer NEHC over whichever other Group B site" regardless of exactly which one RAZ refers to.) |
 | 3 | Forward-cascading, graded, not backward (2pts) | (A) personal structure | Needs a genuinely new mechanism. The existing swing-penalty (`_SWING_PENALTY`, `_SHIFT_SWING_MAX_HOURS`) is direction-agnostic and only fires on *large* jumps — doesn't distinguish forward/same/backward, and doesn't grade by degree the way he's describing (prefers *forward more than* same, actively dislikes backward). |
 | 4 | Singles/doubles, 3 SIAR acceptable ceiling (1pt) | (A) personal structure | Mostly already covered by his own `max_consecutive_shifts` cap (confirm it's actually 3). The residual ask — discourage *habitually* hitting his own ceiling even though it's allowed — is narrow and new, distinct from the existing flat `run_penalty_terms` (currently only fires at 4+ regardless of the physician's own cap). |
 
@@ -44,7 +44,7 @@ Three of his four are personal-structure, only #2 is genuinely shared-resource. 
 
 ## Suggested next thinking, not a plan
 
-1. **Category (A) first.** No cross-physician fairness mechanism needed at all — it doesn't compete for a scarce resource. Mechanically the easiest: same pattern already used for every soft rule in `generator_cpsat.py`, coefficient scaled by `points / 10` instead of a fixed constant. Would cover 3 of Aref's 4 asks on its own.
+1. **Category (A) first.** No cross-physician fairness mechanism needed at all — it doesn't compete for a scarce resource. Mechanically the easiest: same pattern already used for every soft rule in `generator_cpsat.py`, coefficient scaled by `points / 10` instead of a fixed constant. Would cover 3 of P05's 4 asks on its own.
 
 2. **Defer category (B)** until there's an actual answer to "does a higher number always win" — not really a technical question, a values question about how a contested resource gets allocated between people who both want it.
 

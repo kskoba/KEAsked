@@ -72,3 +72,9 @@ scheduler/config/physicians.yaml
 
 # Local certificates and credentials (never push)
 certs/
+
+# Real per-physician data / name-bearing dumps -- never tracked
+SM-rules.md
+Request-Imports/
+docs/physician-pseudonyms.md
+analyze_schedules.py

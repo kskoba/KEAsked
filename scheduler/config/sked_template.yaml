@@ -26,4 +26,20 @@ survey_base_url: "https://survey.keatools.org"
 admin_secret: ""
 
 # How many days a generated magic link stays valid before it expires.
+#
+# What this does and does not cover (sked's token = HMAC over
+# physicianId + periodId + exp; sked/src/index.ts generate-period-links):
+# - Applies to BOTH the monthly shift-request links and the annual survey
+#   links -- both come from the same sked endpoint, only the domain differs.
+# - After this many days the physician's link opens to "invalid or expired
+#   token": they can neither load nor save their preference grid. Their saved
+#   submission is untouched; resending (or Roster Editor "View in browser")
+#   mints a fresh token with a new clock against the same stored data.
+# - The period's close date is a SEPARATE, soft deadline: sked only shows
+#   "N days left" / "LATE" text and never blocks a save on it. So set this
+#   value to cover the whole entry window (send date -> close date), or the
+#   links die before the deadline and need a resend.
+# - Does NOT apply to the per-physician calendar feed (.ics) or the live
+#   "my schedule" web view: those use a different token with a fixed
+#   year-2099 expiry so the URL is permanent and identical every time.
 link_days_valid: 21

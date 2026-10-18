@@ -185,7 +185,7 @@ def summarize_trailing(trailing: dict[str, list[tuple[datetime.date, Shift]]]) -
 #                  month (acute share below the Group A target) gets extra
 #                  weight on an additional acute (RAH A/B) shift next month,
 #                  unless they are structurally barred from acute sites
-#                  (e.g. Krisik / Francescutti, forbidden_sites covers both).
+#                  (e.g. P49 / P32, forbidden_sites covers both).
 #   overage     -- a physician who was scheduled over their own requested
 #                  count last month is discouraged (not forbidden) from
 #                  going over again two months running. Needs the prior

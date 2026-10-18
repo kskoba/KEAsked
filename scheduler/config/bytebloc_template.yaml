@@ -102,4 +102,4 @@ shift_map:
 provider_map: {}
 # Example:
 #   provider_map:
-#     AHanson: "b96c33c69f334871c94fa6b70120241a"
+#     PhysicianId: "b96c33c69f334871c94fa6b70120241a"

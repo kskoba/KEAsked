@@ -2,7 +2,7 @@
 anchor_floor_repair.repair_anchor_floors: a floor physician below their
 floor takes an anchor its holder has beyond their STATED request, giving a
 non-anchor shift back; stated requests are never touched (user rule,
-2026-10-10, from Lung's 0/2 in cpsatv2-jan4/5/6).
+2026-10-10, from P57's 0/2 in cpsatv2-jan4/5/6).
 """
 
 from __future__ import annotations
@@ -133,13 +133,13 @@ def test_floor_targets_mirror_the_solver():
     assert anchor_floor_repair.floor_target(gen, "S") == 1
     assert anchor_floor_repair.floor_target(gen, "T") == 1       # 3 requested: smallest floor
     assert anchor_floor_repair.floor_target(gen, "U") == 0       # 2 or fewer requested: no floor
-    assert anchor_floor_repair.floor_target(gen, "Z") == 0       # 0 requested (Chee): no floor
+    assert anchor_floor_repair.floor_target(gen, "Z") == 0       # 0 requested (P17): no floor
     assert anchor_floor_repair.floor_target(gen, "Q") == 0       # stated requester
     assert anchor_floor_repair.floor_target(gen, "A") == 0       # admin exempt
 
 
 def test_a_pair_of_overage_nights_is_split_between_two_floor_physicians():
-    """Velji's shape: Q stated 2 nights and holds 4 as two pairs (10+11,
+    """P92's shape: Q stated 2 nights and holds 4 as two pairs (10+11,
     20+21). Taking one night alone would isolate its mate, so the pass
     hands day 10 to P and day 11 to R (both floor physicians), and Q takes
     a day shift from each -- Q ends at exactly the stated 2, still a pair."""

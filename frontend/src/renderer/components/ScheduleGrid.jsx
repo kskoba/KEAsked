@@ -90,7 +90,7 @@ function truncateName(name, max = 13) {
     // "Lastname, F" display form — the surname (before the comma) is
     // already the most identifying part. Splitting on whitespace here
     // would grab the trailing initial instead (e.g. "L" for
-    // "Francescutti, L"), so truncate the surname itself.
+    // "Lastname, L"), so truncate the surname itself.
     const surname = name.slice(0, commaIdx)
     return surname.length <= max ? surname : surname.slice(0, max - 1) + '…'
   }

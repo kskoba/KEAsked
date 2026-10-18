@@ -8,7 +8,7 @@ same time, the two can trade sites without touching anyone's days, times,
 rest spacing, consecutive-shift count, weekend load or anchor count. The
 solver's objective doesn't care which acute side a physician lands on, so
 it routinely leaves someone with (say) 0 A / 5 B for the month. A real
-January solve had N Lam at 0/4, Grishin at 0/5, Schindler at 4/0, Whiteside
+January solve had P51 at 0/4, P36 at 0/5, P81 at 4/0, P94
 at 4/0, and so on.
 
 This pass greedily applies such same-slot trades whenever they reduce the

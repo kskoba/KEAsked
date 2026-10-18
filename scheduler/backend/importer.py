@@ -39,6 +39,11 @@ from scheduler.backend.shifts import BLOCKS
 
 _NAME_ROW = 1
 _NAME_COL = 1          # Col A
+# The physician's per-month comment to the scheduler. sked's export writes
+# it to A2 (row 2 of the department template is otherwise empty); a sheet
+# filled by hand normally leaves it blank.
+_COMMENT_ROW = 2
+_COMMENT_COL = 1       # Col A
 
 _N_SHIFTS_ROW = 38
 _N_SHIFTS_COL = 37     # Col AK  — requested (N)
@@ -129,7 +134,7 @@ def _parse_anchor_value(raw) -> tuple[int, bool]:
         end. Policy changed 2026-10-06 from higher-end: a range means the
         low number is what they want and the high number is what they'd
         tolerate; reading it high used up all of a physician's shifts on
-        one anchor type (RScheirer's "6/8" became 8 of 8 as nights,
+        one anchor type (P71's "6/8" became 8 of 8 as nights,
         leaving no room for the float he also wanted). A ceiling phrase
         ("up to 4", "at most 4", "no more than 4", "max 4") still reads as
         its number — there the number IS the tolerance, not a floor.
@@ -151,7 +156,7 @@ def _parse_anchor_value(raw) -> tuple[int, bool]:
     if not text:
         return 0, False
     # Spelled-out counts ("two", "one or two") -- found in a real Jan 2027
-    # submission (Haager: "two") that was silently landing as blank, i.e.
+    # submission (P38: "two") that was silently landing as blank, i.e.
     # no stated request at all, so the anchor floor never protected it.
     for word, digit in _NUMBER_WORDS.items():
         text = re.sub(rf"\b{word}\b", digit, text, flags=re.IGNORECASE)
@@ -224,7 +229,7 @@ def _parse_day_column(ws, col: int, date: datetime.date) -> DayAvailability:
         # Bare "N" is a different, coarser convention some physicians
         # use for "a night shift, any site" rather than a specific
         # site+time code (confirmed against a real submission,
-        # RScheirer, 2026-09-29). Every 2400h code he's actually
+        # P71, 2026-09-29). Every 2400h code he's actually
         # available for that day is kept as a candidate -- same
         # "don't guess a single site" principle as the site-ambiguous
         # case below, just starting from a coarser signal.
@@ -265,6 +270,7 @@ def _parse_worksheet(
 
     physician_name = str(_cell(ws, _NAME_ROW, _NAME_COL) or "").strip()
     physician_id = physician_id_override or physician_name
+    comment = str(_cell(ws, _COMMENT_ROW, _COMMENT_COL) or "").strip()
 
     # Some physicians type their name in the wrong cell (e.g. leaving
     # "insert name here" in A1 and writing their real name a few columns
@@ -435,6 +441,7 @@ def _parse_worksheet(
         shifts_0600h_stated=shifts_0600h_stated,
         days=days,
         source_file=source_file,
+        comment=comment,
         spillover_days=spillover_days,
         raw_name_candidates=raw_name_candidates,
         month_mismatch=month_mismatch,
@@ -446,7 +453,7 @@ def _parse_worksheet(
 # from Numbers. Each table was converted to an Excel worksheet..." with a
 # Numbers-sheet-name -> Excel-worksheet-name mapping table. No real
 # physician submission would ever be named this. Confirmed twice against
-# real submissions (Samoraj, Mrochuk) -- in both cases the actual
+# real submissions (P79, P67) -- in both cases the actual
 # preference grid was the sheet immediately after this one.
 _NUMBERS_EXPORT_SUMMARY_SHEET_NAME = "Export Summary"
 

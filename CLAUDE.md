@@ -10,6 +10,38 @@ order). Never put real names back into tracked files.
 
 ## ⭐ Next task — start here
 
+**2026-10-18 — per-month comment on a shift request (sked -> Validate
+page); UNCOMMITTED in both repos as of this writing:**
+- sked: `migrations/0010_submission_comment.sql` adds `submissions.comment`
+  (TEXT, default ''). `PUT /api/submission` accepts an optional `comment`
+  (<= 2000 chars; omitted = keep stored, so old clients can't blank it),
+  `GET /api/session` returns it, `GET /api/admin/submissions` lists it.
+  Entry page: an "Include a comment" button in the top action row (turns
+  into "Comment included ✓" when set) opens a dialog; Save/Remove go
+  through the normal autosave, so the note is part of the submission.
+  The "Review My Preferences" dialog (standing-rules change request,
+  table `standing_preference_requests`) is unchanged -- that one is for
+  permanent rules, this one is for THIS month. Typecheck passes. **Not
+  deployed**: needs `npm run db:migrate:remote` then `npm run deploy`
+  (user runs these).
+- KEAsked: `PhysicianSubmission.comment` ("" default) is filled from the
+  sked listing row in `_fetch_sked_period_submissions` (the xlsx has no
+  cell for it; a pre-0010 sked without the key is tolerated).
+  `PhysicianImportResult.comment` (None when empty) feeds an amber
+  "Comment included" pill beside the name on the Validate page; click ->
+  popup with the text. Shared positions (`combined_with`) keep both
+  halves' notes, labelled.
+- **Cell A2** (user choice; A3 is the DATE label, row 2 of the template is
+  empty): sked's physician download and the admin `physician-export`
+  (hence KEAsked's Export All) write the comment there as an inline string
+  (a leading "=" stays text). `importer.py` reads A2 back
+  (`_COMMENT_ROW/_COMMENT_COL`), so directory imports of exported sheets
+  carry it too; the sked listing row wins when both exist.
+  Tests: `test_sked_import_comment.py` (4). The JSX was syntax-checked
+  with tsc only: `frontend/node_modules` on the Windows machine is the
+  Linux install (rollup native binary missing), so `electron-vite build`
+  must be confirmed on the Linux machine or after a Windows `npm install`.
+
 **2026-10-16 — "Export All Preferences to .xlsx" (Validate page) + sked
 export now template-faithful:**
 - sked `76575c5`/`349c769` (deployed): the physician Export button and

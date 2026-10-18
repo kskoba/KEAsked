@@ -547,6 +547,14 @@ def _apply_combined_submissions(submissions: list[PhysicianSubmission], roster: 
             existing.noc_available = existing.noc_available or day.noc_available
             existing.preferred_shifts = existing.preferred_shifts | day.preferred_shifts
 
+        # Both halves of the position may have left the scheduler a note;
+        # keep both, labelled, so neither is lost in the merge.
+        if sub.comment.strip():
+            target.comment = (
+                f"{target.physician_name}: {target.comment.strip()}\n\n{sub.physician_name}: {sub.comment.strip()}"
+                if target.comment.strip() else sub.comment.strip()
+            )
+
         # Re-apply PhysicianSubmission's own invariants (e.g. shifts_max
         # >= shifts_requested) -- mutating fields directly above bypasses
         # __post_init__, which only runs on construction.
@@ -595,6 +603,7 @@ def _build_import_results(
             physician_id=sub.physician_id,
             physician_name=display_names.get(sub.physician_id, sub.physician_name),
             source_file=src,
+            comment=sub.comment.strip() or None,
             shifts_requested=sub.shifts_requested,
             shifts_min=sub.shifts_min,
             shifts_max=sub.shifts_max,
@@ -1896,9 +1905,14 @@ def _fetch_sked_period_submissions(
             file_path.write_bytes(xlsx_bytes)
             try:
                 sub = import_single_file(file_path, year, month, physician_id_override=physician_id)
-                submissions.append(sub)
             except Exception as exc:
                 fetch_errors.append(f"{_display_name(cfg)}: could not parse submission ({exc})")
+                continue
+            # The month's note to the scheduler: the listing row is
+            # authoritative; the exported sheet's A2 (read by the importer)
+            # is the fallback for a sked whose listing predates it.
+            sub.comment = str(row.get("comment") or "").strip() or sub.comment
+            submissions.append(sub)
 
     return submissions, not_submitted, fetch_errors
 

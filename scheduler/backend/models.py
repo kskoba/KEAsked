@@ -177,6 +177,18 @@ class PhysicianSubmission:
     days: list[DayAvailability] = field(default_factory=list)
     source_file: str = ""
 
+    # Free-text note the physician attached to THIS month's request on sked
+    # ("" when none) -- a one-off tweak to their usual rules, dates to keep
+    # clear, extra shifts they could take. Carried from sked's submissions
+    # listing by /api/sked/import (and read back from cell A2 of an exported
+    # sheet by importer.py) and surfaced on the Validate page; the solver
+    # never reads it (it is for the scheduler's eyes). Untrusted free text:
+    # today it only ever goes to a bound SQL parameter (sked), onto the
+    # screen as a text node (React), and into A2 as an inline STRING cell
+    # (so a leading '=' is text, not a formula). If it is ever written to a
+    # yaml file or a shell command, escape it there.
+    comment: str = ""
+
     # Availability for the NEXT month's leading day(s) when this month's
     # template carries them (the December sheet ends with a Jan 1 column,
     # for holiday planning). Dated in the next month; kept out of `days`
@@ -210,7 +222,7 @@ class PhysicianSubmission:
         # (the sheet's own rule: shifts_max <= shifts_requested + 2, see
         # the docstring above) -- but a real submission can still state a
         # max BELOW its own requested count (confirmed, January 2027:
-        # KLam and MRico each had requested=8, max=7). A hard floor below
+        # P52 and P53 each had requested=8, max=7). A hard floor below
         # the target is nonsensical -- raise max to match requested rather
         # than let shifts_max silently undercut it downstream. Applied
         # once here, not per-importer, so every submission gets it

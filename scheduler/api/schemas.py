@@ -59,6 +59,10 @@ class PhysicianImportResult(BaseModel):
     # sked imports (parsed from a temp file that is gone by now) and for
     # anything synthetic. Lets the Validate page open the file directly.
     source_file: str | None = None
+    # The physician's note to the scheduler for this month (sked imports
+    # only); None when they left none. Shown as a "Comment included" pill
+    # beside the name on the Validate page.
+    comment: str | None = None
 
 
 class NotSubmittedRow(BaseModel):

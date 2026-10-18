@@ -158,7 +158,9 @@ def get_survey_responses(config: SkedConfig, survey_id: str) -> list[dict]:
 
 
 def list_period_submissions(config: SkedConfig, period_id: str) -> list[dict]:
-    """Returns [{"physicianId", "physicianName", "status", "updatedAt"}, ...] for a shift-request period."""
+    """Returns [{"physicianId", "physicianName", "status", "updatedAt", "comment"}, ...] for a
+    shift-request period. "comment" is the physician's per-month note to the scheduler ("" when none;
+    absent from a sked older than migration 0010 -- callers must tolerate a missing key)."""
     with httpx.Client(timeout=30) as client:
         res = client.get(
             f"{config.base_url}/api/admin/submissions",

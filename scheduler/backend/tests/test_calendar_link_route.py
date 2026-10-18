@@ -35,9 +35,26 @@ def test_returns_feed_and_matching_live_view_url(monkeypatch):
 
 
 def test_unknown_physician_is_404(monkeypatch):
-    _stub(monkeypatch, "https://sked.example.org/api/calendar/x.ics")
+    calls = _stub(monkeypatch, "https://sked.example.org/api/calendar/x.ics")
+    monkeypatch.setattr(server, "load_roster", lambda: {"KS": PhysicianConfig(id="KS", name="K S")})
     res = TestClient(server.app).post("/api/sked/calendar-link", json={"physician_id": "Nobody"})
     assert res.status_code == 404
+    assert calls == []
+
+
+def test_id_missing_from_stale_cache_rereads_roster_file(monkeypatch):
+    # physicians.yaml edited outside the app after the roster was cached.
+    feed = "https://sked.example.org/api/calendar/Y2FsZW5kYXItdGVzdA.X19jYWxlbmRhcl9f.4070908800.sig.ics"
+    calls = _stub(monkeypatch, feed)
+    on_disk = {
+        "KS": PhysicianConfig(id="KS", name="K S"),
+        "calendar-test": PhysicianConfig(id="calendar-test", name="Test Physician", active=False),
+    }
+    monkeypatch.setattr(server, "load_roster", lambda: on_disk)
+    res = TestClient(server.app).post("/api/sked/calendar-link", json={"physician_id": "calendar-test"})
+    assert res.status_code == 200, res.text
+    assert calls == ["calendar-test"]
+    assert "calendar-test" in server._state["roster"]
 
 
 def test_unconfigured_sked_is_400(monkeypatch):

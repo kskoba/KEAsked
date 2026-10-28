@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Copies the real (gitignored) config files -- physicians.yaml,
-# scheduler_config.yaml, bytebloc.yaml, email.yaml, sked.yaml -- to the
+# scheduler_config.yaml, bytebloc.yaml, email.yaml, sked.yaml, google_sheets.yaml
+# and the google_service_account.json key (missing ones are skipped) -- to the
 # Unraid backend's bind-mounted config folder. `git pull` never touches
 # these (they're gitignored on purpose, real org data + secrets); this is
 # the other half of getting Unraid in sync. Run it any time after editing
@@ -16,7 +17,7 @@ UNRAID_HOST="${UNRAID_HOST:-root@192.168.0.5}"
 UNRAID_CONFIG_DIR="${UNRAID_CONFIG_DIR:-/mnt/user/appdata/kea-scheduler/config}"
 LOCAL_CONFIG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../scheduler/config" && pwd)"
 
-FILES=(physicians.yaml scheduler_config.yaml bytebloc.yaml email.yaml sked.yaml)
+FILES=(physicians.yaml scheduler_config.yaml bytebloc.yaml email.yaml sked.yaml google_sheets.yaml google_service_account.json)
 
 to_sync=()
 for f in "${FILES[@]}"; do

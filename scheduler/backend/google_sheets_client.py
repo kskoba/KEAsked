@@ -165,22 +165,25 @@ def create_month_file(
             )
             return res["id"]
 
-        sheets = _sheets_service(config)
+        # Create the spreadsheet directly inside the target folder via the
+        # Drive API. (spreadsheets().create() would land it in the service
+        # account's own Drive root first -- and a service account has no
+        # storage of its own, so that step fails outright. Creating in place
+        # works on a Shared Drive, where the drive supplies the storage.)
         created = (
-            sheets.spreadsheets()
-            .create(body={"properties": {"title": name}}, fields="spreadsheetId")
+            drive.files()
+            .create(
+                body={
+                    "name": name,
+                    "mimeType": "application/vnd.google-apps.spreadsheet",
+                    "parents": [config.drive_folder_id],
+                },
+                fields="id",
+                supportsAllDrives=True,
+            )
             .execute()
         )
-        file_id = created["spreadsheetId"]
-        # spreadsheets().create() always lands in the service account's own
-        # Drive root -- move it into the shared folder explicitly.
-        existing = drive.files().get(fileId=file_id, fields="parents", supportsAllDrives=True).execute()
-        old_parents = ",".join(existing.get("parents", []))
-        drive.files().update(
-            fileId=file_id, addParents=config.drive_folder_id, removeParents=old_parents, fields="id",
-            supportsAllDrives=True,
-        ).execute()
-        return file_id
+        return created["id"]
     except HttpError as exc:
         raise GoogleSheetsApiError(f"Could not create spreadsheet {name!r}: {exc}") from exc
 

@@ -10,6 +10,25 @@ order). Never put real names back into tracked files.
 
 ## ⭐ Next task — start here
 
+**2026-10-28 (evening) — Google Sheets integration is LIVE on this machine
+in OAuth mode (commit 4ba98af + follow-ups):**
+- `google_sheets.yaml` has `auth: oauth`, `drive_folder_id` = the
+  "Test Schedules" folder in the scheduling mailbox's My Drive. Signed in as
+  the scheduling mailbox via `scripts/google-oauth-login.py`; token in
+  `google_oauth_token.json` (gitignored, refreshed automatically). Cloud
+  project "kea-scheduler" under that account, consent screen published
+  (homepage https://sked.keatools.org/manual, privacy
+  https://sked.keatools.org/privacy — both pages exist for this reason).
+  A create+delete test in the folder succeeded. Service-account mode kept
+  but unused (no Drive storage -> can't create in My Drive).
+- Push to Master Sheet: layout-aware on existing sheets; writes the full
+  export layout into a file it creates; refuses to wipe a non-empty sheet
+  with no recognizable layout.
+- NEXT: do a real push into Test Schedules (any loaded month), check the
+  result, then switch `drive_folder_id` to the real department folder
+  (share it with the scheduling mailbox as Editor) and sync config + token to
+  Unraid (`sync-config-to-unraid.sh` now includes all the Google files).
+
 **2026-10-28 (later, commit 395167b) — operations manual + four follow-ups
 from writing it:**
 - Manual lives in the sked repo: `public/manual.html` ->

@@ -2357,14 +2357,16 @@ def _push_result_to_master_sheet(
     Row positions come from the sheet itself: the grid is read once and
     walked with sheets_schedule_reader.locate_cells, so a hand-built sheet
     with no blank row between weeks and KEAsked's own export (which has
-    one) both get their names in the right cells. Only a brand-new blank
-    sheet (no previous month to copy) falls back to KEAsked's export
-    layout, written arithmetically.
+    one) both get their names in the right cells. A file this push creates
+    (blank, or a copy of last month for its formatting) is cleared and
+    written in full in KEAsked's export layout: day headers, dates, shift
+    rows with names, the learner row under each shift left empty.
 
     Returns (cells_written, spreadsheet_url, skipped) -- skipped is the
     number of scheduled cells the sheet had no row/column for.
     """
     file_id = google_sheets_client.find_month_file_id(config, result.year, result.month)
+    created_new = False
     if not file_id:
         prev_year, prev_month = result.year, result.month - 1
         if prev_month == 0:
@@ -2373,6 +2375,7 @@ def _push_result_to_master_sheet(
         file_id = google_sheets_client.create_month_file(
             config, result.year, result.month, copy_from_file_id=copy_from
         )
+        created_new = True
 
     index: dict[tuple, str] = {(a.date, a.shift.code): a.physician_name for a in result.assignments}
     call_index: dict[tuple, str] = {(oc.date, oc.call_type): oc.physician_name for oc in result.on_calls}
@@ -2405,8 +2408,8 @@ def _push_result_to_master_sheet(
     data: list[dict] = []
     skipped = 0
 
-    grid = google_sheets_client.read_range(config, file_id, "A1:H600")
-    located = sheets_schedule_reader.locate_cells(grid, result.year, result.month)
+    grid = [] if created_new else google_sheets_client.read_range(config, file_id, "A1:H600")
+    located = sheets_schedule_reader.locate_cells(grid, result.year, result.month) if grid else {}
     if located:
         for week_dates in weeks:
             for day in week_dates:
@@ -2429,24 +2432,43 @@ def _push_result_to_master_sheet(
         cells_written = google_sheets_client.write_ranges(config, file_id, data)
         return cells_written, google_sheets_client.spreadsheet_url(file_id), skipped
 
-    # Blank sheet: nothing to locate, write KEAsked's own export layout.
+    # No recognizable layout. A file this push just created (blank, or a
+    # copy of last month that still carries last month's dates and names)
+    # gets cleared and written in full -- headers, dates, shift rows, names --
+    # in KEAsked's own export layout, so a de novo month is complete on its
+    # own. An existing file with content but no SUN/date/shift structure is
+    # left alone rather than wiped.
+    if not created_new and any(str(c).strip() for r in grid for c in r):
+        raise google_sheets_client.GoogleSheetsApiError(
+            f"The sheet {google_sheets_client.month_file_name(config, result.year, result.month)!r} has "
+            "content but no recognizable week/shift layout (no SUN..SAT header rows), so nothing was "
+            "written. Fix the sheet's layout or rename it so a fresh one is created."
+        )
+    data.append({"range": "A1:I400", "values": [[""] * 9 for _ in range(400)]})
+    day_names = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"]
     row = 1
     for week_dates in weeks:
-        row += 2  # week header row + date row -- never written, assumed already correct
+        data.append({"range": f"A{row}:I{row}", "values": [[""] + day_names + [""]]})
+        row += 1
+        data.append({"range": f"A{row}:I{row}", "values": [[""] + [d.day if d else "" for d in week_dates] + [""]]})
+        row += 1
         for site_label, time_label, time_code, site_code in _EXPORT_SHIFTS:
-            is_oncall = time_code is None
-            for col_letter, day in zip(col_letters, week_dates):
-                if day is None or day not in covered_days:
-                    continue
-                if is_oncall:
-                    name = call_index.get((day, site_label), "")
+            names: list = []
+            for day in week_dates:
+                if day is None:
+                    names.append("")
+                elif time_code is None:
+                    names.append(call_index.get((day, site_label), ""))
                 elif time_code and site_code:
-                    name = index.get((day, f"{time_code} {site_code}"), "")
+                    names.append(index.get((day, f"{time_code} {site_code}"), ""))
                 else:
-                    continue
-                data.append({"range": f"{col_letter}{row}", "values": [[name]]})
-            row += 2  # physician-name row + the row below it (learner row — never written)
-        row += 1  # gap row between weeks
+                    names.append("")
+            data.append({"range": f"A{row}:I{row}", "values": [[site_label] + names + [site_label]]})
+            row += 1
+            # learner / time-range row: label only, day cells left for the learner coordinator
+            data.append({"range": f"A{row}:I{row}", "values": [[time_label] + [""] * 7 + [time_label]]})
+            row += 1
+        row += 1  # gap row between weeks, as in the xlsx export
 
     cells_written = google_sheets_client.write_ranges(config, file_id, data)
     return cells_written, google_sheets_client.spreadsheet_url(file_id), skipped

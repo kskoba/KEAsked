@@ -106,3 +106,48 @@ def test_push_reports_cells_the_sheet_has_no_row_for(monkeypatch):
     grid = [r for r in grid if not (r and r[0] in ("NOC", NOC_TIME))]   # sheet lacks the NOC row entirely
     writes, cells, skipped = _push(monkeypatch, grid)
     assert skipped >= 1 and not any(v == "Q" for v in writes.values())
+
+
+def _grid_from_writes(writes: list[dict]) -> list[list]:
+    """Rebuild the sheet from row-range writes (A{r}:I{r}) the scaffold path issues, last write wins."""
+    import re
+    rows: dict[int, list] = {}
+    for d in writes:
+        m = re.fullmatch(r"([A-I])(\d+)(?::([A-I])(\d+))?", d["range"])
+        c0, r0 = m.group(1), int(m.group(2))
+        for k, vals in enumerate(d["values"]):
+            row = rows.setdefault(r0 + k, [""] * 9)
+            for j, v in enumerate(vals):
+                row[ord(c0) - 65 + j] = v
+    return [rows.get(i, [""] * 9) for i in range(1, max(rows) + 1)]
+
+
+def test_new_file_is_written_in_full_and_round_trips_through_locate_cells(monkeypatch):
+    writes: list[dict] = []
+    monkeypatch.setattr(server.google_sheets_client, "find_month_file_id", lambda c, y, m: None)
+    monkeypatch.setattr(server.google_sheets_client, "create_month_file", lambda c, y, m, copy_from_file_id=None: "NEW")
+    monkeypatch.setattr(server.google_sheets_client, "read_range", lambda c, f, r: (_ for _ in ()).throw(AssertionError("no read on a new file")))
+    monkeypatch.setattr(server.google_sheets_client, "spreadsheet_url", lambda f: "https://sheet/NEW")
+    monkeypatch.setattr(server.google_sheets_client, "write_ranges", lambda c, f, data: writes.extend(data) or len(data))
+    cells, url, skipped = server._push_result_to_master_sheet(_result(), object())
+    assert skipped == 0
+    grid = _grid_from_writes(writes)
+    assert grid[0][1:8] == ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"]
+    loc = reader.locate_cells([[str(c) if c != "" else "" for c in r] for r in grid], YEAR, MONTH)
+    r, col = loc[("shift", datetime.date(2027, 2, 9), "0600h RAH A side")]
+    assert grid[r - 1][ord(col) - 65] == "P"
+    r, col = loc[("call", datetime.date(2027, 2, 1), "NOC")]
+    assert grid[r - 1][ord(col) - 65] == "Q"
+    # the learner row under RAH A carries only its label
+    rah_row = loc[("shift", datetime.date(2027, 2, 9), "0600h RAH A side")][0]
+    assert grid[rah_row][1:8] == [""] * 7
+
+
+def test_existing_sheet_with_unrecognized_content_is_not_wiped(monkeypatch):
+    import pytest
+    monkeypatch.setattr(server.google_sheets_client, "find_month_file_id", lambda c, y, m: "FILE")
+    monkeypatch.setattr(server.google_sheets_client, "read_range", lambda c, f, r: [["Notes"], ["do not delete"]])
+    monkeypatch.setattr(server.google_sheets_client, "month_file_name", lambda c, y, m: "2027-02 - test")
+    monkeypatch.setattr(server.google_sheets_client, "write_ranges", lambda c, f, data: (_ for _ in ()).throw(AssertionError("must not write")))
+    with pytest.raises(server.google_sheets_client.GoogleSheetsApiError):
+        server._push_result_to_master_sheet(_result(), object())

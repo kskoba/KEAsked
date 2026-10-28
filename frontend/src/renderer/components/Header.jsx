@@ -123,11 +123,12 @@ function PushToMasterSheetModal({ onClose }) {
 
 export default function Header({ view, onBack, hasSchedule, onViewSchedule, onOpenSettings, onOpenRoster, onOpenIndividualSchedules, onOpenMonthlyRequests, onOpenSchedulingRules }) {
   const [sheetsConfigured, setSheetsConfigured] = useState(null) // null while checking
+  const [sheetsDetail, setSheetsDetail] = useState('')
   const [showPushModal, setShowPushModal] = useState(false)
 
   useEffect(() => {
     getGoogleSheetsStatus()
-      .then((s) => setSheetsConfigured(s.configured))
+      .then((s) => { setSheetsConfigured(s.configured); setSheetsDetail(s.detail || '') })
       .catch(() => setSheetsConfigured(false))
   }, [])
   return (
@@ -177,7 +178,7 @@ export default function Header({ view, onBack, hasSchedule, onViewSchedule, onOp
               onClick={() => setShowPushModal(true)}
               disabled={!sheetsConfigured}
               className="flex items-center gap-2 px-4 py-1.5 rounded-md bg-emerald-700 hover:bg-emerald-600 text-white text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-emerald-700"
-              title={sheetsConfigured ? 'Push the active schedule to the master Google Sheet' : 'Master Sheet not configured — see scheduler/config/google_sheets_template.yaml'}
+              title={sheetsConfigured ? 'Push the active schedule to the master Google Sheet' : (sheetsDetail || 'Master Sheet not configured — see scheduler/config/google_sheets_template.yaml')}
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M12 12v9m0-9l-3 3m3-3l3 3" />

@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+from google.auth.transport.requests import Request as _GoogleAuthRequest
+from google.oauth2.credentials import Credentials as _UserCredentials
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -50,7 +52,15 @@ _DEFAULT_CONFIG_PATH = _CONFIG_DIR / "google_sheets.yaml"
 class GoogleSheetsConfig:
     """Loaded from scheduler/config/google_sheets.yaml, which is gitignored."""
 
+    # "service_account" (a robot identity; needs a Shared Drive to CREATE
+    # files, since service accounts have no Drive storage of their own) or
+    # "oauth" (KEAsked signs in as a real Google account once, via the
+    # browser, and acts as it -- files it creates are owned by that account
+    # and live in its My Drive, so a plain Gmail account works end to end).
+    auth: str = "service_account"
     service_account_key_path: str = ""
+    oauth_client_secrets_path: str = "google_oauth_client.json"
+    oauth_token_path: str = "google_oauth_token.json"
     drive_folder_id: str = ""
     file_name_pattern: str = "{year}-{month:02d} - {month_name} {year} RAH NECHC Master Schedule"
 
@@ -62,8 +72,14 @@ def load_google_sheets_config(path: str | Path | None = None) -> GoogleSheetsCon
         return None
     with cfg_path.open(encoding="utf-8") as fh:
         data = yaml.safe_load(fh) or {}
+    auth = str(data.get("auth") or "service_account").strip().lower()
+    if auth not in ("service_account", "oauth"):
+        raise GoogleSheetsApiError(f"google_sheets.yaml: auth must be 'service_account' or 'oauth', not {auth!r}")
     return GoogleSheetsConfig(
+        auth=auth,
         service_account_key_path=str(data.get("service_account_key_path") or ""),
+        oauth_client_secrets_path=str(data.get("oauth_client_secrets_path") or "google_oauth_client.json"),
+        oauth_token_path=str(data.get("oauth_token_path") or "google_oauth_token.json"),
         drive_folder_id=str(data.get("drive_folder_id") or ""),
         file_name_pattern=str(
             data.get("file_name_pattern")
@@ -73,23 +89,96 @@ def load_google_sheets_config(path: str | Path | None = None) -> GoogleSheetsCon
 
 
 def is_fully_configured(config: GoogleSheetsConfig) -> bool:
-    return bool(
-        config.service_account_key_path
-        and config.drive_folder_id
-        and _key_path(config).exists()
-    )
+    """Everything needed to make API calls is in place (for oauth: signed in, token saved)."""
+    if not config.drive_folder_id:
+        return False
+    if config.auth == "oauth":
+        return _in_config_dir(config.oauth_client_secrets_path).exists() and _in_config_dir(config.oauth_token_path).exists()
+    return bool(config.service_account_key_path and _key_path(config).exists())
+
+
+def status_detail(config: GoogleSheetsConfig | None) -> str:
+    """One line for the UI explaining why the integration is (not) usable."""
+    if config is None:
+        return "Not configured — copy scheduler/config/google_sheets_template.yaml to google_sheets.yaml."
+    if not config.drive_folder_id:
+        return "google_sheets.yaml has no drive_folder_id."
+    if config.auth == "oauth":
+        if not _in_config_dir(config.oauth_client_secrets_path).exists():
+            return f"OAuth client file missing: {_in_config_dir(config.oauth_client_secrets_path)}"
+        if not _in_config_dir(config.oauth_token_path).exists():
+            return "Not signed in to Google yet — run scripts/google-oauth-login.py on this machine."
+        return "Signed in (OAuth)."
+    if not _key_path(config).exists():
+        return f"Service account key missing: {_key_path(config)}"
+    return "Service account configured."
 
 
 class GoogleSheetsApiError(RuntimeError):
     pass
 
 
-def _key_path(config: GoogleSheetsConfig) -> Path:
-    p = Path(config.service_account_key_path)
+def _in_config_dir(rel_or_abs: str) -> Path:
+    p = Path(rel_or_abs)
     return p if p.is_absolute() else _CONFIG_DIR / p
 
 
-def _get_credentials(config: GoogleSheetsConfig) -> Credentials:
+def _key_path(config: GoogleSheetsConfig) -> Path:
+    return _in_config_dir(config.service_account_key_path)
+
+
+def _oauth_credentials(config: GoogleSheetsConfig) -> _UserCredentials:
+    token_path = _in_config_dir(config.oauth_token_path)
+    if not token_path.exists():
+        raise GoogleSheetsApiError(
+            "Not signed in to Google yet. Run scripts/google-oauth-login.py on this machine "
+            f"(it opens a browser once and saves the sign-in to {token_path})."
+        )
+    try:
+        creds = _UserCredentials.from_authorized_user_file(str(token_path), scopes=_SCOPES)
+    except (ValueError, OSError) as exc:
+        raise GoogleSheetsApiError(f"Could not read the Google sign-in at {token_path}: {exc}") from exc
+    if not creds.valid:
+        if creds.expired and creds.refresh_token:
+            try:
+                creds.refresh(_GoogleAuthRequest())
+            except Exception as exc:  # noqa: BLE001 -- google.auth raises several types
+                raise GoogleSheetsApiError(
+                    f"Google sign-in could not be refreshed ({exc}). Run scripts/google-oauth-login.py again."
+                ) from exc
+            token_path.write_text(creds.to_json(), encoding="utf-8")
+        else:
+            raise GoogleSheetsApiError("Google sign-in is no longer valid. Run scripts/google-oauth-login.py again.")
+    return creds
+
+
+def run_oauth_login(config: GoogleSheetsConfig) -> str:
+    """
+    Interactive, once per machine: open the browser, sign in as the Google
+    account that should own the master sheets, save the token. Returns the
+    signed-in account's email. Needs a browser on this machine -- on a
+    headless backend (Unraid) run it on a desktop and sync the token file
+    over with scripts/sync-config-to-unraid.sh instead.
+    """
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    secrets = _in_config_dir(config.oauth_client_secrets_path)
+    if not secrets.exists():
+        raise GoogleSheetsApiError(
+            f"OAuth client file not found at {secrets} -- download the Desktop-app OAuth client JSON "
+            "from Google Cloud Console (APIs & Services -> Credentials) and save it there."
+        )
+    flow = InstalledAppFlow.from_client_secrets_file(str(secrets), scopes=_SCOPES)
+    creds = flow.run_local_server(port=0, prompt="consent", access_type="offline")
+    token_path = _in_config_dir(config.oauth_token_path)
+    token_path.write_text(creds.to_json(), encoding="utf-8")
+    about = build("drive", "v3", credentials=creds, cache_discovery=False).about().get(fields="user(emailAddress)").execute()
+    return about.get("user", {}).get("emailAddress", "")
+
+
+def _get_credentials(config: GoogleSheetsConfig):
+    if config.auth == "oauth":
+        return _oauth_credentials(config)
     key_path = _key_path(config)
     if not key_path.exists():
         raise GoogleSheetsApiError(

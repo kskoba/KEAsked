@@ -700,6 +700,8 @@ class TrailingScheduleStatusResponse(BaseModel):
 
 class GoogleSheetsStatusResponse(BaseModel):
     configured: bool
+    auth: str = ""        # "service_account" | "oauth" | "" when no config file
+    detail: str = ""      # one line for a tooltip: why it is / isn't usable
 
 
 class PushToMasterSheetRequest(BaseModel):

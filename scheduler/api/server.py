@@ -2477,9 +2477,16 @@ def _push_result_to_master_sheet(
 @app.get("/api/google-sheets/status", response_model=GoogleSheetsStatusResponse)
 def google_sheets_status() -> GoogleSheetsStatusResponse:
     """Whether the master Google Sheet connection is configured."""
-    config = google_sheets_client.load_google_sheets_config()
+    try:
+        config = google_sheets_client.load_google_sheets_config()
+    except google_sheets_client.GoogleSheetsApiError as exc:
+        return GoogleSheetsStatusResponse(configured=False, detail=str(exc))
     configured = config is not None and google_sheets_client.is_fully_configured(config)
-    return GoogleSheetsStatusResponse(configured=configured)
+    return GoogleSheetsStatusResponse(
+        configured=configured,
+        auth=config.auth if config else "",
+        detail=google_sheets_client.status_detail(config),
+    )
 
 
 @app.post("/api/google-sheets/push-schedule", response_model=PushToMasterSheetResponse)

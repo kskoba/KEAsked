@@ -63,6 +63,8 @@ scheduler/config/sked.yaml
 # is committed. The service-account JSON key itself is also gitignored.
 scheduler/config/google_sheets.yaml
 scheduler/config/google_service_account.json
+scheduler/config/google_oauth_client.json
+scheduler/config/google_oauth_token.json
 
 # Real physician names, aliases, and personal scheduling restrictions —
 # only physicians_template.yaml is committed. (This was tracked in git

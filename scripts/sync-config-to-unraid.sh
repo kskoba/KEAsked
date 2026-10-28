@@ -17,7 +17,7 @@ UNRAID_HOST="${UNRAID_HOST:-root@192.168.0.5}"
 UNRAID_CONFIG_DIR="${UNRAID_CONFIG_DIR:-/mnt/user/appdata/kea-scheduler/config}"
 LOCAL_CONFIG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../scheduler/config" && pwd)"
 
-FILES=(physicians.yaml scheduler_config.yaml bytebloc.yaml email.yaml sked.yaml google_sheets.yaml google_service_account.json)
+FILES=(physicians.yaml scheduler_config.yaml bytebloc.yaml email.yaml sked.yaml google_sheets.yaml google_service_account.json google_oauth_client.json google_oauth_token.json)
 
 to_sync=()
 for f in "${FILES[@]}"; do

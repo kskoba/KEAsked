@@ -432,7 +432,10 @@ export default function ValidationPanel({ importResult, onImportResultUpdate }) 
 function ByteBlocModal({ state, onConfirmSend, onToggleDelta, onClose }) {
   const { loading, error, preview, sendResult, sending, useDelta = true } = state
   const [confirmText, setConfirmText] = useState('')
-  const canSend = !sending && !sendResult && preview?.configured && preview.request_count > 0 && confirmText === 'CONFIRM'
+  const [ackUnmapped, setAckUnmapped] = useState(false)
+  const unmapped = preview?.unmapped_physicians || []
+  const canSend = !sending && !sendResult && preview?.configured && preview.request_count > 0
+    && confirmText === 'CONFIRM' && (unmapped.length === 0 || ackUnmapped)
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
@@ -487,6 +490,25 @@ function ByteBlocModal({ state, onConfirmSend, onToggleDelta, onClose }) {
                   )}
                 </span>
               </label>
+
+              {unmapped.length > 0 && (
+                <div className="text-sm text-red-900 bg-red-50 border-2 border-red-400 rounded-md px-3 py-2.5">
+                  <div className="font-semibold mb-1">
+                    {unmapped.length} physician{unmapped.length === 1 ? '' : 's'} with valid requests ha{unmapped.length === 1 ? 's' : 've'} no ByteBloc ID and will NOT be sent:
+                  </div>
+                  <ul className="list-disc list-inside space-y-0.5 mb-2">
+                    {unmapped.map((n) => <li key={n} className="font-medium">{n}</li>)}
+                  </ul>
+                  <p className="text-xs text-red-800 mb-2">
+                    Their availability stays unknown to ByteBloc, so they risk not being scheduled at all. Add each one to{' '}
+                    <code className="font-mono">provider_map</code> in <code className="font-mono">bytebloc.yaml</code> (their ByteBloc ProviderId), then reopen this dialog.
+                  </p>
+                  <label className="flex items-start gap-2 cursor-pointer text-xs font-medium">
+                    <input type="checkbox" checked={ackUnmapped} onChange={(e) => setAckUnmapped(e.target.checked)} className="mt-0.5" />
+                    <span>I understand these physicians will be left out of this send.</span>
+                  </label>
+                </div>
+              )}
 
               {preview.warnings.length > 0 && (
                 <div className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">

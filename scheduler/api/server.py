@@ -96,6 +96,9 @@ from scheduler.api.schemas import (
     PhysicianLinkResponse,
     CalendarLinkRequest,
     CalendarLinkResponse,
+    EmailCalendarLinksRequest,
+    EmailCalendarLinksResult,
+    EmailCalendarLinksResponse,
     SendMonthlyRequestsRequest,
     SendMonthlyRequestsResult,
     SendMonthlyRequestsResponse,
@@ -1607,6 +1610,100 @@ def sked_calendar_link(body: CalendarLinkRequest) -> CalendarLinkResponse:
     )
 
 
+@app.post("/api/sked/calendar-links/email", response_model=EmailCalendarLinksResponse)
+def email_calendar_links(body: EmailCalendarLinksRequest) -> EmailCalendarLinksResponse:
+    """
+    Email physicians their two permanent calendar links (the .ics feed and
+    the live my-schedule page) from the app's own mailbox. With no
+    physician_ids: every active physician with an email on file (Roster
+    Editor "Email calendar links to everyone"). With ids: exactly those
+    physicians (the per-physician button). Only ever runs from an explicit
+    click. Per-physician outcomes come back so the coordinator can follow
+    up on anyone without an email or whose send failed.
+    """
+    sked_config = sked_client.load_sked_config()
+    if sked_config is None or not sked_client.is_fully_configured(sked_config):
+        raise HTTPException(
+            status_code=400,
+            detail="sked is not configured. Copy scheduler/config/sked_template.yaml to sked.yaml "
+                   "(in the physician config folder) and fill it in.",
+        )
+    email_config = email_sender.load_email_config()
+    if email_config is None or not email_sender.is_fully_configured(email_config):
+        raise HTTPException(
+            status_code=400,
+            detail="Email sending is not configured. Copy scheduler/config/email_template.yaml "
+                   "to email.yaml (in the physician config folder) and fill it in.",
+        )
+    try:
+        roster = load_roster()
+        _state["roster"] = roster
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not load physician roster: {exc}")
+
+    if body.physician_ids:
+        missing = [pid for pid in body.physician_ids if pid not in roster]
+        if missing:
+            raise HTTPException(status_code=404, detail=f"Unknown physician(s): {', '.join(missing)}")
+        targets = [roster[pid] for pid in body.physician_ids]
+    else:
+        targets = [cfg for cfg in roster.values() if cfg.active]
+
+    extra = body.extra_message.strip()
+    results: list[EmailCalendarLinksResult] = []
+    for cfg in targets:
+        name = _display_name(cfg)
+        if not cfg.email:
+            results.append(EmailCalendarLinksResult(
+                physician_id=cfg.id, name=name, status="no_email",
+                detail="No email on file — add one in the Physician Roster editor.",
+            ))
+            continue
+        try:
+            feed_url = sked_client.get_calendar_link(sked_config, cfg.id)
+        except sked_client.SkedApiError as exc:
+            results.append(EmailCalendarLinksResult(
+                physician_id=cfg.id, name=name, email=cfg.email, status="link_failed", detail=str(exc),
+            ))
+            continue
+        live_url = _calendar_live_url(sked_config.base_url, feed_url)
+        subject = "Your personal KEA shift calendar"
+        body_text = (
+            f"Hi {name},\n\n"
+            f"Here are your two personal links to your KEA shift schedule. They are permanent — "
+            f"the same links will keep working for every month that gets published — so save this email.\n\n"
+            f"1) Calendar feed (subscribe once, your calendar app keeps itself updated):\n"
+            f"{feed_url}\n\n"
+            f"   Google Calendar (on the web): next to \"Other calendars\" click +, choose \"From URL\", paste the link.\n"
+            f"   Apple Calendar (Mac): File > New Calendar Subscription, paste the link.\n"
+            f"   iPhone/iPad: Settings > Calendar > Accounts > Add Account > Other > Add Subscribed Calendar.\n"
+            f"   Outlook: Add calendar > Subscribe from web.\n"
+            f"   Calendar apps re-read the feed on their own schedule (Google can take up to a day).\n\n"
+            f"2) Live view (always current — bookmark it on your phone):\n"
+            f"{live_url}\n\n"
+            f"Both links are unique to you and show your schedule as last published by the scheduler. "
+            f"Please don't forward them.\n"
+        )
+        if extra:
+            body_text += f"\n{extra}\n"
+        try:
+            email_sender.send_email(cfg.email, subject, body_text, email_config)
+        except RuntimeError as exc:
+            results.append(EmailCalendarLinksResult(
+                physician_id=cfg.id, name=name, email=cfg.email, status="send_failed", detail=str(exc),
+            ))
+            continue
+        results.append(EmailCalendarLinksResult(
+            physician_id=cfg.id, name=name, email=cfg.email, status="sent", detail=f"Sent to {cfg.email}.",
+        ))
+
+    needs_attention = [r for r in results if r.status != "sent"]
+    sent_count = len(results) - len(needs_attention)
+    return EmailCalendarLinksResponse(
+        ok=not needs_attention, sent_count=sent_count, results=results, needs_attention=needs_attention,
+    )
+
+
 def _calendar_live_url(base_url: str, feed_url: str) -> str:
     """/api/calendar/<token>.ics -> /my-schedule?token=<token> on the same host."""
     marker = "/api/calendar/"
@@ -1925,12 +2022,14 @@ def sked_import(body: SkedImportRequest) -> ImportDirectoryResponse:
     """
     Pull in shift-preference submissions directly from sked for one period,
     instead of a directory/flat file of xlsx exports. For each active roster
-    physician with a submission (draft or submitted), sked rebuilds their
+    physician whose submission is SUBMITTED (drafts are deliberately not
+    pulled -- a draft is unfinished by definition), sked rebuilds their
     filled-preferences xlsx server-side and this reuses the exact same
     parsing path as /api/import (importer.import_single_file) — nothing
     downstream (validation, generation) needs to know the source differs.
     Physicians with no submission yet, or still in "draft", come back in
-    not_submitted instead of being silently skipped.
+    not_submitted (reason "not_started" / "draft") so the UI can offer a
+    reminder, instead of being silently skipped.
     """
     sked_config = sked_client.load_sked_config()
     if sked_config is None or not sked_client.is_fully_configured(sked_config):
@@ -2255,7 +2354,15 @@ def _push_result_to_master_sheet(
     header/date rows or the row directly below each shift row (the
     department's learner-pairing row) — only physician-name cells.
 
-    Returns (cells_written, spreadsheet_url).
+    Row positions come from the sheet itself: the grid is read once and
+    walked with sheets_schedule_reader.locate_cells, so a hand-built sheet
+    with no blank row between weeks and KEAsked's own export (which has
+    one) both get their names in the right cells. Only a brand-new blank
+    sheet (no previous month to copy) falls back to KEAsked's export
+    layout, written arithmetically.
+
+    Returns (cells_written, spreadsheet_url, skipped) -- skipped is the
+    number of scheduled cells the sheet had no row/column for.
     """
     file_id = google_sheets_client.find_month_file_id(config, result.year, result.month)
     if not file_id:
@@ -2296,6 +2403,33 @@ def _push_result_to_master_sheet(
 
     col_letters = ["B", "C", "D", "E", "F", "G", "H"]
     data: list[dict] = []
+    skipped = 0
+
+    grid = google_sheets_client.read_range(config, file_id, "A1:H600")
+    located = sheets_schedule_reader.locate_cells(grid, result.year, result.month)
+    if located:
+        for week_dates in weeks:
+            for day in week_dates:
+                if day is None or day not in covered_days:
+                    continue
+                for site_label, time_label, time_code, site_code in _EXPORT_SHIFTS:
+                    if time_code is None:
+                        key = ("call", day, site_label)
+                        name = call_index.get((day, site_label), "")
+                    elif time_code and site_code:
+                        key = ("shift", day, f"{time_code} {site_code}")
+                        name = index.get((day, f"{time_code} {site_code}"), "")
+                    else:
+                        continue
+                    pos = located.get(key)
+                    if pos is None:
+                        skipped += 1
+                        continue
+                    data.append({"range": f"{pos[1]}{pos[0]}", "values": [[name]]})
+        cells_written = google_sheets_client.write_ranges(config, file_id, data)
+        return cells_written, google_sheets_client.spreadsheet_url(file_id), skipped
+
+    # Blank sheet: nothing to locate, write KEAsked's own export layout.
     row = 1
     for week_dates in weeks:
         row += 2  # week header row + date row -- never written, assumed already correct
@@ -2315,7 +2449,7 @@ def _push_result_to_master_sheet(
         row += 1  # gap row between weeks
 
     cells_written = google_sheets_client.write_ranges(config, file_id, data)
-    return cells_written, google_sheets_client.spreadsheet_url(file_id)
+    return cells_written, google_sheets_client.spreadsheet_url(file_id), skipped
 
 
 @app.get("/api/google-sheets/status", response_model=GoogleSheetsStatusResponse)
@@ -2351,8 +2485,12 @@ def push_schedule_to_master_sheet(body: PushToMasterSheetRequest) -> PushToMaste
         spreadsheet_url = None
     else:
         try:
-            cells, spreadsheet_url = _push_result_to_master_sheet(result, sheet_config)
-            sheet_result = PushResultDetail(ok=True, detail=f"Wrote {cells} cell(s).")
+            cells, spreadsheet_url, skipped = _push_result_to_master_sheet(result, sheet_config)
+            detail = f"Wrote {cells} cell(s)."
+            if skipped:
+                detail += (f" {skipped} scheduled cell(s) had no matching row/column on the sheet "
+                           f"and were NOT written — check the sheet's shift rows and date row.")
+            sheet_result = PushResultDetail(ok=True, detail=detail)
         except google_sheets_client.GoogleSheetsApiError as exc:
             sheet_result = PushResultDetail(ok=False, detail=str(exc))
             spreadsheet_url = None
@@ -2473,6 +2611,17 @@ def bytebloc_preview(use_delta: bool = True) -> ByteBlocPreviewResponse:
     if config is None:
         return ByteBlocPreviewResponse(configured=False, warnings=warnings)
 
+    # Valid-this-month physicians with no provider_map entry: the send
+    # would skip them entirely (bytebloc.py warns, but a warning in a list
+    # is easy to scroll past when the consequence is "not scheduled").
+    roster = _state.get("roster") or {}
+    display_names = build_display_names(roster)
+    eligible, _ = _eligible_submissions_for_bytebloc() if _state.get("year") else ([], 0)
+    unmapped = sorted(
+        display_names.get(sub.physician_id, sub.physician_name)
+        for sub in eligible if not config.provider_map.get(sub.physician_id)
+    )
+
     by_physician: dict[str, ByteBlocPhysicianSummary] = {}
     for item in preview_items:
         row = by_physician.setdefault(
@@ -2493,6 +2642,7 @@ def bytebloc_preview(use_delta: bool = True) -> ByteBlocPreviewResponse:
         sked_start_date=payload.get("SkedStartDate", ""),
         by_physician=sorted(by_physician.values(), key=lambda r: r.physician_name),
         warnings=warnings,
+        unmapped_physicians=unmapped,
         physician_count=len(by_physician),
         request_count=len(preview_items),
         need_off_count=sum(1 for item in preview_items if item.off_type == "NeedOff"),

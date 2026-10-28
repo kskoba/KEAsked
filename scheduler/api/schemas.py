@@ -160,6 +160,29 @@ class CalendarLinkResponse(BaseModel):
     live_url: str   # the "check right now" page that reads the same token
 
 
+class EmailCalendarLinksRequest(BaseModel):
+    # None/empty = every ACTIVE physician with an email on file (bulk send
+    # from the Roster Editor). A list = exactly those ids, active or not
+    # (the per-physician button).
+    physician_ids: list[str] | None = None
+    extra_message: str = ""
+
+
+class EmailCalendarLinksResult(BaseModel):
+    physician_id: str
+    name: str
+    email: str = ""
+    status: str      # "sent" | "no_email" | "link_failed" | "send_failed"
+    detail: str = ""
+
+
+class EmailCalendarLinksResponse(BaseModel):
+    ok: bool
+    sent_count: int
+    results: list[EmailCalendarLinksResult]
+    needs_attention: list[EmailCalendarLinksResult]
+
+
 class SendMonthlyRequestsRequest(BaseModel):
     period_id: str
     label: str
@@ -312,6 +335,11 @@ class ByteBlocPreviewResponse(BaseModel):
     # far too many to usefully render as a review table.
     by_physician: list[ByteBlocPhysicianSummary] = []
     warnings: list[str] = []
+    # Physicians whose requests are VALID this month but who have no
+    # ByteBloc ProviderId in bytebloc.yaml's provider_map -- they would be
+    # silently left out of the send, i.e. not scheduled. Surfaced
+    # separately from `warnings` so the UI can make it impossible to miss.
+    unmapped_physicians: list[str] = []
     physician_count: int = 0
     # Every mapped cell gets a request (a full re-sync, not just an
     # unavailable-only diff) unless used_delta narrowed it down -- these

@@ -171,6 +171,60 @@ def _week_dates(date_row: list, year: int, month: int, cell) -> dict[int, dateti
     return out
 
 
+def locate_cells(grid: list[list], year: int, month: int) -> dict[tuple, tuple[int, str]]:
+    """
+    Where each (date, kind, code) lives in a master-sheet grid, as
+    (1-based row, column letter) -- the write-side counterpart of
+    parse_schedule_grid, walking the sheet exactly the same way so the
+    push lands names wherever THIS sheet keeps them, whether or not it has
+    a blank spacer row between weeks (KEAsked's own export does; the
+    department's hand-built sheets do not -- the reader learned that the
+    hard way on the real December 2026 sheet). Keys: ("shift", date,
+    "<time> <site>") for regular shifts, ("call", date, "DOC"|"NOC") for
+    the on-call rows. Spill-over dates (next month, last week row) are
+    included. The row directly below each shift row (learner pairing) is
+    never a key -- it is skipped, same as the reader.
+    """
+
+    def cell(row: list, col: int):
+        return row[col] if col < len(row) else None
+
+    cols = ["B", "C", "D", "E", "F", "G", "H"]
+    out: dict[tuple, tuple[int, str]] = {}
+    i, n = 0, len(grid)
+    while i < n:
+        if cell(grid[i], 1) != "SUN":
+            i += 1
+            continue
+        i += 1
+        if i >= n:
+            break
+        col_to_date = _week_dates(grid[i], year, month, cell)
+        i += 1
+        while i < n:
+            site_row = grid[i]
+            site_label_raw = cell(site_row, 0)
+            if site_label_raw is None or str(site_label_raw).strip() == "":
+                break
+            sheet_row = i + 1
+            i += 1
+            if i >= n:
+                break
+            time_row = grid[i]
+            i += 1
+            entry = EXPORT_SHIFT_LOOKUP.get((normalize_label(site_label_raw), normalize_label(cell(time_row, 0))))
+            if not entry:
+                continue
+            time_code, site_code = entry
+            for c, d in col_to_date.items():
+                if time_code is None:
+                    key = ("call", d, CALL_TYPE_BY_LABEL.get(normalize_label(site_label_raw), normalize_label(site_label_raw)))
+                else:
+                    key = ("shift", d, f"{time_code} {site_code}")
+                out[key] = (sheet_row, cols[c - 1])
+    return out
+
+
 def parse_schedule_grid(
     grid: list[list], year: int, month: int, roster: dict[str, PhysicianConfig]
 ) -> ScheduleResult:

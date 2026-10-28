@@ -244,6 +244,21 @@ export async function getCalendarLink(physicianId) {
 }
 
 /**
+ * Email physicians their permanent calendar links (.ics feed + live view)
+ * from the app's own mailbox. physicianIds null/[] = every active physician
+ * with an email on file; a list = exactly those. Only call from a click.
+ * @param {string[]|null} physicianIds
+ * @param {string} extraMessage
+ * @returns {{ ok: boolean, sent_count: number, results: object[], needs_attention: object[] }}
+ */
+export async function emailCalendarLinks(physicianIds, extraMessage = '') {
+  return request('POST', '/api/sked/calendar-links/email', {
+    physician_ids: physicianIds && physicianIds.length ? physicianIds : null,
+    extra_message: extraMessage
+  })
+}
+
+/**
  * Pull in shift-preference submissions directly from sked for one period,
  * instead of a directory/flat file of xlsx exports. Returns the same shape
  * as importSubmissions/importFlatFile, plus a not_submitted list (active

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
-import { getPhysiciansFull, updatePhysician, createPhysician, removePhysician, setApiBaseUrl, getSkedPeriods, getPhysicianLink, getCalendarLink } from './api'
+import { getPhysiciansFull, updatePhysician, createPhysician, removePhysician, setApiBaseUrl, getSkedPeriods, getPhysicianLink, getCalendarLink, emailCalendarLinks } from './api'
 
 // Mirrors scheduler/backend/config.py's VALID_SITES / GROUP_B_PREFS /
 // VALID_RULE_OVERRIDES, and the non-call shift start times from
@@ -60,6 +60,13 @@ export default function RosterEditor() {
   const [calBusy, setCalBusy] = useState(false)
   const [calError, setCalError] = useState(null)
   const [calCopied, setCalCopied] = useState(null)   // 'feed' | 'live' | null
+  // Emailing calendar links: one physician (from the Calendar link section)
+  // or everyone active (left-pane button). Results shown inline.
+  const [calMailBusy, setCalMailBusy] = useState(false)
+  const [calMailResult, setCalMailResult] = useState(null)   // { ok, sent_count, results, needs_attention }
+  const [bulkMailBusy, setBulkMailBusy] = useState(false)
+  const [bulkMailResult, setBulkMailResult] = useState(null)
+  const [bulkMailError, setBulkMailError] = useState(null)
 
   const loadPhysicians = useCallback(() => {
     setLoadError(null)
@@ -101,7 +108,35 @@ export default function RosterEditor() {
   }, [apiBaseResolved])
 
   // A generated link belongs to one physician: drop it when the selection changes.
-  useEffect(() => { setCalLink(null); setCalError(null); setCalCopied(null) }, [selectedId])
+  useEffect(() => { setCalLink(null); setCalError(null); setCalCopied(null); setCalMailResult(null) }, [selectedId])
+
+  const handleEmailCalendarLink = useCallback(() => {
+    if (!form || !form.email) return
+    if (!window.confirm(`Email ${displayName(form)} (${form.email}) their calendar feed and live-view links?`)) return
+    setCalMailBusy(true)
+    setCalError(null)
+    setCalMailResult(null)
+    emailCalendarLinks([form.id])
+      .then(setCalMailResult)
+      .catch(err => setCalError(err.message))
+      .finally(() => setCalMailBusy(false))
+  }, [form])
+
+  const handleEmailAllCalendarLinks = useCallback(() => {
+    const n = physicians.filter(p => p.active && p.email).length
+    const noEmail = physicians.filter(p => p.active && !p.email).length
+    if (!window.confirm(
+      `Email calendar links (feed + live view) to every active physician with an email on file?\n\n` +
+      `${n} will be emailed.` + (noEmail ? ` ${noEmail} active physician(s) have no email and will be listed afterward.` : '')
+    )) return
+    setBulkMailBusy(true)
+    setBulkMailError(null)
+    setBulkMailResult(null)
+    emailCalendarLinks(null)
+      .then(setBulkMailResult)
+      .catch(err => setBulkMailError(err.message))
+      .finally(() => setBulkMailBusy(false))
+  }, [physicians])
 
   const handleGenerateCalendarLink = useCallback(() => {
     if (!form) return
@@ -317,6 +352,33 @@ export default function RosterEditor() {
             >
               + Add Physician
             </button>
+            <button
+              onClick={handleEmailAllCalendarLinks}
+              disabled={bulkMailBusy}
+              title="Email every active physician with an email on file their permanent calendar feed and live-view links"
+              className="w-full px-3 py-1.5 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {bulkMailBusy ? 'Emailing…' : 'Email calendar links to everyone…'}
+            </button>
+            {bulkMailError && <p className="text-xs text-red-600">{bulkMailError}</p>}
+            {bulkMailResult && (
+              <div className="text-xs rounded-md border border-slate-200 bg-slate-50 px-2.5 py-2 space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="font-medium text-slate-700">{bulkMailResult.sent_count} sent · {bulkMailResult.needs_attention.length} need attention</span>
+                  <button onClick={() => setBulkMailResult(null)} className="text-slate-400 hover:text-slate-600">✕</button>
+                </div>
+                {bulkMailResult.needs_attention.length > 0 && (
+                  <ul className="space-y-0.5 max-h-40 overflow-auto">
+                    {bulkMailResult.needs_attention.map(r => (
+                      <li key={r.physician_id} className="text-slate-600">
+                        <span className="font-medium">{r.name}</span>{' '}
+                        <span className="text-amber-700">{r.status === 'no_email' ? 'no email' : r.status === 'link_failed' ? 'link failed' : 'send failed'}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
           </div>
           <div className="flex-1 overflow-auto">
             {filtered.map(p => (
@@ -634,6 +696,22 @@ export default function RosterEditor() {
                     </div>
                   </div>
                 )}
+                <div className="mt-3 flex items-center gap-3">
+                  <button
+                    onClick={handleEmailCalendarLink}
+                    disabled={calMailBusy || !form.email}
+                    title={form.email ? `Email both links to ${form.email}` : 'No email on file — add one under Notes & contact'}
+                    className="px-3 py-1.5 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {calMailBusy ? 'Emailing…' : 'Email both links to this physician'}
+                  </button>
+                  {!form.email && <span className="text-xs text-amber-700">No email on file</span>}
+                  {calMailResult && calMailResult.results[0] && (
+                    <span className={`text-xs ${calMailResult.ok ? 'text-emerald-700' : 'text-red-600'}`}>
+                      {calMailResult.results[0].detail}
+                    </span>
+                  )}
+                </div>
                 {calError && <p className="text-xs text-red-600 mt-1">{calError}</p>}
               </Section>
 

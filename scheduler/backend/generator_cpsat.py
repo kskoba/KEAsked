@@ -1014,26 +1014,34 @@ class CpsatScheduleGenerator:
                         )
 
         # ----------------------------------------------------------------
-        # Soft: night-chain ramp-in (scheduler_config.yaml's
-        # night_chain_ramp_in, e.g. P92: doesn't want to start a run of
-        # 2400h shifts cold off a day off -- wants a shift the day before,
-        # ideally at preferred_precursor_time (1800h). Only checked at the
-        # START of a night run (the day before a 2400h shift that isn't
-        # itself preceded by another 2400h shift) -- once already in a
-        # chain, the preceding day is a night shift by definition and this
-        # doesn't apply. Soft, not hard: penalize starting a chain with a
-        # day off before it, bonus (smaller, so it never outweighs the
-        # penalty above) if that preceding shift is the preferred time.
+        # Soft: night ramp-in (PhysicianConfig.night_ramp_in, a Roster
+        # Editor toggle, ON by default; turned off for physicians who
+        # don't mind an immediate isolated midnight). Don't start a run
+        # of 2400h shifts cold off a day off -- want a shift the day before.
+        # Only checked at the START of a night run (the day before a 2400h
+        # shift that isn't itself preceded by another 2400h shift) -- once
+        # already in a chain, the preceding day is a night shift by
+        # definition. For max_consecutive_nights 1 every night is a start,
+        # so this asks for a shift before each midnight. Which shift is
+        # left to the 23h-min / 36h-max spacing rules (in practice
+        # 1200h-2000h). Soft, not hard: 150 puts it in the same class as
+        # the weekend-split / site-variety penalties and well under the
+        # ~1000 fill weight, so it never leaves a slot empty. (Was a
+        # scheduler_config.yaml list with a 30 penalty + preferred-time
+        # bonus until 2026-10-28; 30 lost to nearly every other term.)
         # ----------------------------------------------------------------
-        _NIGHT_CHAIN_NO_RAMPIN_PENALTY = 30
-        _NIGHT_CHAIN_PREFERRED_RAMPIN_BONUS = 15
-        night_chain_ramp_in_terms: list = []
-        for rule in self.config.get("night_chain_ramp_in", []):
-            pid = rule.get("physician")
-            if pid not in pids:
+        _NIGHT_RAMP_IN_COLD_START_PENALTY = 150
+        night_ramp_in_terms: list = []
+        if self.config.get("night_chain_ramp_in"):
+            print("[config] night_chain_ramp_in in scheduler_config.yaml is no longer read -- "
+                  "set night_ramp_in on the physician in the Roster Editor instead.")
+        night_shifts = [s for s in all_shifts_list if s.time == "2400h"]
+        for pid in pids:
+            pcfg = self.roster.get(pid)
+            if pcfg is None or not getattr(pcfg, "night_ramp_in", True):
                 continue
-            preferred_time = rule.get("preferred_precursor_time")
-            night_shifts = [s for s in all_shifts_list if s.time == "2400h"]
+            if getattr(pcfg, "only_2400h", False) or getattr(pcfg, "max_consecutive_nights", 1) == 0:
+                continue   # nothing to ramp with / no nights at all
             for d_idx in range(1, len(all_dates)):
                 night_today = sum(shifts[(pid, d_idx, s.code)] for s in night_shifts)
                 night_yesterday = sum(shifts[(pid, d_idx - 1, s.code)] for s in night_shifts)
@@ -1042,25 +1050,13 @@ class CpsatScheduleGenerator:
                 )
                 # starts_chain == 1 iff today is a night shift and yesterday
                 # wasn't (i.e. this is the first night of a fresh run).
-                starts_chain = model.new_bool_var(f"nightchain_start_{pid}_{d_idx}")
+                starts_chain = model.new_bool_var(f"nightramp_start_{pid}_{d_idx}")
                 model.add(night_today - night_yesterday <= starts_chain)
                 model.add(starts_chain <= night_today)
 
-                no_rampin = model.new_bool_var(f"nightchain_norampin_{pid}_{d_idx}")
-                model.add(no_rampin >= starts_chain - any_yesterday)
-                night_chain_ramp_in_terms.append(-_NIGHT_CHAIN_NO_RAMPIN_PENALTY * no_rampin)
-
-                if preferred_time:
-                    preferred_yesterday = sum(
-                        shifts[(pid, d_idx - 1, s.code)]
-                        for s in all_shifts_list if s.time == preferred_time
-                    )
-                    got_preferred = model.new_bool_var(f"nightchain_preferred_{pid}_{d_idx}")
-                    model.add(got_preferred <= starts_chain)
-                    model.add(got_preferred <= preferred_yesterday)
-                    night_chain_ramp_in_terms.append(
-                        _NIGHT_CHAIN_PREFERRED_RAMPIN_BONUS * got_preferred
-                    )
+                cold_start = model.new_bool_var(f"nightramp_cold_{pid}_{d_idx}")
+                model.add(cold_start >= starts_chain - any_yesterday)
+                night_ramp_in_terms.append(-_NIGHT_RAMP_IN_COLD_START_PENALTY * cold_start)
 
         # ----------------------------------------------------------------
         # Soft: prefer_clustered_nights (PhysicianConfig.prefer_clustered_nights,
@@ -2705,7 +2701,7 @@ class CpsatScheduleGenerator:
         objective_terms.extend(weekend_overage_penalty_terms)
         objective_terms.extend(prefer_weekend_bonus_terms)
         objective_terms.extend(prefer_weekend_gap_penalty_terms)
-        objective_terms.extend(night_chain_ramp_in_terms)
+        objective_terms.extend(night_ramp_in_terms)
         objective_terms.extend(clustered_nights_bonus_terms)
 
         # ----------------------------------------------------------------

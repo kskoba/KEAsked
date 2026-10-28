@@ -524,6 +524,12 @@ export default function RosterEditor() {
                   hint="Opposite of singleton nights — specifically rewards a night run reaching their own Max consecutive nights value in full, not just any adjacent pair."
                 />
                 <CheckboxField
+                  label="Ramp into nights (default on)"
+                  checked={form.night_ramp_in !== false}
+                  onChange={(v) => setField('night_ramp_in', v)}
+                  hint="Soft preference — a shift the day before each run of 2400h nights starts, rather than a midnight straight off a day off. Untick only for a physician who doesn't mind an immediate isolated midnight."
+                />
+                <CheckboxField
                   label="No call (DOC/NOC)"
                   checked={form.no_call}
                   onChange={(v) => setField('no_call', v)}

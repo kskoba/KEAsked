@@ -5,7 +5,7 @@ const KIND_LABELS = {
   timed_separation: 'Timed separation',
   conditional_cowork: 'Conditional co-working',
   forbidden_precursor_shifts: 'Forbidden precursor shift',
-  night_chain_ramp_in: 'Night-chain ramp-in',
+  night_ramp_in_off: 'Ramp into nights turned off (roster toggle)',
   linked_rest_pairs: 'Linked rest pair',
 }
 

@@ -235,6 +235,18 @@ class PhysicianConfig:
     # around it with an isolation flag that fights his real preference.
     allow_repeat_shift_codes: list[str] = field(default_factory=list)
 
+    # Soft, ON by default (user decision 2026-10-28: most physicians
+    # prefer it): ramp into 2400h nights -- a shift the day before a night
+    # run starts, rather than a midnight cold off a day off. With
+    # max_consecutive_nights 1 every night is a run start, so this asks
+    # for a shift before each midnight. The 23h / 36h spacing rules
+    # already confine that shift to roughly 1200h-2000h. Set False for a
+    # physician who doesn't mind an immediate isolated midnight. Ignored
+    # for only_2400h physicians (nothing to ramp with). Was
+    # scheduler_config.yaml's night_chain_ramp_in (P92 only) until
+    # 2026-10-28.
+    night_ramp_in: bool = True
+
     # Shift-time restrictions: physician may never be assigned shifts at these
     # start times (e.g. ["0600h", "2400h"]).
     forbidden_shift_times: list[str] = field(default_factory=list)
@@ -535,6 +547,11 @@ def describe_physician_facing_rules(cfg: "PhysicianConfig") -> list[str]:
             f"You may be scheduled the same shift ({', '.join(cfg.allow_repeat_shift_codes)}) on back-to-back "
             "days, unlike most physicians."
         )
+    if not cfg.night_ramp_in:
+        items.append(
+            "You don't mind an isolated 2400h (night) shift straight off a day off -- most physicians are "
+            "scheduled a shift the day before a night; that preference is turned off for you."
+        )
     if cfg.no_call:
         items.append("You're never assigned on-call (DOC/NOC) shifts.")
     if cfg.rest_after_late_shift:
@@ -696,6 +713,7 @@ def _parse_physician(raw: dict) -> PhysicianConfig:
         prefer_clustered_nights=bool(sched.get("prefer_clustered_nights", False)),
         allow_isolated_nights=bool(sched.get("allow_isolated_nights", False)),
         allow_repeat_shift_codes=allow_repeat_shift_codes,
+        night_ramp_in=bool(sched.get("night_ramp_in", True)),
         forbidden_shift_times=forbidden_shift_times,
         no_call=bool(sched.get("no_call", False)),
         avoid_mondays=bool(sched.get("avoid_mondays", False)),
@@ -816,6 +834,8 @@ def physician_config_to_raw(cfg: PhysicianConfig) -> dict:
         sched["allow_isolated_nights"] = True
     if cfg.allow_repeat_shift_codes:
         sched["allow_repeat_shift_codes"] = list(cfg.allow_repeat_shift_codes)
+    if not cfg.night_ramp_in:
+        sched["night_ramp_in"] = False
     if cfg.forbidden_shift_times:
         sched["forbidden_shift_times"] = list(cfg.forbidden_shift_times)
     if cfg.no_call:

@@ -738,17 +738,18 @@ def build_sequencing_rule_summaries(cfg: dict, roster: dict) -> list[SequencingR
             ),
         ))
 
-    for rule in cfg.get("night_chain_ramp_in", []) or []:
-        pid = rule.get("physician")
-        if not pid:
+    # Ramp into nights is ON for everyone by default (a shift the day
+    # before a run of 2400h nights starts). The exceptions -- physicians
+    # with the Roster Editor toggle turned off -- are listed here beside
+    # the other sequencing rules so the Scheduling Rules window shows them.
+    for pid, pcfg in sorted(roster.items()):
+        if getattr(pcfg, "night_ramp_in", True) or not getattr(pcfg, "active", True):
             continue
-        preferred = rule.get("preferred_precursor_time")
         summaries.append(SequencingRuleSummary(
-            kind="night_chain_ramp_in", physician_ids=[pid], physician_names=names([pid]),
+            kind="night_ramp_in_off", physician_ids=[pid], physician_names=names([pid]),
             description=(
-                f"{_display_name_or_id(pid, display_names)}: prefers a shift the day before starting a new "
-                f"run of 2400h night shifts, rather than coming off a day off"
-                + (f" — ideally a {preferred} shift." if preferred else ".")
+                f"{_display_name_or_id(pid, display_names)}: doesn't mind a 2400h night straight off a day "
+                f"off -- the default ramp-in (a shift the day before a night run starts) is turned off (roster toggle)."
             ),
         ))
 
@@ -982,6 +983,7 @@ def _physician_to_detail(cfg: PhysicianConfig) -> PhysicianDetail:
         anchor_floor_exempt=cfg.anchor_floor_exempt,
         prefer_singleton_nights=cfg.prefer_singleton_nights,
         prefer_clustered_nights=cfg.prefer_clustered_nights,
+        night_ramp_in=cfg.night_ramp_in,
         forbidden_shift_times=list(cfg.forbidden_shift_times),
         no_call=cfg.no_call,
         avoid_mondays=cfg.avoid_mondays,
@@ -1091,6 +1093,7 @@ def update_physician(physician_id: str, body: PhysicianUpdateRequest) -> Physici
         anchor_floor_exempt=body.anchor_floor_exempt,
         prefer_singleton_nights=body.prefer_singleton_nights,
         prefer_clustered_nights=body.prefer_clustered_nights,
+        night_ramp_in=body.night_ramp_in,
         forbidden_shift_times=list(body.forbidden_shift_times),
         no_call=body.no_call,
         avoid_mondays=body.avoid_mondays,

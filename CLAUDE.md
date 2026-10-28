@@ -10,6 +10,40 @@ order). Never put real names back into tracked files.
 
 ## ⭐ Next task — start here
 
+**2026-10-28 — "ramp into nights" became a roster toggle, ON for
+everyone; UNCOMMITTED as of this writing (`git status`):**
+- Was `scheduler_config.yaml`'s `night_chain_ramp_in` list (P92 only,
+  penalty 30 + a 15 bonus for an 1800h precursor -- too weak to matter).
+  Now `PhysicianConfig.night_ramp_in` (default True; yaml only stores
+  `night_ramp_in: false`), Roster Editor checkbox "Ramp into nights
+  (default on)", PUT allowlist + schema updated, preference sheet shows a
+  line only when it is OFF, Scheduling Rules window lists the OFF
+  exceptions (`night_ramp_in_off`). Solver: `_NIGHT_RAMP_IN_COLD_START_
+  PENALTY = 150` per night-run start with no regular shift the day
+  before; skipped for `only_2400h` / `max_consecutive_nights 0`; a
+  leftover config list is ignored with a printed notice. No preferred
+  time (user: not needed; the 23h/36h rules confine the precursor to
+  ~1200h-2000h anyway). Penalty only, never a bonus, so a fully ramped
+  schedule adds nothing to the objective.
+- Trigger: P24 changed to one midnight at a time but never isolated
+  (`max_consecutive_nights` 2 -> 1, `prefer_clustered_nights` and
+  `allow_repeat_shift_codes` removed, `allow_isolated_nights` kept).
+- Baseline from `tools/cold_midnights.py` (new): human January 32/68
+  night-run starts cold (47%); solver jan6/jan10 55-61%. The next real
+  solve should drop well below 47%; watch 4-day runs (a ramp can turn a
+  3-night run into a 4-day run, penalty 60 < 150) and the gap (model
+  grew by ~2 bools per physician-day).
+- OPEN: P28 -- his hard `forbidden_precursor_shifts`
+  (no 1800h/2000h before his 2400h) is NOT a no-ramp rule, and the
+  human schedulers gave him 3-4 cold midnights in January; nobody has
+  asked him whether he'd rather have a daytime shift before a midnight
+  or a day off. Candidate for `night_ramp_in: false`. Day 1 of the month
+  is never checked (trailing days not consulted) -- minor gap.
+- Tests: `test_night_ramp_in.py` (4). Full suite 168 passed before the
+  default flip; ramp-in/repeat-codes/anchor-floor files (16) after.
+  Local backend restarted on this code; Unraid needs push + rebuild +
+  `sync-config-to-unraid.sh` (physicians.yaml P24 change).
+
 **2026-10-18 — per-month comment on a shift request (sked -> Validate
 page); UNCOMMITTED in both repos as of this writing:**
 - sked: `migrations/0010_submission_comment.sql` adds `submissions.comment`

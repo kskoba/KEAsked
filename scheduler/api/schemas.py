@@ -543,6 +543,7 @@ class PhysicianDetail(BaseModel):
     anchor_floor_exempt: bool = False   # admin role: exempt from mandatory anchor shifts when none requested
     prefer_singleton_nights: bool = False
     prefer_clustered_nights: bool = False
+    night_ramp_in: bool = True
     forbidden_shift_times: list[str] = []
     no_call: bool = False
     avoid_mondays: bool = False

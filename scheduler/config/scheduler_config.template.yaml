@@ -159,6 +159,18 @@ conditional_cowork:
 linked_rest_pairs:
   - physicians: [PhysicianE, PhysicianF]   # two physicians sharing one position
 
+# Forbidden precursor shifts (hard): for one physician, a shift at any
+# of forbidden_precursor_times may never be the day immediately before
+# a target_time shift -- only an earlier shift, or a day off, may.
+forbidden_precursor_shifts:
+  - physician: PhysicianG
+    target_time: "2400h"
+    forbidden_precursor_times: ["1800h", "2000h"]
+
+# Night ramp-in (a shift the day before a run of 2400h nights starts) is
+# on for everyone by default; turn it off per physician in physicians.yaml
+# (`night_ramp_in: false`) / the Roster Editor. Not a rule in this file.
+
 # ----------------------------------------------------------
 # Linked-pair constraints
 # ----------------------------------------------------------

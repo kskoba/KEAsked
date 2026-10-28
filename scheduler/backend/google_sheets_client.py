@@ -127,7 +127,8 @@ def find_month_file_id(config: GoogleSheetsConfig, year: int, month: int) -> str
         res = (
             _drive_service(config)
             .files()
-            .list(q=query, fields="files(id, name)", pageSize=5)
+            .list(q=query, fields="files(id, name)", pageSize=5,
+                  supportsAllDrives=True, includeItemsFromAllDrives=True)
             .execute()
         )
     except HttpError as exc:
@@ -158,6 +159,7 @@ def create_month_file(
                     fileId=copy_from_file_id,
                     body={"name": name, "parents": [config.drive_folder_id]},
                     fields="id",
+                    supportsAllDrives=True,
                 )
                 .execute()
             )
@@ -172,10 +174,11 @@ def create_month_file(
         file_id = created["spreadsheetId"]
         # spreadsheets().create() always lands in the service account's own
         # Drive root -- move it into the shared folder explicitly.
-        existing = drive.files().get(fileId=file_id, fields="parents").execute()
+        existing = drive.files().get(fileId=file_id, fields="parents", supportsAllDrives=True).execute()
         old_parents = ",".join(existing.get("parents", []))
         drive.files().update(
-            fileId=file_id, addParents=config.drive_folder_id, removeParents=old_parents, fields="id"
+            fileId=file_id, addParents=config.drive_folder_id, removeParents=old_parents, fields="id",
+            supportsAllDrives=True,
         ).execute()
         return file_id
     except HttpError as exc:

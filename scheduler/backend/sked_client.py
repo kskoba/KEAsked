@@ -36,7 +36,7 @@ class SkedConfig:
 
     base_url: str = ""
     admin_secret: str = ""
-    link_days_valid: int = 21
+    link_days_valid: int = 31
     # sked and the annual survey are the same Worker/API reachable at two
     # Cloudflare Custom Domains -- survey links need this origin instead of
     # base_url so they resolve to the survey page, not the shift-grid one.
@@ -54,7 +54,7 @@ def load_sked_config(path: str | Path | None = None) -> SkedConfig | None:
     return SkedConfig(
         base_url=str(data.get("base_url") or "").rstrip("/"),
         admin_secret=str(data.get("admin_secret") or ""),
-        link_days_valid=int(data.get("link_days_valid") or 21),
+        link_days_valid=int(data.get("link_days_valid") or 31),
         survey_base_url=str(data.get("survey_base_url") or "").rstrip("/"),
     )
 

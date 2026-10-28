@@ -42,4 +42,4 @@ admin_secret: ""
 # - Does NOT apply to the per-physician calendar feed (.ics) or the live
 #   "my schedule" web view: those use a different token with a fixed
 #   year-2099 expiry so the URL is permanent and identical every time.
-link_days_valid: 21
+link_days_valid: 31

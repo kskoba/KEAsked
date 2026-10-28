@@ -27,7 +27,8 @@ function defaultPeriod() {
     periodId: `${year}-${pad(month)}`,
     label: `${monthName} ${year}`,
     opensAt: `${year}-${pad(month)}-01`,
-    closesAt: `${year}-${pad(month)}-${pad(Math.min(15, daysInMonth))}`
+    // Closes on the last day of the month (user decision 2026-10-28; was the 15th).
+    closesAt: `${year}-${pad(month)}-${pad(daysInMonth)}`
   }
 }
 

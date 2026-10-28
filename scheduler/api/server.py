@@ -2318,6 +2318,27 @@ def resend_survey_link(body: ResendSurveyLinkRequest) -> ResendSurveyLinkRespons
 # ---------------------------------------------------------------------------
 
 
+def _ensure_sked_period(sked_config, year: int, month: int) -> bool:
+    """
+    A published schedule needs its month's period row on sked (the
+    calendar feeds hang off it). Months whose requests were collected
+    outside sked (e.g. by email) have no such row, so create a plain one
+    -- label "Month YYYY", window = the whole month -- when it is missing.
+    Never touches an existing period (the upsert would overwrite its label
+    and dates). Returns True if a period was created.
+    """
+    existing = {p["id"] for p in sked_client.list_periods(sked_config, kind="shift_request")}
+    period_id = f"{year:04d}-{month:02d}"
+    if period_id in existing:
+        return False
+    last_day = calendar.monthrange(year, month)[1]
+    sked_client.upsert_period(
+        sked_config, period_id, f"{calendar.month_name[month]} {year}",
+        f"{year:04d}-{month:02d}-01", f"{year:04d}-{month:02d}-{last_day:02d}",
+    )
+    return True
+
+
 def _result_to_sked_assignments(result: ScheduleResult) -> list[dict]:
     """Wire-format payload for sked_client.push_schedule — see
     docs/physician-calendar-feed-design.md's _result_to_schedule_payload sketch."""
@@ -2530,8 +2551,12 @@ def push_schedule_to_master_sheet(body: PushToMasterSheetRequest) -> PushToMaste
     else:
         try:
             period_id = f"{result.year:04d}-{result.month:02d}"
+            created = _ensure_sked_period(sked_config, result.year, result.month)
             sked_client.push_schedule(sked_config, period_id, _result_to_sked_assignments(result))
-            sked_result = PushResultDetail(ok=True, detail=f"Pushed to sked period {period_id!r}.")
+            sked_result = PushResultDetail(
+                ok=True,
+                detail=f"Pushed to sked period {period_id!r}." + (" (period created)" if created else ""),
+            )
         except sked_client.SkedApiError as exc:
             sked_result = PushResultDetail(ok=False, detail=str(exc))
 

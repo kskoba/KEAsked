@@ -171,6 +171,99 @@ def _week_dates(date_row: list, year: int, month: int, cell) -> dict[int, dateti
     return out
 
 
+# Learner-type colours as on the department's December 2026 sheet (legend
+# cells, column C of the first week). The sheet's own LEGEND block wins when
+# present; these are the fallback. Hex, lowercase.
+DEFAULT_LEARNER_LEGEND: dict[str, str] = {
+    "4a86e8": "EM resident",
+    "ff0000": "Off service resident",
+    "9900ff": "Elective resident",
+    "ff00ff": "Elective student",
+    "00ff00": "Core Student",
+    "ffff00": "Shadow student",
+    "d9d2e9": "NP student",
+    "9bbb59": "NP",
+}
+_NO_LEARNER_TEXTS = {"", "no learner", "no learners", "none", "---", "-", "n/a"}
+
+
+def _rgb(hexs: str) -> tuple[int, int, int]:
+    return int(hexs[0:2], 16), int(hexs[2:4], 16), int(hexs[4:6], 16)
+
+
+def read_legend(values: list[list], fills: list[list]) -> dict[str, str]:
+    """
+    The sheet's own colour legend: the cell reading LEGEND and the cells
+    directly below it, until a blank, each (text, fill) -> {fill: text}.
+    Empty dict when the sheet has none.
+    """
+    for r, row in enumerate(values):
+        for c, v in enumerate(row):
+            if str(v or "").strip().casefold() != "legend":
+                continue
+            out: dict[str, str] = {}
+            rr = r + 1
+            while rr < len(values):
+                text = str(values[rr][c] if c < len(values[rr]) else "").strip()
+                fill = fills[rr][c] if rr < len(fills) and c < len(fills[rr]) else ""
+                if not text:
+                    break
+                if fill:
+                    out[fill] = text
+                rr += 1
+            return out
+    return {}
+
+
+def learner_type_for(fill: str, legend: dict[str, str], tolerance: int = 90) -> str:
+    """Nearest legend colour within tolerance (sum of RGB channel distances), else ''."""
+    if not fill:
+        return ""
+    best, best_d = "", tolerance + 1
+    for hexs, label in legend.items():
+        try:
+            d = sum(abs(a - b) for a, b in zip(_rgb(fill), _rgb(hexs)))
+        except ValueError:
+            continue
+        if d < best_d:
+            best, best_d = label, d
+    return best
+
+
+def extract_learners(values: list[list], fills: list[list], year: int, month: int) -> dict[tuple, list[dict]]:
+    """
+    {("shift"|"call", date, code): [{"name","type","color"}]} for every
+    located slot whose learner row (the row under the shift) has a name.
+    Text: surname(s), "A/B" = two learners sharing the cell's colour;
+    "No learner"/"---"/blank = none. Colour: the cell's fill unless it is
+    just the row's own fill (the amber call rows), resolved to a type via
+    the sheet's legend, falling back to DEFAULT_LEARNER_LEGEND.
+    """
+    legend = read_legend(values, fills) or dict(DEFAULT_LEARNER_LEGEND)
+    out: dict[tuple, list[dict]] = {}
+
+    def at(grid, r0, c0):
+        row = grid[r0] if r0 < len(grid) else []
+        return row[c0] if c0 < len(row) else ""
+
+    for key, (sheet_row, col_letter) in locate_cells(values, year, month).items():
+        r0 = sheet_row            # learner row is the next row -> 0-based index == sheet_row
+        c0 = ord(col_letter) - 65
+        text = str(at(values, r0, c0) or "").strip()
+        if text.casefold() in _NO_LEARNER_TEXTS:
+            continue
+        fill = str(at(fills, r0, c0) or "")
+        row_fill = str(at(fills, r0, 0) or "")
+        if fill and fill == row_fill:
+            fill = ""
+        ltype = learner_type_for(fill, legend)
+        names = [n.strip() for n in text.replace(",", "/").split("/") if n.strip()]
+        if not names:
+            continue
+        out[key] = [{"name": n, "type": ltype, "color": f"#{fill}" if fill else ""} for n in names]
+    return out
+
+
 def locate_cells(grid: list[list], year: int, month: int) -> dict[tuple, tuple[int, str]]:
     """
     Where each (date, kind, code) lives in a master-sheet grid, as
@@ -226,12 +319,18 @@ def locate_cells(grid: list[list], year: int, month: int) -> dict[tuple, tuple[i
 
 
 def parse_schedule_grid(
-    grid: list[list], year: int, month: int, roster: dict[str, PhysicianConfig]
+    grid: list[list], year: int, month: int, roster: dict[str, PhysicianConfig],
+    unresolved: list[str] | None = None,
 ) -> ScheduleResult:
     """
     The grid-walk itself, over rows of cell values as the Sheets API returns
     them (strings, ragged rows) or as openpyxl yields them (typed values,
     None for blanks). Shared by the credentialed and public-link readers.
+
+    unresolved: pass a list to be TOLERANT of names that match no roster
+    physician -- they are appended here (deduplicated, in sheet order) and
+    the cell is skipped, instead of the whole parse failing. The default
+    (None) keeps the strict behaviour every existing caller relies on.
     """
 
     def cell(row: list, col: int):
@@ -239,9 +338,13 @@ def parse_schedule_grid(
 
     index = build_alias_index(roster)
 
-    def resolve_id(name: str) -> str:
+    def resolve_id(name: str) -> str | None:
         pid = resolve_physician_id(name, index)
         if pid is None:
+            if unresolved is not None:
+                if name not in unresolved:
+                    unresolved.append(name)
+                return None
             raise ScheduleSheetParseError(
                 f"Unresolved physician name {name!r} in the {year}-{month:02d} master sheet. "
                 "Add an alias to physicians.yaml or correct the sheet before importing."
@@ -309,10 +412,13 @@ def parse_schedule_grid(
                             unfilled.append(UnfilledSlot(date=d, shift=shift, candidates=[]))
                     continue
 
+                pid = resolve_id(name)
+                if pid is None:
+                    continue
                 if time_code is None:
                     oc = OnCallAssignment(
                         date=d, call_type=CALL_TYPE_BY_LABEL.get(site_label, site_label),
-                        physician_id=resolve_id(name), physician_name=name,
+                        physician_id=pid, physician_name=name,
                     )
                     (on_calls if _in_month(d) else spillover_on_calls).append(oc)
                 else:
@@ -320,7 +426,7 @@ def parse_schedule_grid(
                     shift = SHIFT_CODE_LOOKUP.get(shift_code)
                     if shift is None:
                         continue
-                    a = Assignment(date=d, shift=shift, physician_id=resolve_id(name), physician_name=name)
+                    a = Assignment(date=d, shift=shift, physician_id=pid, physician_name=name)
                     (assignments if _in_month(d) else spillover).append(a)
 
     filled = len(assignments)

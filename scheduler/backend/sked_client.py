@@ -200,7 +200,8 @@ def push_physician_rules(config: SkedConfig, physician_id: str, items: list[str]
         raise SkedApiError(f"Could not push rules summary for {physician_id!r}: {res.text}")
 
 
-def push_schedule(config: SkedConfig, period_id: str, assignments: list[dict]) -> None:
+def push_schedule(config: SkedConfig, period_id: str, assignments: list[dict],
+                  physicians: list[dict] | None = None) -> None:
     """
     Push a full month's generated schedule to sked's schedule_assignments
     table, which backs each physician's personal .ics calendar subscription
@@ -217,7 +218,7 @@ def push_schedule(config: SkedConfig, period_id: str, assignments: list[dict]) -
         res = client.put(
             f"{config.base_url}/api/admin/schedule",
             headers=_headers(config),
-            json={"periodId": period_id, "assignments": assignments},
+            json={"periodId": period_id, "assignments": assignments, "physicians": physicians or []},
         )
     if res.status_code != 200:
         raise SkedApiError(f"Could not push schedule for period {period_id!r}: {res.text}")

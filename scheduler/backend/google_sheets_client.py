@@ -397,6 +397,44 @@ def read_range(config: GoogleSheetsConfig, spreadsheet_id: str, a1_range: str) -
     return res.get("values", [])
 
 
+def read_grid_with_fills(config: GoogleSheetsConfig, spreadsheet_id: str, a1_range: str) -> tuple[list[list], list[list]]:
+    """
+    Like read_range but also returns each cell's effective background colour
+    as a lowercase hex string ("ffcc00") or "" for none/white. Two ragged
+    grids of equal shape: (values, fills). Used for the learner row under
+    each shift on the master sheet, whose colour is the learner type.
+    """
+    try:
+        res = (
+            _sheets_service(config).spreadsheets()
+            .get(spreadsheetId=spreadsheet_id, ranges=[a1_range], includeGridData=True,
+                 fields="sheets(data(rowData(values(formattedValue,effectiveFormat(backgroundColor)))))")
+            .execute()
+        )
+    except HttpError as exc:
+        raise GoogleSheetsApiError(f"Could not read range {a1_range!r} with formatting: {exc}") from exc
+    values: list[list] = []
+    fills: list[list] = []
+    for sheet in res.get("sheets", [])[:1]:
+        for block in sheet.get("data", []):
+            for row in block.get("rowData", []):
+                vrow: list = []
+                frow: list = []
+                for cell in row.get("values", []):
+                    vrow.append(cell.get("formattedValue", ""))
+                    frow.append(_hex_fill(cell.get("effectiveFormat", {}).get("backgroundColor")))
+                values.append(vrow)
+                fills.append(frow)
+    return values, fills
+
+
+def _hex_fill(color: dict | None) -> str:
+    if not color:
+        return ""
+    r, g, b = (round(float(color.get(k, 0)) * 255) for k in ("red", "green", "blue"))
+    return "" if (r, g, b) == (255, 255, 255) else f"{r:02x}{g:02x}{b:02x}"
+
+
 def write_ranges(config: GoogleSheetsConfig, spreadsheet_id: str, data: list[dict]) -> int:
     """
     data: [{"range": a1_range, "values": [[...]]}, ...] -- one entry per

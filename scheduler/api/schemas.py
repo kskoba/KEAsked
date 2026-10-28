@@ -719,6 +719,24 @@ class PushToMasterSheetResponse(BaseModel):
     spreadsheet_url: str | None = None
 
 
+class SheetSyncRequest(BaseModel):
+    year: int
+    month: int
+    file_id: str | None = None   # override: read this spreadsheet instead of searching the folder by name
+
+
+class SheetSyncResponse(BaseModel):
+    period_id: str
+    period_created: bool
+    spreadsheet_url: str
+    shifts: int
+    on_calls: int
+    spillover_days: int
+    slots_with_learners: int
+    learner_types: dict[str, int] = {}
+    unresolved_names: list[str] = []
+
+
 class SheetCompareDiff(BaseModel):
     date: str        # YYYY-MM-DD
     shift: str       # "0600h RAH A side" or "DOC"/"NOC"

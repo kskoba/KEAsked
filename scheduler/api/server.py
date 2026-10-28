@@ -65,6 +65,8 @@ from scheduler.api.schemas import (
     GoogleSheetsStatusResponse,
     PushToMasterSheetRequest,
     PushToMasterSheetResponse,
+    SheetSyncRequest,
+    SheetSyncResponse,
     SheetCompareDiff,
     SheetCompareResponse,
     PushResultDetail,
@@ -2402,6 +2404,75 @@ def google_sheets_compare() -> SheetCompareResponse:
         return SheetCompareResponse(status="error", detail=str(exc))
 
 
+@app.post("/api/google-sheets/sync-to-sked", response_model=SheetSyncResponse)
+def google_sheets_sync_to_sked(body: SheetSyncRequest) -> SheetSyncResponse:
+    """
+    Read a month's master sheet (names AND the learner row under each
+    shift, with its colour) and publish it to sked as that period's
+    schedule: the sheet is the source of truth for what physicians see
+    (docs/master-sheet-sync-design.md, option B). Creates the sked period
+    if missing; upserts physicians sked doesn't know. Tolerant of surnames
+    that match no roster physician -- those cells are skipped and listed.
+    Never touches the schedule loaded in this app.
+    """
+    try:
+        config = google_sheets_client.load_google_sheets_config()
+    except google_sheets_client.GoogleSheetsApiError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if config is None or not google_sheets_client.is_fully_configured(config):
+        raise HTTPException(status_code=400, detail=google_sheets_client.status_detail(config))
+    sked_config = sked_client.load_sked_config()
+    if sked_config is None or not sked_client.is_fully_configured(sked_config):
+        raise HTTPException(status_code=400, detail="sked is not configured.")
+    try:
+        roster = load_roster()
+        _state["roster"] = roster
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not load physician roster: {exc}")
+
+    try:
+        file_id = body.file_id or google_sheets_client.find_month_file_id(config, body.year, body.month)
+        if not file_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No sheet named {google_sheets_client.month_file_name(config, body.year, body.month)!r} in the folder.",
+            )
+        values, fills = google_sheets_client.read_grid_with_fills(config, file_id, "A1:I600")
+    except google_sheets_client.GoogleSheetsApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    unresolved: list[str] = []
+    try:
+        result = sheets_schedule_reader.parse_schedule_grid(values, body.year, body.month, roster, unresolved=unresolved)
+    except sheets_schedule_reader.ScheduleSheetParseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    learners = sheets_schedule_reader.extract_learners(values, fills, body.year, body.month)
+
+    display_names = build_display_names(roster)
+    payload = _result_to_sked_assignments(result, learners=learners, include_spillover=True)
+    ids = {a["physicianId"] for a in payload}
+    physicians = [{"id": pid, "name": display_names.get(pid, pid)} for pid in sorted(ids)]
+    period_id = f"{body.year:04d}-{body.month:02d}"
+    try:
+        created = _ensure_sked_period(sked_config, body.year, body.month)
+        sked_client.push_schedule(sked_config, period_id, payload, physicians=physicians)
+    except sked_client.SkedApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    type_counts: dict[str, int] = {}
+    for ls in learners.values():
+        for l in ls:
+            type_counts[l["type"] or "(unknown type)"] = type_counts.get(l["type"] or "(unknown type)", 0) + 1
+    return SheetSyncResponse(
+        period_id=period_id, period_created=created,
+        spreadsheet_url=google_sheets_client.spreadsheet_url(file_id),
+        shifts=len(result.assignments) + len(result.spillover),
+        on_calls=len(result.on_calls) + len(result.spillover_on_calls),
+        spillover_days=len({a.date for a in result.spillover} | {o.date for o in result.spillover_on_calls}),
+        slots_with_learners=len(learners), learner_types=type_counts, unresolved_names=unresolved,
+    )
+
+
 def _ensure_sked_period(sked_config, year: int, month: int) -> bool:
     """
     A published schedule needs its month's period row on sked (the
@@ -2423,11 +2494,19 @@ def _ensure_sked_period(sked_config, year: int, month: int) -> bool:
     return True
 
 
-def _result_to_sked_assignments(result: ScheduleResult) -> list[dict]:
+def _result_to_sked_assignments(result: ScheduleResult, learners: dict | None = None,
+                                include_spillover: bool = False) -> list[dict]:
     """Wire-format payload for sked_client.push_schedule — see
-    docs/physician-calendar-feed-design.md's _result_to_schedule_payload sketch."""
-    out = [
-        {
+    docs/physician-calendar-feed-design.md's _result_to_schedule_payload sketch.
+    learners: {("shift"|"call", date, code): [{name,type,color}]} from the
+    master sheet, attached per slot. include_spillover: also send the
+    next-month day(s) a Nov/Dec/Jan sheet staffs, under their real dates."""
+    learners = learners or {}
+    shifts = list(result.assignments) + (list(result.spillover) if include_spillover else [])
+    calls = list(result.on_calls) + (list(result.spillover_on_calls) if include_spillover else [])
+    out = []
+    for a in shifts:
+        row = {
             "physicianId": a.physician_id,
             "date": a.date.isoformat(),
             "kind": "shift",
@@ -2435,17 +2514,21 @@ def _result_to_sked_assignments(result: ScheduleResult) -> list[dict]:
             "shiftSite": a.shift.site,
             "isManual": a.is_manual,
         }
-        for a in result.assignments
-    ]
-    out += [
-        {
+        ls = learners.get(("shift", a.date, a.shift.code))
+        if ls:
+            row["learners"] = ls
+        out.append(row)
+    for c in calls:
+        row = {
             "physicianId": c.physician_id,
             "date": c.date.isoformat(),
             "kind": "on_call",
             "callType": c.call_type,
         }
-        for c in result.on_calls
-    ]
+        ls = learners.get(("call", c.date, c.call_type))
+        if ls:
+            row["learners"] = ls
+        out.append(row)
     return out
 
 

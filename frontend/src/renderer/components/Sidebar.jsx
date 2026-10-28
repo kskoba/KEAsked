@@ -300,18 +300,24 @@ export default function Sidebar({ scheduleData, importResult = null, physicianVi
                                 {singletons > 0 ? singletons : '-'}
                               </span>
                             </div>
-                            {/* Acute/Non-acute balance bar with 40% target line */}
+                            {/* Acute/Non-acute balance bar with 40% target line, counts beside it so a
+                                one-shift change after a swap is visible without hovering */}
                             <div
-                              className="relative h-1.5 rounded-full overflow-hidden flex mt-0.5"
-                              title={`Acute: ${g.a} (${Math.round(aPct)}%)  Non-acute: ${g.b} (${Math.round(100 - aPct)}%)  Target: 40% Acute / 60% Non-acute`}
+                              className="flex items-center gap-1.5 mt-0.5"
+                              title={`Acute (RAH A/B): ${g.a} (${Math.round(aPct)}%)  Non-acute (NEHC, RAH I/Float): ${g.b} (${Math.round(100 - aPct)}%)  Target: 40% Acute / 60% Non-acute`}
                             >
-                              <div className="h-full bg-blue-400 transition-all" style={{ width: `${aPct}%` }} />
-                              <div className="h-full bg-emerald-400 flex-1" />
-                              {/* Target line at 40% */}
-                              <div
-                                className="absolute top-0 bottom-0 w-px bg-white opacity-80"
-                                style={{ left: '40%' }}
-                              />
+                              <div className="relative h-1.5 rounded-full overflow-hidden flex flex-1">
+                                <div className="h-full bg-blue-400 transition-all" style={{ width: `${aPct}%` }} />
+                                <div className="h-full bg-emerald-400 flex-1" />
+                                {/* Target line at 40% */}
+                                <div
+                                  className="absolute top-0 bottom-0 w-px bg-white opacity-80"
+                                  style={{ left: '40%' }}
+                                />
+                              </div>
+                              <span className="flex-shrink-0 text-[10px] leading-none tabular-nums text-slate-400 w-14 text-right">
+                                <span className="text-blue-500">{g.a}A</span> · <span className="text-emerald-600">{g.b}N</span>
+                              </span>
                             </div>
                           </div>
                         )

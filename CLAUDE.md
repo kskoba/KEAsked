@@ -10,6 +10,28 @@ order). Never put real names back into tracked files.
 
 ## ⭐ Next task — start here
 
+**2026-10-28 (later, commit 395167b) — operations manual + four follow-ups
+from writing it:**
+- Manual lives in the sked repo: `public/manual.html` ->
+  https://sked.keatools.org/manual. Update it when a user-facing flow changes.
+- **Calendar-link emails**: `POST /api/sked/calendar-links/email`
+  (`physician_ids` list, or null = every active physician with an email)
+  mints each feed via sked and mails feed + live-view links with subscribe
+  steps, from `email.yaml`'s mailbox. Roster Editor: "Email both links to
+  this physician" (Calendar link section) and "Email calendar links to
+  everyone…" (left pane, confirm + results). `test_email_calendar_links_route.py` (4).
+- **ByteBloc preview** returns `unmapped_physicians` (valid this month, no
+  `provider_map` entry); the send dialog shows them in a red box and requires
+  an acknowledgement checkbox before Send enables. `test_bytebloc_preview_unmapped.py`.
+- **Push to Master Sheet is layout-aware**: reads `A1:H600` once and places
+  names with `sheets_schedule_reader.locate_cells` (same walk as the reader),
+  so hand-built sheets without a gap row between weeks and KEAsked exports
+  with one both work; a blank new sheet falls back to the export layout.
+  Returns a skipped count, surfaced in the result text. `test_master_sheet_push_layout.py` (4).
+- `/api/sked/import` docstring now says drafts are skipped (the code always did).
+- Not done: apex `keatools.org` has no Worker route (user chose the sked URL).
+  Unraid needs push + rebuild for the three routes above.
+
 **2026-10-28 — "ramp into nights" became a roster toggle, ON for
 everyone; UNCOMMITTED as of this writing (`git status`):**
 - Was `scheduler_config.yaml`'s `night_chain_ramp_in` list (P92 only,

@@ -719,6 +719,24 @@ class PushToMasterSheetResponse(BaseModel):
     spreadsheet_url: str | None = None
 
 
+class SheetCompareDiff(BaseModel):
+    date: str        # YYYY-MM-DD
+    shift: str       # "0600h RAH A side" or "DOC"/"NOC"
+    sheet: str       # name on the Google sheet ("" = blank)
+    app: str         # name in the loaded schedule ("" = unfilled)
+
+
+class SheetCompareResponse(BaseModel):
+    # "match" | "mismatch" | "no_sheet" | "no_schedule" | "not_configured" | "error"
+    status: str
+    differences: int = 0      # cells that differ (incl. cells the sheet has no row for)
+    checked: int = 0          # cells compared
+    missing_rows: int = 0     # scheduled cells the sheet has no row/column for
+    examples: list[SheetCompareDiff] = []   # first few differences
+    spreadsheet_url: str | None = None
+    detail: str = ""
+
+
 class LoadFromMasterSheetRequest(BaseModel):
     year: int
     month: int

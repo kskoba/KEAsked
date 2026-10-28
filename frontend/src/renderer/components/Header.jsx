@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { getApiBaseUrl, getGoogleSheetsStatus, pushToMasterSheet } from '../api'
+import { getApiBaseUrl, getGoogleSheetsStatus, getGoogleSheetsCompare, pushToMasterSheet } from '../api'
 
 async function downloadExport() {
   const res = await fetch(`${getApiBaseUrl()}/api/export`)
@@ -15,7 +15,63 @@ async function downloadExport() {
   URL.revokeObjectURL(url)
 }
 
-function PushToMasterSheetModal({ onClose }) {
+/**
+ * Indicator light: does the schedule on screen match the Google sheet for
+ * this month? Re-checks whenever the schedule changes, after a push, and on
+ * click. Read-only -- it never writes to the sheet.
+ */
+function SheetMatchIndicator({ active, scheduleData, refreshKey, sheetsConfigured }) {
+  const [state, setState] = useState({ status: 'idle' })
+  const [checking, setChecking] = useState(false)
+
+  const check = () => {
+    if (!active || !sheetsConfigured) return
+    setChecking(true)
+    getGoogleSheetsCompare()
+      .then((r) => setState(r))
+      .catch((err) => setState({ status: 'error', detail: err.message }))
+      .finally(() => setChecking(false))
+  }
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { check() }, [active, scheduleData, refreshKey, sheetsConfigured])
+
+  if (!active) return null
+
+  let dot = 'bg-slate-400', text = 'Sheet: not checked', title = ''
+  if (!sheetsConfigured) {
+    text = 'Sheet: not configured'
+  } else if (checking) {
+    dot = 'bg-sky-400 animate-pulse'; text = 'Checking sheet…'
+  } else if (state.status === 'match') {
+    dot = 'bg-emerald-400'; text = `Matches sheet (${state.checked} cells)`
+    title = 'Every scheduled cell on screen matches the Google master sheet for this month.'
+  } else if (state.status === 'mismatch') {
+    dot = 'bg-amber-400'; text = `Not matching — ${state.differences} cell${state.differences === 1 ? '' : 's'}`
+    title = (state.examples || []).map((d) => `${d.date} ${d.shift}: sheet "${d.sheet || '(blank)'}" vs app "${d.app || '(unfilled)'}"`).join('\n')
+      + (state.differences > (state.examples || []).length ? '\n…' : '')
+  } else if (state.status === 'no_sheet') {
+    dot = 'bg-slate-400'; text = 'No sheet for this month yet'; title = state.detail || ''
+  } else if (state.status === 'no_schedule') {
+    dot = 'bg-slate-400'; text = 'Sheet: no schedule loaded'; title = 'The backend has no schedule in memory — load or generate one.'
+  } else if (state.status === 'error' || state.status === 'not_configured') {
+    dot = 'bg-red-400'; text = 'Sheet check failed'; title = state.detail || ''
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={check}
+      title={(title ? title + '\n\n' : '') + 'Click to re-check against the Google sheet.'}
+      className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-slate-700 hover:bg-slate-600 text-slate-100 text-sm transition-colors"
+    >
+      <span className={`inline-block w-2.5 h-2.5 rounded-full ${dot}`} />
+      <span className="whitespace-nowrap">{text}</span>
+    </button>
+  )
+}
+
+function PushToMasterSheetModal({ onClose, onPushed }) {
   const [confirmText, setConfirmText] = useState('')
   const [pushing, setPushing] = useState(false)
   const [result, setResult] = useState(null) // null | { sheet, sked, spreadsheet_url }
@@ -28,6 +84,7 @@ function PushToMasterSheetModal({ onClose }) {
     try {
       const res = await pushToMasterSheet(confirmText)
       setResult(res)
+      if (onPushed) onPushed()
     } catch (err) {
       setError(err.message)
     } finally {
@@ -121,10 +178,11 @@ function PushToMasterSheetModal({ onClose }) {
   )
 }
 
-export default function Header({ view, onBack, hasSchedule, onViewSchedule, onOpenSettings, onOpenRoster, onOpenIndividualSchedules, onOpenMonthlyRequests, onOpenSchedulingRules }) {
+export default function Header({ view, onBack, hasSchedule, scheduleData, onViewSchedule, onOpenSettings, onOpenRoster, onOpenIndividualSchedules, onOpenMonthlyRequests, onOpenSchedulingRules }) {
   const [sheetsConfigured, setSheetsConfigured] = useState(null) // null while checking
   const [sheetsDetail, setSheetsDetail] = useState('')
   const [showPushModal, setShowPushModal] = useState(false)
+  const [pushCount, setPushCount] = useState(0)   // bumps after every push so the match light re-checks
 
   useEffect(() => {
     getGoogleSheetsStatus()
@@ -174,6 +232,12 @@ export default function Header({ view, onBack, hasSchedule, onViewSchedule, onOp
               </svg>
               Export .xlsx
             </button>
+            <SheetMatchIndicator
+              active={view === 'schedule' && hasSchedule}
+              scheduleData={scheduleData}
+              refreshKey={pushCount}
+              sheetsConfigured={!!sheetsConfigured}
+            />
             <button
               onClick={() => setShowPushModal(true)}
               disabled={!sheetsConfigured}
@@ -264,7 +328,7 @@ export default function Header({ view, onBack, hasSchedule, onViewSchedule, onOp
         </button>
       </div>
 
-      {showPushModal && <PushToMasterSheetModal onClose={() => setShowPushModal(false)} />}
+      {showPushModal && <PushToMasterSheetModal onClose={() => setShowPushModal(false)} onPushed={() => setPushCount((n) => n + 1)} />}
     </header>
   )
 }

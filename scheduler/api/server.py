@@ -65,6 +65,8 @@ from scheduler.api.schemas import (
     GoogleSheetsStatusResponse,
     PushToMasterSheetRequest,
     PushToMasterSheetResponse,
+    SheetCompareDiff,
+    SheetCompareResponse,
     PushResultDetail,
     LoadFromMasterSheetRequest,
     OverrideAllRequest,
@@ -2316,6 +2318,88 @@ def resend_survey_link(body: ResendSurveyLinkRequest) -> ResendSurveyLinkRespons
 # Sheet and every physician's personal .ics calendar feed stay in sync from
 # one action.
 # ---------------------------------------------------------------------------
+
+
+def _norm_name(v) -> str:
+    t = str(v or "").strip()
+    return "" if t in ("---", "None") else " ".join(t.split()).casefold()
+
+
+def _compare_result_to_master_sheet(result: ScheduleResult, config: google_sheets_client.GoogleSheetsConfig) -> SheetCompareResponse:
+    """
+    Cell-by-cell comparison of the loaded schedule against that month's
+    Google sheet, using the same row/column locator the push uses. Only
+    days the schedule covers are compared (a month solved from the 2nd
+    never argues about the 1st). Names compare case- and space-insensitive;
+    a blank sheet cell equals an unfilled slot.
+    """
+    file_id = google_sheets_client.find_month_file_id(config, result.year, result.month)
+    if not file_id:
+        return SheetCompareResponse(
+            status="no_sheet",
+            detail=f"No sheet named {google_sheets_client.month_file_name(config, result.year, result.month)!r} in the folder yet.",
+        )
+    url = google_sheets_client.spreadsheet_url(file_id)
+    grid = google_sheets_client.read_range(config, file_id, "A1:H600")
+    located = sheets_schedule_reader.locate_cells(grid, result.year, result.month)
+    if not located:
+        return SheetCompareResponse(status="mismatch", spreadsheet_url=url,
+                                    detail="The sheet has no recognizable week/shift layout.")
+
+    index = {(a.date, a.shift.code): a.physician_name for a in list(result.assignments) + list(result.spillover)}
+    call_index = {(oc.date, oc.call_type): oc.physician_name for oc in list(result.on_calls) + list(result.spillover_on_calls)}
+    covered_days = {a.date for a in list(result.assignments) + list(result.spillover)} | {u.date for u in result.unfilled}
+
+    def cell_value(pos) -> str:
+        r, col = pos
+        row = grid[r - 1] if r - 1 < len(grid) else []
+        c = ord(col) - 65
+        return row[c] if c < len(row) else ""
+
+    diffs: list[SheetCompareDiff] = []
+    checked = missing = 0
+    for day in sorted(covered_days):
+        for site_label, _time_label, time_code, site_code in _EXPORT_SHIFTS:
+            if time_code is None:
+                key, app_name, shown = ("call", day, site_label), call_index.get((day, site_label), ""), site_label
+            elif time_code and site_code:
+                code = f"{time_code} {site_code}"
+                key, app_name, shown = ("shift", day, code), index.get((day, code), ""), code
+            else:
+                continue
+            pos = located.get(key)
+            if pos is None:
+                missing += 1
+                diffs.append(SheetCompareDiff(date=day.isoformat(), shift=shown, sheet="(no row on sheet)", app=app_name))
+                continue
+            checked += 1
+            sheet_name = cell_value(pos)
+            if _norm_name(sheet_name) != _norm_name(app_name):
+                diffs.append(SheetCompareDiff(date=day.isoformat(), shift=shown, sheet=str(sheet_name or ""), app=app_name))
+    return SheetCompareResponse(
+        status="match" if not diffs else "mismatch",
+        differences=len(diffs), checked=checked, missing_rows=missing,
+        examples=diffs[:12], spreadsheet_url=url,
+        detail="" if not diffs else f"{len(diffs)} cell(s) differ between the loaded schedule and the sheet.",
+    )
+
+
+@app.get("/api/google-sheets/compare", response_model=SheetCompareResponse)
+def google_sheets_compare() -> SheetCompareResponse:
+    """Does the loaded schedule match that month's Google sheet? Read-only; never writes."""
+    result: ScheduleResult | None = _state.get("result")
+    if result is None:
+        return SheetCompareResponse(status="no_schedule", detail="No schedule loaded.")
+    try:
+        config = google_sheets_client.load_google_sheets_config()
+    except google_sheets_client.GoogleSheetsApiError as exc:
+        return SheetCompareResponse(status="not_configured", detail=str(exc))
+    if config is None or not google_sheets_client.is_fully_configured(config):
+        return SheetCompareResponse(status="not_configured", detail=google_sheets_client.status_detail(config))
+    try:
+        return _compare_result_to_master_sheet(result, config)
+    except google_sheets_client.GoogleSheetsApiError as exc:
+        return SheetCompareResponse(status="error", detail=str(exc))
 
 
 def _ensure_sked_period(sked_config, year: int, month: int) -> bool:

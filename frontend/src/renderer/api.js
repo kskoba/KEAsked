@@ -388,6 +388,15 @@ export async function getGoogleSheetsStatus() {
 }
 
 /**
+ * Compare the loaded schedule with that month's Google master sheet, cell by
+ * cell. Read-only. status: match | mismatch | no_sheet | no_schedule |
+ * not_configured | error.
+ */
+export async function getGoogleSheetsCompare() {
+  return request('GET', '/api/google-sheets/compare')
+}
+
+/**
  * Push the active schedule to the department's real master Google Sheet
  * for its month, and to sked's per-physician calendar feed, in one call.
  * Refuses unless confirmationText is exactly "CONFIRM" — pass through

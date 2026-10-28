@@ -297,6 +297,7 @@ export default function App() {
         view={view}
         onBack={handleBackToSetup}
         hasSchedule={!!scheduleData}
+        scheduleData={scheduleData}
         onViewSchedule={handleViewSchedule}
         onOpenSettings={() => setSettingsOpen(true)}
         onOpenRoster={() => window.electronAPI.openRosterWindow()}

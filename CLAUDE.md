@@ -10,6 +10,14 @@ order). Never put real names back into tracked files.
 
 ## ⭐ Next task — start here
 
+**2026-10-28 (night) — NEXT: the daily sheet → calendar sync (option B).**
+Design + decisions + the "how a month's sheet is found" failure modes are
+in `docs/master-sheet-sync-design.md`. Read it before touching the Google
+Sheets integration or sked's schedule tables. Live today: OAuth push with
+full formatting, match light in the header, acute/non-acute counts in
+the sidebar. Backend on this machine may still need `kea backend` for the
+compare route if it wasn't restarted (clears the loaded month -- ask).
+
 **2026-10-28 (evening) — Google Sheets integration is LIVE on this machine
 in OAuth mode (commit 4ba98af + follow-ups):**
 - `google_sheets.yaml` has `auth: oauth`, `drive_folder_id` = the

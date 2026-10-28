@@ -208,6 +208,12 @@ There are currently **two UI entry points** for the same ByteBloc send feature (
 
 ---
 
+## Integration with the Google master sheet
+
+`scheduler/backend/google_sheets_client.py` (transport) + `sheets_schedule_reader.py` (grid walk, `locate_cells`). Config `google_sheets.yaml`, `auth: oauth` (KEAsked acts as the scheduling mailbox's Google account; `scripts/google-oauth-login.py` once per machine) or `service_account` (read-only in practice: no Drive storage, so it cannot create month files in My Drive).
+
+**Every month's sheet is found by exact name in one Drive folder** (`drive_folder_id` + `file_name_pattern`, e.g. `2026-12 - December 2026 RAH NECHC Master Schedule`). A renamed or moved sheet is simply not found: the push creates a duplicate, the match light says "no sheet", loads say not found. The full list of failure modes and the planned daily sheet → sked sync (the sheet as source of truth, learners included, errors emailed) are in `docs/master-sheet-sync-design.md` — read that first when a sheet problem is reported.
+
 ## The Solver (`generator_cpsat.py`, CP-SAT — the one actually used; `generator.py`, greedy, is the fallback if OR-Tools isn't installed and is otherwise dead code for this purpose)
 
 Hard constraints are grouped and commented in the source with `HC-N` labels — the numbering has grown non-sequentially as rules were added (`HC-9a`/`9b`/`9c`/`9d`, `HC-11` appears twice for historical reasons, `HC-12`/`12b`/`12c`, `HC-13`/`13b`/`13c`) so treat it as a set of labeled sections to search for, not a strict 1-to-N list. Broad categories:

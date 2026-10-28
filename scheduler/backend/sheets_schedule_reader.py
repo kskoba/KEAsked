@@ -257,7 +257,8 @@ def extract_learners(values: list[list], fills: list[list], year: int, month: in
         if fill and fill == row_fill:
             fill = ""
         ltype = learner_type_for(fill, legend)
-        names = [n.strip() for n in text.replace(",", "/").split("/") if n.strip()]
+        # a stray symbol in a learner cell ("≈" on the real December sheet) is not a learner
+        names = [n.strip() for n in text.replace(",", "/").split("/") if any(ch.isalpha() for ch in n)]
         if not names:
             continue
         out[key] = [{"name": n, "type": ltype, "color": f"#{fill}" if fill else ""} for n in names]

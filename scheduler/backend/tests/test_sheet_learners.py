@@ -41,6 +41,7 @@ def test_learners_resolved_from_the_sheets_own_legend_and_split_on_slash():
     _set(values, fills, "NECHC", "0600-1400", 5, "Chan", "cfe2f3", "No learner", "")
     _set(values, fills, "DOC", "0500-1559", 4, "Call", "ffcc00", "No learner", "ffcc00")
     _set(values, fills, "RAH I", "0600-1400", 6, "Deol", "cfe2f3", "Mystery", "123456")         # colour not in legend
+    _set(values, fills, "RAH A", "1200-1800", 6, "Who", "cfe2f3", "≈", "")                        # stray symbol, not a learner
     out = r.extract_learners(values, fills, YEAR, MONTH)
     assert out[("shift", datetime.date(2026, 12, 2), "0600h RAH A side")] == [{"name": "Wengryn", "type": "EM resident", "color": "#4a86e8"}]
     assert out[("shift", datetime.date(2026, 12, 3), "0600h RAH B side")] == [
@@ -48,6 +49,7 @@ def test_learners_resolved_from_the_sheets_own_legend_and_split_on_slash():
     assert ("shift", datetime.date(2026, 12, 3), "0600h NEHC") not in out
     assert ("call", datetime.date(2026, 12, 2), "DOC") not in out
     assert out[("shift", datetime.date(2026, 12, 4), "0600h RAH I side")] == [{"name": "Mystery", "type": "", "color": "#123456"}]
+    assert ("shift", datetime.date(2026, 12, 4), "1200h RAH A side") not in out
 
 
 def test_call_row_learner_keeps_name_but_amber_is_not_a_type():

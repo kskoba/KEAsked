@@ -109,17 +109,17 @@ def test_push_reports_cells_the_sheet_has_no_row_for(monkeypatch):
 
 
 def _grid_from_writes(writes: list[dict]) -> list[list]:
-    """Rebuild the sheet from row-range writes (A{r}:I{r}) the scaffold path issues, last write wins."""
+    """Rebuild the sheet from row-range writes the scaffold path issues, last write wins."""
     import re
     rows: dict[int, list] = {}
     for d in writes:
-        m = re.fullmatch(r"([A-I])(\d+)(?::([A-I])(\d+))?", d["range"])
+        m = re.fullmatch(r"([A-K])(\d+)(?::([A-K])(\d+))?", d["range"])
         c0, r0 = m.group(1), int(m.group(2))
         for k, vals in enumerate(d["values"]):
-            row = rows.setdefault(r0 + k, [""] * 9)
+            row = rows.setdefault(r0 + k, [""] * 11)
             for j, v in enumerate(vals):
                 row[ord(c0) - 65 + j] = v
-    return [rows.get(i, [""] * 9) for i in range(1, max(rows) + 1)]
+    return [rows.get(i, [""] * 11) for i in range(1, max(rows) + 1)]
 
 
 def test_new_file_is_written_in_full_and_round_trips_through_locate_cells(monkeypatch):
@@ -129,9 +129,16 @@ def test_new_file_is_written_in_full_and_round_trips_through_locate_cells(monkey
     monkeypatch.setattr(server.google_sheets_client, "read_range", lambda c, f, r: (_ for _ in ()).throw(AssertionError("no read on a new file")))
     monkeypatch.setattr(server.google_sheets_client, "spreadsheet_url", lambda f: "https://sheet/NEW")
     monkeypatch.setattr(server.google_sheets_client, "write_ranges", lambda c, f, data: writes.extend(data) or len(data))
+    fmt_calls = []
+    monkeypatch.setattr(server.google_sheets_client, "format_new_master_sheet",
+                        lambda c, f, n, call_rows, count: fmt_calls.append((n, call_rows, count)) or 1)
     cells, url, skipped = server._push_result_to_master_sheet(_result(), object())
     assert skipped == 0
+    # Feb 2027 runs Sun Jan 31 .. Sat Mar 6 in Sun-start weeks = 5 blocks; DOC is row 0, NOC row 12
+    assert fmt_calls == [(5, [0, 12], 23)]
     grid = _grid_from_writes(writes)
+    assert grid[2][0] == "AM CALL" and grid[2 + 24][0] == "PM CALL"     # department labels, no gap rows
+    assert grid[48][1] == "SUN"                                           # second block starts at row 49
     assert grid[0][1:8] == ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"]
     loc = reader.locate_cells([[str(c) if c != "" else "" for c in r] for r in grid], YEAR, MONTH)
     r, col = loc[("shift", datetime.date(2027, 2, 9), "0600h RAH A side")]

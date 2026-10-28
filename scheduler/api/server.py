@@ -2379,9 +2379,11 @@ def _push_result_to_master_sheet(
     walked with sheets_schedule_reader.locate_cells, so a hand-built sheet
     with no blank row between weeks and KEAsked's own export (which has
     one) both get their names in the right cells. A file this push creates
-    (blank, or a copy of last month for its formatting) is cleared and
-    written in full in KEAsked's export layout: day headers, dates, shift
-    rows with names, the learner row under each shift left empty.
+    (blank, or a copy of last month) is cleared and written in full in the
+    department's own layout -- 48-row week blocks, day headers, dates,
+    shift rows with names, the learner row under each shift left empty,
+    the colour legend beside the grid -- and then formatted to look like
+    the hand-built sheets (google_sheets_client.format_new_master_sheet).
 
     Returns (cells_written, spreadsheet_url, skipped) -- skipped is the
     number of scheduled cells the sheet had no row/column for.
@@ -2466,6 +2468,9 @@ def _push_result_to_master_sheet(
             "written. Fix the sheet's layout or rename it so a fresh one is created."
         )
     data.append({"range": "A1:I400", "values": [[""] * 9 for _ in range(400)]})
+    # The department's own layout: 48-row week blocks with NO gap row, the
+    # call rows labelled AM CALL / PM CALL (the reader accepts DOC/NOC too).
+    _GOOGLE_LABELS = {"DOC": "AM CALL", "NOC": "PM CALL"}
     day_names = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"]
     row = 1
     for week_dates in weeks:
@@ -2474,6 +2479,7 @@ def _push_result_to_master_sheet(
         data.append({"range": f"A{row}:I{row}", "values": [[""] + [d.day if d else "" for d in week_dates] + [""]]})
         row += 1
         for site_label, time_label, time_code, site_code in _EXPORT_SHIFTS:
+            label = _GOOGLE_LABELS.get(site_label, site_label)
             names: list = []
             for day in week_dates:
                 if day is None:
@@ -2484,14 +2490,19 @@ def _push_result_to_master_sheet(
                     names.append(index.get((day, f"{time_code} {site_code}"), ""))
                 else:
                     names.append("")
-            data.append({"range": f"A{row}:I{row}", "values": [[site_label] + names + [site_label]]})
+            data.append({"range": f"A{row}:I{row}", "values": [[label] + names + [label]]})
             row += 1
-            # learner / time-range row: label only, day cells left for the learner coordinator
+            # learner row: label only, day cells left for the learner coordinator
             data.append({"range": f"A{row}:I{row}", "values": [[time_label] + [""] * 7 + [time_label]]})
             row += 1
-        row += 1  # gap row between weeks, as in the xlsx export
+    assert row - 1 == len(weeks) * google_sheets_client.MASTER_BLOCK_ROWS
+    legend_col = chr(ord("A") + google_sheets_client.MASTER_LEGEND_COL)
+    data.append({"range": f"{legend_col}3:{legend_col}{2 + len(google_sheets_client.MASTER_LEGEND)}",
+                 "values": [[text] for text, _f, _w in google_sheets_client.MASTER_LEGEND]})
 
     cells_written = google_sheets_client.write_ranges(config, file_id, data)
+    call_rows = [k for k, (_s, _t, tc, _sc) in enumerate(_EXPORT_SHIFTS) if tc is None]
+    google_sheets_client.format_new_master_sheet(config, file_id, len(weeks), call_rows, len(_EXPORT_SHIFTS))
     return cells_written, google_sheets_client.spreadsheet_url(file_id), skipped
 
 

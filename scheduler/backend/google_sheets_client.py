@@ -277,6 +277,112 @@ def create_month_file(
         raise GoogleSheetsApiError(f"Could not create spreadsheet {name!r}: {exc}") from exc
 
 
+# Look of the department's hand-built master sheet (read off the real
+# December 2026 file, 2026-10-28): Arial 10, everything centred, thin
+# borders on every cell, 18 px rows; call rows (and their learner row)
+# amber, every other shift row light blue, labels bold; day headers and
+# date numbers bold; a learner-type colour legend beside the grid.
+MASTER_BLOCK_ROWS = 48          # header + date row + 23 shifts x (name row + learner row), no gap
+_COL_WIDTHS_PX = {0: 79, 1: 131, 2: 131, 3: 131, 4: 131, 5: 131, 6: 131, 7: 131, 8: 85, 9: 100, 10: 131}
+_ROW_HEIGHT_PX = 18
+_FILL_CALL = {"red": 1.0, "green": 0.8, "blue": 0.0}            # ffcc00
+_FILL_SHIFT = {"red": 0.8118, "green": 0.8863, "blue": 0.9529}  # cfe2f3
+_WHITE = {"red": 1.0, "green": 1.0, "blue": 1.0}
+MASTER_LEGEND: list[tuple[str, dict, bool]] = [   # (text, fill, white text)
+    ("LEGEND", _WHITE, False),
+    ("EM resident", {"red": 0.2902, "green": 0.5255, "blue": 0.9098}, True),
+    ("Off service resident", {"red": 1.0, "green": 0.0, "blue": 0.0}, True),
+    ("Elective resident", {"red": 0.6, "green": 0.0, "blue": 1.0}, True),
+    ("Elective student", {"red": 1.0, "green": 0.0, "blue": 1.0}, True),
+    ("Core Student", {"red": 0.0, "green": 1.0, "blue": 0.0}, False),
+    ("Shadow student", {"red": 1.0, "green": 1.0, "blue": 0.0}, False),
+    ("NP student", {"red": 0.851, "green": 0.8235, "blue": 0.9137}, False),
+    ("NP", {"red": 0.6078, "green": 0.7333, "blue": 0.349}, False),
+]
+MASTER_LEGEND_COL = 10   # column K, beside the grid, rows 3..11 of the first block
+
+
+def _first_sheet_id(config: GoogleSheetsConfig, spreadsheet_id: str) -> int:
+    try:
+        meta = (
+            _sheets_service(config).spreadsheets()
+            .get(spreadsheetId=spreadsheet_id, fields="sheets(properties(sheetId,index))")
+            .execute()
+        )
+    except HttpError as exc:
+        raise GoogleSheetsApiError(f"Could not read sheet properties: {exc}") from exc
+    sheets = sorted(meta.get("sheets", []), key=lambda sh: sh["properties"].get("index", 0))
+    if not sheets:
+        raise GoogleSheetsApiError("Spreadsheet has no sheets.")
+    return int(sheets[0]["properties"]["sheetId"])
+
+
+def format_new_master_sheet(config: GoogleSheetsConfig, spreadsheet_id: str, n_weeks: int,
+                            call_row_indexes: list[int], shift_count: int) -> int:
+    """
+    Apply the department's master-sheet look to a sheet KEAsked has just
+    written in its block layout (MASTER_BLOCK_ROWS per week, no gap).
+    call_row_indexes: positions (0-based) within the shift list that are
+    on-call rows (amber). Returns the number of batchUpdate requests sent.
+    """
+    sid = _first_sheet_id(config, spreadsheet_id)
+    total_rows = n_weeks * MASTER_BLOCK_ROWS
+    base_text = {"fontFamily": "Arial", "fontSize": 10, "bold": False}
+    thin = {"style": "SOLID", "width": 1, "color": {"red": 0, "green": 0, "blue": 0}}
+    borders = {"top": thin, "bottom": thin, "left": thin, "right": thin}
+
+    def rng(r0, r1, c0, c1):
+        return {"sheetId": sid, "startRowIndex": r0, "endRowIndex": r1, "startColumnIndex": c0, "endColumnIndex": c1}
+
+    def repeat(r0, r1, c0, c1, fmt: dict, fields: str):
+        return {"repeatCell": {"range": rng(r0, r1, c0, c1), "cell": {"userEnteredFormat": fmt}, "fields": fields}}
+
+    reqs: list[dict] = []
+    # Grid size: exactly the rows we use, like the real sheet (no trailing empty rows), K for the legend.
+    reqs.append({"updateSheetProperties": {
+        "properties": {"sheetId": sid, "gridProperties": {"rowCount": total_rows, "columnCount": MASTER_LEGEND_COL + 1}},
+        "fields": "gridProperties.rowCount,gridProperties.columnCount"}})
+    for col, px in _COL_WIDTHS_PX.items():
+        reqs.append({"updateDimensionProperties": {
+            "range": {"sheetId": sid, "dimension": "COLUMNS", "startIndex": col, "endIndex": col + 1},
+            "properties": {"pixelSize": px}, "fields": "pixelSize"}})
+    reqs.append({"updateDimensionProperties": {
+        "range": {"sheetId": sid, "dimension": "ROWS", "startIndex": 0, "endIndex": total_rows},
+        "properties": {"pixelSize": _ROW_HEIGHT_PX}, "fields": "pixelSize"}})
+    # Base: Arial 10, centred, thin borders, white, over A..I of the whole grid.
+    reqs.append(repeat(0, total_rows, 0, 9,
+                       {"textFormat": base_text, "horizontalAlignment": "CENTER", "borders": borders, "backgroundColor": _WHITE},
+                       "userEnteredFormat(textFormat,horizontalAlignment,borders,backgroundColor)"))
+    bold = {"textFormat": {"bold": True}}
+    for w in range(n_weeks):
+        top = w * MASTER_BLOCK_ROWS
+        reqs.append(repeat(top, top + 2, 0, 9, bold, "userEnteredFormat.textFormat.bold"))  # day names + dates
+        for k in range(shift_count):
+            name_row = top + 2 + 2 * k
+            is_call = k in call_row_indexes
+            fill = _FILL_CALL if is_call else _FILL_SHIFT
+            reqs.append(repeat(name_row, name_row + 1, 0, 9, {"backgroundColor": fill}, "userEnteredFormat.backgroundColor"))
+            if is_call:   # the call rows' learner row is amber too
+                reqs.append(repeat(name_row + 1, name_row + 2, 0, 9, {"backgroundColor": fill}, "userEnteredFormat.backgroundColor"))
+            reqs.append(repeat(name_row, name_row + 1, 0, 1, bold, "userEnteredFormat.textFormat.bold"))
+            reqs.append(repeat(name_row, name_row + 1, 8, 9, bold, "userEnteredFormat.textFormat.bold"))
+    # Legend beside the first block.
+    for i, (_text, fill, white_text) in enumerate(MASTER_LEGEND):
+        r = 2 + i
+        tf = {"fontFamily": "Arial", "fontSize": 11, "bold": i == 0}
+        if white_text:
+            tf["foregroundColor"] = _WHITE
+        reqs.append(repeat(r, r + 1, MASTER_LEGEND_COL, MASTER_LEGEND_COL + 1,
+                           {"textFormat": tf, "horizontalAlignment": "CENTER", "borders": borders, "backgroundColor": fill},
+                           "userEnteredFormat(textFormat,horizontalAlignment,borders,backgroundColor)"))
+    try:
+        _sheets_service(config).spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id, body={"requests": reqs}).execute()
+    except HttpError as exc:
+        raise GoogleSheetsApiError(f"Could not format the new master sheet: {exc}") from exc
+    return len(reqs)
+
+
 def read_range(config: GoogleSheetsConfig, spreadsheet_id: str, a1_range: str) -> list[list]:
     try:
         res = (

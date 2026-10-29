@@ -123,10 +123,11 @@ function PushToMasterSheetModal({ onClose, onPushed }) {
             <>
               <p className="text-sm text-slate-700">
                 This writes the active schedule's physician assignments into the
-                department's real shared Google Sheet for this month, and pushes
-                the same schedule to every physician's personal calendar feed.
-                It does not touch learner (resident) pairing cells. This cannot
-                be undone from here. Type <span className="font-mono font-semibold">CONFIRM</span> below to proceed.
+                department's real shared Google Sheet for this month, then has
+                sked re-read that sheet so every physician's calendar feed shows
+                it (names and learner pairings as the sheet has them). It does
+                not touch learner (resident) pairing cells. This cannot be
+                undone from here. Type <span className="font-mono font-semibold">CONFIRM</span> below to proceed.
               </p>
               <input
                 type="text"
@@ -141,7 +142,7 @@ function PushToMasterSheetModal({ onClose, onPushed }) {
           {result && (
             <div className="space-y-2">
               <ResultRow label="Master Sheet" detail={result.sheet} />
-              <ResultRow label="sked calendar feed" detail={result.sked} />
+              <ResultRow label="Calendars (sked, from the sheet)" detail={result.sked} />
               {result.spreadsheet_url && (
                 <a
                   href={result.spreadsheet_url}

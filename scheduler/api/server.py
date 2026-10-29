@@ -2715,11 +2715,15 @@ def google_sheets_status() -> GoogleSheetsStatusResponse:
 @app.post("/api/google-sheets/push-schedule", response_model=PushToMasterSheetResponse)
 def push_schedule_to_master_sheet(body: PushToMasterSheetRequest) -> PushToMasterSheetResponse:
     """
-    Push the active schedule to the master Google Sheet and to sked's
-    schedule_assignments table (one action, two independent results —
-    see module-level docstring above). Refuses to run unless
-    confirmation_text is exactly google_sheets_client.CONFIRMATION_PHRASE,
-    checked again here even though the UI should already have required it.
+    Write the active schedule into the master Google Sheet, then ask sked to
+    sync that month FROM the sheet (the same code path as sked's daily
+    cron) -- the sheet is the one source of truth for what physicians see
+    (docs/master-sheet-sync-design.md). Two independent result rows, but
+    the sked step is skipped when the sheet write failed: pushing this
+    app's assignments to sked directly would make the calendars disagree
+    with the sheet. Refuses to run unless confirmation_text is exactly
+    google_sheets_client.CONFIRMATION_PHRASE, checked again here even
+    though the UI should already have required it.
     """
     if body.confirmation_text != google_sheets_client.CONFIRMATION_PHRASE:
         raise HTTPException(
@@ -2732,9 +2736,9 @@ def push_schedule_to_master_sheet(body: PushToMasterSheetRequest) -> PushToMaste
         raise HTTPException(status_code=400, detail="No active schedule to push. Generate or load one first.")
 
     sheet_config = google_sheets_client.load_google_sheets_config()
+    spreadsheet_url = None
     if sheet_config is None or not google_sheets_client.is_fully_configured(sheet_config):
         sheet_result = PushResultDetail(ok=False, detail="Google Sheets integration is not configured.")
-        spreadsheet_url = None
     else:
         try:
             cells, spreadsheet_url, skipped = _push_result_to_master_sheet(result, sheet_config)
@@ -2745,24 +2749,38 @@ def push_schedule_to_master_sheet(body: PushToMasterSheetRequest) -> PushToMaste
             sheet_result = PushResultDetail(ok=True, detail=detail)
         except google_sheets_client.GoogleSheetsApiError as exc:
             sheet_result = PushResultDetail(ok=False, detail=str(exc))
-            spreadsheet_url = None
 
     sked_config = sked_client.load_sked_config()
     if sked_config is None or not sked_client.is_fully_configured(sked_config):
         sked_result = PushResultDetail(ok=False, detail="sked integration is not configured.")
+    elif not sheet_result.ok:
+        sked_result = PushResultDetail(
+            ok=False,
+            detail="Skipped: the sheet was not written, and calendars are published from the sheet. "
+                   "Fix the sheet problem and push again.",
+        )
     else:
         try:
-            period_id = f"{result.year:04d}-{result.month:02d}"
-            created = _ensure_sked_period(sked_config, result.year, result.month)
-            sked_client.push_schedule(sked_config, period_id, _result_to_sked_assignments(result))
-            sked_result = PushResultDetail(
-                ok=True,
-                detail=f"Pushed to sked period {period_id!r}." + (" (period created)" if created else ""),
-            )
+            sked_result = _describe_sked_sync(sked_client.request_sheet_sync(sked_config, result.year, result.month))
         except sked_client.SkedApiError as exc:
-            sked_result = PushResultDetail(ok=False, detail=str(exc))
+            sked_result = PushResultDetail(ok=False, detail=f"sked could not sync the month from the sheet: {exc}")
 
     return PushToMasterSheetResponse(sheet=sheet_result, sked=sked_result, spreadsheet_url=spreadsheet_url)
+
+
+def _describe_sked_sync(outcome: dict) -> PushResultDetail:
+    """One line for the push dialog from sked's SyncOutcome (see sked's sheetSync.ts)."""
+    status = outcome.get("status")
+    unresolved = outcome.get("unresolved") or []
+    if status == "ok":
+        text = (f"Calendars republished from the sheet: {outcome.get('shifts', 0)} shifts, "
+                f"{outcome.get('onCalls', 0)} on-calls, {outcome.get('learnerSlots', 0)} with learners.")
+        if outcome.get("periodCreated"):
+            text += " (sked period created)"
+        if unresolved:
+            text += f" Names on the sheet sked could not match (skipped): {', '.join(unresolved)}."
+        return PushResultDetail(ok=not unresolved, detail=text)
+    return PushResultDetail(ok=False, detail=str(outcome.get("message") or f"sked sync status {status!r}"))
 
 
 @app.get("/api/google-sheets/load-schedule", response_model=ScheduleResponse)

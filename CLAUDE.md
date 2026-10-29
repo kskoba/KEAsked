@@ -19,14 +19,12 @@ next month; Oct 2026 through Jan 2027 synced from the official sheets
 (the test months are gone from sked). `google_sheets.yaml` now points at
 the official folder (view-only for the scheduling mailbox, so Push to
 Master Sheet cannot write there yet). KEAsked pushes its alias table to sked on every roster
-save (`_push_physician_aliases`). Remaining: (1) `send_email` binding in
-sked's wrangler.jsonc once the user has Email Routing on keatools.org
-verified for the scheduler's address (code in `sked/src/lib/email.ts` is ready,
-binding name `EMAIL`); (2) Push to Master Sheet should call
-`sked_client.request_sheet_sync` after writing the sheet instead of
-pushing assignments itself; (3) either get the official folder shared with the
-scheduling mailbox as Editor, or finish (2) so the push no longer needs to
-write there. Backend on this machine
+save (`_push_physician_aliases`). Done since: Email Routing + `send_email` binding live (reports only on
+problems); cron covers the current month and every later month with a
+sheet; Push to Master Sheet writes the sheet then asks sked to sync
+(`_describe_sked_sync`, `test_push_asks_sked_to_sync.py`). Remaining: the
+official folder is view-only for the scheduling mailbox, so the push
+cannot write there until the owner shares the folder as Editor. Backend on this machine
 needs `kea backend` for the alias push + shortcut lookup (clears the
 loaded month -- ask first).
 

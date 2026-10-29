@@ -106,9 +106,12 @@ Consequences, i.e. where to look first when something "stops working":
   only in the sync log / Worker logs. **Update:** Email Routing is enabled
   and the `send_email` binding (`EMAIL`, unrestricted) is live; a report
   goes out only when a month errors or has unmatched names.
-- Not done yet: Push to Master Sheet still pushes assignments to sked
-  itself rather than asking sked to sync (and cannot write to the official
-  folder, see above); the `send_email` binding.
+- Push to Master Sheet (2026-10-28, late): writes the sheet, then calls
+  `sked_client.request_sheet_sync` so sked re-reads that month from the
+  sheet; it no longer pushes assignments to sked itself, and skips the
+  sked step when the sheet write failed. Still blocked by the view-only
+  share on the official folder: the owner must share the folder (not the
+  shortcuts) with the scheduling mailbox as Editor.
 
 ## Decisions (2026-10-28): sked reads the sheet daily and republishes (option B)
 

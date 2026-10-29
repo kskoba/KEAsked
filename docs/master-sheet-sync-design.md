@@ -67,9 +67,11 @@ Consequences, i.e. where to look first when something "stops working":
   themselves (the files are owned by the department's sheet owner, not the scheduling mailbox), so
   `find_month_file_id` now also matches shortcuts and returns the target
   spreadsheet id. Both readers (Python, TS) handle this. KEAsked's
-  `drive_folder_id` still points at the Test Schedules folder while the
-  push is being tested; the push cannot write to the official folder
-  anyway (view-only share).
+  `drive_folder_id` now points at the official folder too (2026-10-28,
+  late): the match light and loads read the department's real sheets.
+  The scheduling mailbox only has view access there, so **Push to Master
+  Sheet cannot write to it** until the folder is shared with that mailbox
+  as Editor -- or until the push is reworked to ask sked to sync.
 - **sked Worker sync is live** (sked `src/lib/sheetSync.ts`,
   `sheetReader.ts` = TS port of `sheets_schedule_reader`, `googleAuth.ts`
   = service-account JWT via WebCrypto, `scheduleStore.ts` = the one
@@ -82,10 +84,8 @@ Consequences, i.e. where to look first when something "stops working":
 - Verified: the TS reader produced **identical rows** to the Python reader
   for Oct/Nov/Dec 2026 and Jan 2027 from the official folder
   (`sked/scripts/sheet-sync-check.ts` vs `KEAsked/tools/dump_sheet_rows.py`).
-  Oct/Nov/Dec were then synced live (705/701/704 rows). January was NOT
-  synced: sked's 2027-01 period holds KEAsked's generated test schedule
-  (685 rows) while the official sheet has the department's own January
-  (684 rows); the cron only touches January from December onward.
+  Oct/Nov/Dec/Jan were then synced live (705/701/704/684 rows); January
+  replaced KEAsked's generated test month that had been pushed to sked.
 - Routes: `PUT /api/admin/physician-aliases` (KEAsked pushes
   `build_alias_index` + display names on every roster save, and sked
   refuses an empty table), `POST /api/admin/sheet-sync {year, month,
@@ -101,8 +101,8 @@ Consequences, i.e. where to look first when something "stops working":
   keatools.org still being enabled by the user). Until then problems are
   only in the sync log / Worker logs.
 - Not done yet: Push to Master Sheet still pushes assignments to sked
-  itself rather than asking sked to sync; the `send_email` binding;
-  switching KEAsked's `drive_folder_id` to the official folder.
+  itself rather than asking sked to sync (and cannot write to the official
+  folder, see above); the `send_email` binding.
 
 ## Decisions (2026-10-28): sked reads the sheet daily and republishes (option B)
 

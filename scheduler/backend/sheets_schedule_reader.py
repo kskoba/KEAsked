@@ -405,7 +405,9 @@ def parse_schedule_grid(
             for c, d in col_to_date.items():
                 cell_val = cell(site_row, c)
                 name = str(cell_val).strip() if cell_val is not None else ""
-                if not name or name in ("---", "None"):
+                # blank, "---", "None", or any letter-less placeholder ("—-" on
+                # the real October 2026 sheet) is an empty cell, not a name
+                if not name or name == "None" or not any(ch.isalpha() for ch in name):
                     if time_code is not None and _in_month(d):
                         shift_code = f"{time_code} {site_code}"
                         shift = SHIFT_CODE_LOOKUP.get(shift_code)

@@ -1,0 +1,755 @@
+<title>KEAsked Rulebook</title>
+<style>
+/* Layout concept: a protocol binder -- sticky category chips up top for
+   quick jump-to-section, dense rule cards below, color-coded by weight
+   tier rather than by section, with hard rules marked by a separate
+   hazard-amber accent instead of the tier ramp. */
+:root{
+  --bg:#eef2f3;
+  --surface:#ffffff;
+  --surface-2:#e4eaec;
+  --border:#c9d3d6;
+  --ink:#16232b;
+  --ink-soft:#50626c;
+  --ink-faint:#7c8c94;
+  --accent:#0e6e66;
+  --accent-ink:#ffffff;
+  --hard:#8a5a17;
+  --hard-bg:#f7ead2;
+  --hard-ink:#5c3b0f;
+  --tier-critical:#0b4a43;
+  --tier-veryhigh:#1f7f74;
+  --tier-high:#4ea196;
+  --tier-medium:#8fcccc;
+  --tier-low:#c7e4e2;
+  --tier-ink-light:#ffffff;
+  --tier-ink-dark:#0b4a43;
+  --note-bg:#fdf3e4;
+  --note-border:#e3c488;
+  --note-ink:#6b4a12;
+  --shadow: 0 1px 2px rgba(22,35,43,0.06), 0 4px 14px rgba(22,35,43,0.05);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#111a1f;
+    --surface:#17222a;
+    --surface-2:#1d2a32;
+    --border:#2b3b44;
+    --ink:#e8eef0;
+    --ink-soft:#a7b7bd;
+    --ink-faint:#7c8c94;
+    --accent:#48c7ba;
+    --accent-ink:#06211d;
+    --hard:#e0a850;
+    --hard-bg:#3a2d16;
+    --hard-ink:#f3d9a6;
+    --tier-critical:#0e4a44;
+    --tier-veryhigh:#1c6b62;
+    --tier-high:#2f8a7e;
+    --tier-medium:#3f6e6c;
+    --tier-low:#2a4448;
+    --tier-ink-light:#eafaf7;
+    --tier-ink-dark:#eafaf7;
+    --note-bg:#2c2415;
+    --note-border:#5c4a22;
+    --note-ink:#e8cf93;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 6px 20px rgba(0,0,0,0.35);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#111a1f;
+  --surface:#17222a;
+  --surface-2:#1d2a32;
+  --border:#2b3b44;
+  --ink:#e8eef0;
+  --ink-soft:#a7b7bd;
+  --ink-faint:#7c8c94;
+  --accent:#48c7ba;
+  --accent-ink:#06211d;
+  --hard:#e0a850;
+  --hard-bg:#3a2d16;
+  --hard-ink:#f3d9a6;
+  --tier-critical:#0e4a44;
+  --tier-veryhigh:#1c6b62;
+  --tier-high:#2f8a7e;
+  --tier-medium:#3f6e6c;
+  --tier-low:#2a4448;
+  --tier-ink-light:#eafaf7;
+  --tier-ink-dark:#eafaf7;
+  --note-bg:#2c2415;
+  --note-border:#5c4a22;
+  --note-ink:#e8cf93;
+  --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 6px 20px rgba(0,0,0,0.35);
+  color-scheme: dark;
+}
+
+*{box-sizing:border-box;}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--ink);
+  font-family:"IBM Plex Sans",-apple-system,"Segoe UI",sans-serif;
+  padding-inline:16px;
+  padding-block:0 32px;
+}
+h1,h2,h3{
+  font-family:"Archivo","IBM Plex Sans",sans-serif;
+  text-wrap:balance;
+  margin:0;
+}
+code,.mono,.tag,.weightnum{
+  font-family:"IBM Plex Mono",monospace;
+}
+a{color:var(--accent);}
+
+.wrap{max-width:980px;margin:0 auto;}
+
+/* ---------- Header ---------- */
+header.page{
+  padding-block:36px 20px;
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+}
+.eyebrow{
+  font-family:"IBM Plex Mono",monospace;
+  font-size:0.72rem;
+  letter-spacing:0.12em;
+  text-transform:uppercase;
+  color:var(--accent);
+  font-weight:600;
+}
+header.page h1{
+  font-size:clamp(1.8rem,4vw,2.6rem);
+  font-weight:700;
+  color:var(--ink);
+}
+header.page p.lede{
+  font-size:1.02rem;
+  color:var(--ink-soft);
+  max-width:640px;
+  line-height:1.55;
+  margin:0;
+}
+
+/* ---------- Legend ---------- */
+.legend{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:14px;
+  padding:20px 22px;
+  box-shadow:var(--shadow);
+  display:flex;
+  flex-direction:column;
+  gap:16px;
+  margin-bottom:28px;
+}
+.legend-row{display:flex;flex-wrap:wrap;gap:22px;}
+.legend-col{flex:1 1 260px;min-width:0;}
+.legend-col h3{font-size:0.95rem;margin-bottom:8px;}
+.legend-col p{margin:0;font-size:0.88rem;color:var(--ink-soft);line-height:1.5;}
+.pill{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  border-radius:999px;
+  padding:3px 10px;
+  font-size:0.72rem;
+  font-weight:700;
+  letter-spacing:0.03em;
+  text-transform:uppercase;
+  white-space:nowrap;
+}
+.pill.hard{background:var(--hard-bg);color:var(--hard-ink);}
+.pill.soft{background:var(--surface-2);color:var(--ink-soft);}
+.tierscale{display:flex;flex-direction:column;gap:6px;margin-top:4px;}
+.tierbar-row{display:flex;align-items:center;gap:10px;font-size:0.78rem;}
+.tierbar-row .label{width:92px;flex:none;font-weight:600;color:var(--ink);}
+.tierbar-row .range{width:84px;flex:none;color:var(--ink-faint);font-family:"IBM Plex Mono",monospace;font-size:0.72rem;}
+.tierbar{height:9px;border-radius:5px;flex:1;min-width:30px;}
+.tierbar.critical{background:var(--tier-critical);width:100%;}
+.tierbar.veryhigh{background:var(--tier-veryhigh);width:78%;}
+.tierbar.high{background:var(--tier-high);width:56%;}
+.tierbar.medium{background:var(--tier-medium);width:34%;}
+.tierbar.low{background:var(--tier-low);width:16%;}
+
+/* ---------- Sticky nav ---------- */
+nav.catnav{
+  position:sticky;
+  top:env(safe-area-inset-top,0px);
+  z-index:5;
+  background:var(--bg);
+  padding-block:10px;
+  margin-inline:-16px;
+  padding-inline:16px;
+  border-bottom:1px solid var(--border);
+  margin-bottom:24px;
+}
+nav.catnav .scroller{
+  display:flex;
+  gap:8px;
+  overflow-x:auto;
+  scrollbar-width:none;
+  max-width:948px;
+  margin:0 auto;
+}
+nav.catnav .scroller::-webkit-scrollbar{display:none;}
+nav.catnav a{
+  flex:none;
+  display:inline-block;
+  padding:7px 13px;
+  border-radius:999px;
+  background:var(--surface);
+  border:1px solid var(--border);
+  color:var(--ink-soft);
+  font-size:0.8rem;
+  font-weight:600;
+  text-decoration:none;
+  white-space:nowrap;
+}
+nav.catnav a:hover{border-color:var(--accent);color:var(--accent);}
+
+/* ---------- Sections ---------- */
+section.cat{margin-bottom:40px;scroll-margin-top:60px;}
+.cat-head{
+  display:flex;
+  align-items:baseline;
+  gap:12px;
+  margin-bottom:6px;
+  flex-wrap:wrap;
+}
+.cat-head h2{font-size:1.35rem;}
+.cat-head .count{
+  font-family:"IBM Plex Mono",monospace;
+  font-size:0.75rem;
+  color:var(--ink-faint);
+}
+.cat-intro{color:var(--ink-soft);font-size:0.92rem;line-height:1.55;max-width:680px;margin-bottom:18px;}
+
+.cards{
+  display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(290px,1fr));
+  gap:14px;
+}
+.card{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:12px;
+  padding:16px 17px;
+  box-shadow:var(--shadow);
+  display:flex;
+  flex-direction:column;
+  gap:9px;
+  min-width:0;
+}
+.card .top{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;}
+.card h3{font-size:0.98rem;line-height:1.3;}
+.card .code{
+  font-family:"IBM Plex Mono",monospace;
+  font-size:0.68rem;
+  color:var(--ink-faint);
+  display:block;
+  margin-bottom:2px;
+}
+.card p{margin:0;font-size:0.86rem;color:var(--ink-soft);line-height:1.5;}
+.card .weight{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  margin-top:2px;
+}
+.card .weight .tierbar{height:7px;}
+.card .weight .weightnum{font-size:0.7rem;color:var(--ink-faint);}
+.card .meta{
+  display:flex;
+  flex-wrap:wrap;
+  gap:6px;
+  margin-top:auto;
+  padding-top:8px;
+  border-top:1px solid var(--border);
+}
+.meta-tag{
+  font-size:0.68rem;
+  color:var(--ink-faint);
+  background:var(--surface-2);
+  border-radius:6px;
+  padding:3px 7px;
+}
+
+/* ---------- Flag reference list ---------- */
+.flaglist{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:12px;
+  box-shadow:var(--shadow);
+  overflow:hidden;
+}
+.flagrow{
+  display:grid;
+  grid-template-columns:200px 1fr;
+  gap:14px;
+  padding:13px 18px;
+  border-bottom:1px solid var(--border);
+  align-items:baseline;
+}
+.flagrow:last-child{border-bottom:none;}
+.flagrow .flagname{
+  font-family:"IBM Plex Mono",monospace;
+  font-size:0.78rem;
+  color:var(--accent);
+  font-weight:600;
+}
+.flagrow p{margin:0;font-size:0.86rem;color:var(--ink-soft);line-height:1.5;}
+@media (max-width:620px){
+  .flagrow{grid-template-columns:1fr;gap:4px;}
+}
+
+/* ---------- Note / callout boxes ---------- */
+.callout{
+  background:var(--note-bg);
+  border:1px solid var(--note-border);
+  border-radius:12px;
+  padding:16px 18px;
+  margin-bottom:16px;
+}
+.callout h3{font-size:0.95rem;color:var(--note-ink);margin-bottom:6px;}
+.callout p{margin:0 0 8px 0;font-size:0.86rem;color:var(--note-ink);line-height:1.55;}
+.callout p:last-child{margin-bottom:0;}
+.callout ul{margin:6px 0 0 0;padding-left:20px;}
+.callout li{font-size:0.86rem;color:var(--note-ink);line-height:1.6;}
+
+footer.page{
+  margin-top:40px;
+  padding-top:18px;
+  border-top:1px solid var(--border);
+  color:var(--ink-faint);
+  font-size:0.78rem;
+}
+</style>
+
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+
+<div class="wrap">
+
+<header class="page">
+  <span class="eyebrow">KEAsked &middot; Scheduler Rulebook</span>
+  <h1>Every rule the scheduler follows</h1>
+  <p class="lede">A plain-English map of everything the CP-SAT solver considers when it builds a month's schedule &mdash; what it will <em>never</em> break, what it balances against everything else, and which per-physician flags change its behaviour. For physicians and schedulers, not programmers.</p>
+</header>
+
+<div class="legend">
+  <div class="legend-row">
+    <div class="legend-col">
+      <h3><span class="pill hard">Hard rule</span></h3>
+      <p>Never violated. The solver would rather leave a shift completely unfilled than break one of these &mdash; they define what a <em>legal</em> schedule even is.</p>
+    </div>
+    <div class="legend-col">
+      <h3><span class="pill soft">Soft rule</span></h3>
+      <p>A preference, not a law. The solver weighs it against every other soft rule and generally honours it &mdash; but will trade it away under enough pressure from more important things.</p>
+    </div>
+  </div>
+  <div class="legend-row">
+    <div class="legend-col" style="flex:1 1 100%;">
+      <h3>Soft-rule priority scale</h3>
+      <p style="margin-bottom:10px;">Every soft rule below is tagged with one of these five tiers, based on its actual weight in the solver's scoring. Higher tiers almost always win when two soft rules conflict.</p>
+      <div class="tierscale">
+        <div class="tierbar-row"><span class="label">Critical</span><span class="range">1000+</span><div class="tierbar critical"></div></div>
+        <div class="tierbar-row"><span class="label">Very High</span><span class="range">250&ndash;999</span><div class="tierbar veryhigh"></div></div>
+        <div class="tierbar-row"><span class="label">High</span><span class="range">60&ndash;249</span><div class="tierbar high"></div></div>
+        <div class="tierbar-row"><span class="label">Medium</span><span class="range">15&ndash;59</span><div class="tierbar medium"></div></div>
+        <div class="tierbar-row"><span class="label">Low</span><span class="range">1&ndash;14</span><div class="tierbar low"></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<nav class="catnav">
+  <div class="scroller">
+    <a href="#coverage">Coverage basics</a>
+    <a href="#workload">Workload limits</a>
+    <a href="#rest">Rest &amp; safety</a>
+    <a href="#anchor">Anchor shifts</a>
+    <a href="#fairness">Fairness &amp; requests</a>
+    <a href="#variety">Site &amp; variety</a>
+    <a href="#pairs">Named-pair rules</a>
+    <a href="#validation">Submission validation</a>
+    <a href="#flags">Per-physician flags</a>
+    <a href="#recent">Recent changes</a>
+  </div>
+</nav>
+
+<!-- ======================= COVERAGE ======================= -->
+<section class="cat" id="coverage">
+  <div class="cat-head"><h2>Coverage &amp; assignment basics</h2><span class="count">4 rules</span></div>
+  <p class="cat-intro">The foundation every schedule sits on: who can be where, and when.</p>
+  <div class="cards">
+    <div class="card">
+      <div class="top"><div><span class="code">HC-1</span><h3>One physician per slot</h3></div><span class="pill hard">Hard</span></div>
+      <p>Exactly one person can hold any given shift slot on any given day. Two physicians can never be double-booked into the same slot.</p>
+    </div>
+    <div class="card">
+      <div class="top"><div><span class="code">HC-2</span><h3>One shift per physician per day</h3></div><span class="pill hard">Hard</span></div>
+      <p>No physician works more than one shift in a single day, no matter how many they're available for.</p>
+    </div>
+    <div class="card">
+      <div class="top"><div><span class="code">HC-3 &ndash; HC-6</span><h3>Only where you said you're available</h3></div><span class="pill hard">Hard</span></div>
+      <p>A physician is only ever assigned to a day, time block, and site they actually marked as available in their monthly submission. A stray checked box on a day you didn't mark as a working day doesn't count as an offer to work it.</p>
+    </div>
+    <div class="card">
+      <div class="top"><div><span class="code">HC-7</span><h3>Your monthly shift cap</h3></div><span class="pill hard">Hard</span></div>
+      <p>Nobody is ever scheduled past their own maximum shift count for the month. Casual physicians are capped at exactly their requested count, never their max &mdash; see Fairness below for why.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= WORKLOAD ======================= -->
+<section class="cat" id="workload">
+  <div class="cat-head"><h2>Workload limits</h2><span class="count">5 rules</span></div>
+  <p class="cat-intro">How much, and how often, one physician can be stacked up in a row.</p>
+  <div class="cards">
+    <div class="card">
+      <div class="top"><div><span class="code">HC-8</span><h3>Consecutive-day cap (SIAR)</h3></div><span class="pill hard">Hard</span></div>
+      <p>Across any run of days, a physician never works more than their own personal maximum-consecutive-shifts setting (3 by default, higher for some physicians). This carries across a month boundary too &mdash; day 1 of a new month knows what you worked on the last days of the previous one.</p>
+    </div>
+    <div class="card">
+      <div class="top"><div><span class="code">HC-13</span><h3>Consecutive-night cap (NIAR)</h3></div><span class="pill hard">Hard</span></div>
+      <p>The same idea, specifically for 2400h night shifts: nobody works more nights in a row than their own max-consecutive-nights setting. Also carries across month boundaries.</p>
+    </div>
+    <div class="card">
+      <div class="top"><div><span class="code">HC-12</span><h3>1800h-shift run limit</h3></div><span class="pill hard">Hard</span></div>
+      <p>For physicians with a lowered personal limit, no more than a set number of 1800h shifts in a row (default allows an effectively unlimited run; only a handful of physicians have a real cap set).</p>
+    </div>
+    <div class="card">
+      <div class="top"><div><span class="code">HC-12c</span><h3>Same-site run limit</h3></div><span class="pill hard">Hard</span></div>
+      <p>"No two Intake shifts in a row," generalized: a physician with this limit set can't work more than N consecutive days at the one site, whichever site it is.</p>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>4-in-a-row discouraged</h3></div><span class="pill soft">Soft</span></div>
+      <p>Working 4 days straight is legal for anyone whose personal cap allows it &mdash; but the solver still mildly discourages it as a last resort, for anyone it's allowed for at all.</p>
+      <div class="weight"><div class="tierbar medium" style="width:40%"></div><span class="weightnum">weight 35 &middot; Medium</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= REST & SAFETY ======================= -->
+<section class="cat" id="rest">
+  <div class="cat-head"><h2>Rest &amp; safety</h2><span class="count">8 rules</span></div>
+  <p class="cat-intro">Minimum recovery time between shifts, and protection against exhausting back-to-back patterns.</p>
+  <div class="cards">
+    <div class="card">
+      <div class="top"><div><span class="code">HC-9</span><h3>23-hour minimum rest</h3></div><span class="pill hard">Hard</span></div>
+      <p>At least 23 hours must separate the start times of any two of your shifts on consecutive days. If the gap would be shorter, one of the two shifts simply can't be assigned to you.</p>
+    </div>
+    <div class="card">
+      <div class="top"><div><span class="code">HC-9</span><h3>Extended rest after a late shift</h3></div><span class="pill hard">Hard</span></div>
+      <p>A shift starting at 2000h or later (including 2400h nights) blocks the entire following day outright, and still requires a noon-or-later start the day after <em>that</em> &mdash; unless the day in between is itself part of the same continuing night run.</p>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Avoid a jarring time-of-day swing</h3></div><span class="pill soft">Soft</span></div>
+      <p>Even when the rest gap is technically fine, the solver discourages a big jump in start time between two consecutive working days &mdash; say, 0600h one day and 1800h the next &mdash; since that's disruptive in a way the pure rest-hours check doesn't capture.</p>
+      <div class="weight"><div class="tierbar medium" style="width:40%"></div><span class="weightnum">weight 35 &middot; Medium</span></div>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Avoid an unusually long gap</h3></div><span class="pill soft">Soft</span></div>
+      <p>A gap of more than 36 hours between two shifts (e.g. a 0600h shift followed by a 2400h the next night) is technically allowed, but strongly discouraged &mdash; the solver only accepts it when nothing better is available.</p>
+      <div class="weight"><div class="tierbar veryhigh" style="width:78%"></div><span class="weightnum">weight 300 &middot; Very High</span></div>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Mandatory day off after a late shift</h3></div><span class="pill hard">Hard</span></div>
+      <p>For physicians with the "late-shift rest privilege" flag set, any 1600h, 1800h, or 2000h shift forces the entire next day off, no exceptions.</p>
+      <div class="weight"></div>
+      <div class="card-footer"></div>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Post-block cool-down</h3></div><span class="pill hard">Hard</span></div>
+      <p>For physicians with this flag set, finishing a work stretch of a certain minimum length triggers a fixed number of fully protected days off afterward before they can be scheduled again &mdash; the single most-requested new rule from the last preferences survey ("48 hours off after nights is essential").</p>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>No isolated 2400h nights</h3></div><span class="pill hard">Hard</span></div>
+      <p>Unless a physician specifically prefers isolated nights (see Flags), every 2400h shift must have an adjacent-day 2400h shift next to it &mdash; a lone midnight shift surrounded by days off isn't allowed. This is also what makes "every night worked is part of a run of 2+" happen automatically.</p>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Never night / day-off / night</h3></div><span class="pill hard">Hard</span></div>
+      <p>For every physician, including those who prefer isolated nights: two 2400h shifts with exactly one empty day between them is never allowed. A single isolated night is fine for them; a "night, gap, night" pattern is not, for anyone.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= ANCHOR ======================= -->
+<section class="cat" id="anchor">
+  <div class="cat-head"><h2>Anchor shifts (0600h &amp; 2400h)</h2><span class="count">5 rules</span></div>
+  <p class="cat-intro">Early starts and midnight shifts get their own layer of rules, since they're the least popular and hardest to staff fairly.</p>
+  <div class="cards">
+    <div class="card">
+      <div class="top"><div><h3>Honour your own anchor request</h3></div><span class="pill soft">Soft</span></div>
+      <p>If you specifically said how many 0600h or 2400h shifts you want, the solver actively tries to give you that many of <em>that specific type</em> &mdash; not just count toward your total shift number some other way.</p>
+      <div class="weight"><div class="tierbar high" style="width:56%"></div><span class="weightnum">weight 90 &middot; High</span></div>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Don't go far over your anchor request</h3></div><span class="pill soft">Soft</span></div>
+      <p>Your count of each anchor type is capped at your request plus a small tolerance (1, by default). Going even that far over carries a real cost, so it only happens when nothing else can fill the slot &mdash; and when someone has to absorb overage, whoever's own numbers lean that direction absorbs it first.</p>
+      <div class="weight"><div class="tierbar veryhigh" style="width:78%"></div><span class="weightnum">weight 500 (150 if it's your stated direction) &middot; Very High</span></div>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Fallback night-shift ceiling</h3></div><span class="pill soft">Soft</span></div>
+      <p>If you never stated a 2400h preference at all (not even a zero), the solver still keeps you under a flat fallback ceiling &mdash; night-shift burden is a fairness concern serious enough not to leave completely open on a blank field. No equivalent ceiling exists for 0600h, since early starts don't carry the same wellbeing concern.</p>
+      <div class="meta"><span class="meta-tag">Configurable &middot; scheduler_config.yaml</span></div>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Nobody who asked is left at zero</h3></div><span class="pill soft">Soft</span></div>
+      <p>If you explicitly requested some 0600h or 2400h shifts, the solver guarantees &mdash; as close to a hard rule as a soft preference gets &mdash; that you're not left with none of that type while someone who never asked gets some, as long as it's genuinely achievable.</p>
+      <div class="meta"><span class="meta-tag">Guaranteed order, not a plain weight</span></div>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Minimum anchor floor for 0/0 requests</h3></div><span class="pill soft">Soft</span></div>
+      <p><strong>New.</strong> If you explicitly say you want zero 0600h <em>and</em> zero 2400h shifts, the solver still nudges you toward at least 1 anchor shift (2 if you're requesting 10 or more shifts overall) &mdash; so anchor coverage doesn't fall entirely on whoever happened to ask for it. Never forced if you genuinely have no anchor-type availability that month.</p>
+      <div class="weight"><div class="tierbar veryhigh" style="width:78%"></div><span class="weightnum">weight 400 &middot; Very High</span></div>
+      <div class="meta"><span class="meta-tag">Not yet validated on a real multi-physician solve</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= FAIRNESS ======================= -->
+<section class="cat" id="fairness">
+  <div class="cat-head"><h2>Fairness &amp; honouring requests</h2><span class="count">9 rules</span></div>
+  <p class="cat-intro">Making sure everyone gets close to what they asked for, and that nobody's request structurally crowds out someone else's.</p>
+  <div class="cards">
+    <div class="card">
+      <div class="top"><div><h3>Reach your requested count first</h3></div><span class="pill soft">Soft</span></div>
+      <p>Closing the first half of the gap between what you're currently scheduled and what you requested is worth more per shift than topping up the second half &mdash; so scarce slots go to closing someone's real shortfall rather than spreading thin across people who are already close to their number.</p>
+      <div class="weight"><div class="tierbar high" style="width:56%"></div><span class="weightnum">weight 100&times;priority (first half), 50&times;priority (second half) &middot; High / Medium</span></div>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Your own stated picks, elevated</h3></div><span class="pill soft">Soft</span></div>
+      <p>For physicians with "honour all requests" set, the specific date+shift you personally marked as your pick (not just anything you left available) gets a much bigger push than an ordinary available cell.</p>
+      <div class="weight"><div class="tierbar high" style="width:56%"></div><span class="weightnum">weight 150 vs 5 &middot; High / Low</span></div>
+      <div class="meta"><span class="meta-tag">Applies to: physicians with <code>honor_all_requests</code></span></div>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Seniority weighting</h3></div><span class="pill soft">Soft</span></div>
+      <p><strong>New.</strong> A physician's hire year adds a small multiplier to how much their own requested-count bonus is worth &mdash; up to 30% more pull, growing 2% per year of tenure by default. Nobody with an unrecorded hire year is penalised; the multiplier is simply 1&times; until it's set.</p>
+      <div class="meta"><span class="meta-tag">Configurable &middot; scheduler_config.yaml</span></div>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Priority weight</h3></div><span class="pill soft">Soft</span></div>
+      <p>A manual multiplier on top of (and separate from) seniority, for a physician whose requested count should carry more institutional weight than the general population. Never applies to casual physicians.</p>
+      <div class="meta"><span class="meta-tag">Configurable per physician &middot; physicians.yaml</span></div>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Casual staffing protection</h3></div><span class="pill soft">Soft</span></div>
+      <p>Every non-casual physician's own requested shift count is protected almost completely before casual physicians compete for anything &mdash; casuals then fill in only from what's left, plus a tiny sliver (at most 1 shift per non-casual physician) genuinely up for competition. Casuals can never exceed their own requested count regardless.</p>
+      <div class="meta"><span class="meta-tag">Guaranteed order, not a plain weight</span></div>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Shared-position merging</h3></div><span class="pill soft">Soft</span></div>
+      <p><strong>New.</strong> Two physicians who split a single position (e.g. P52 &amp; P53) each submit their own share of the request; the scheduler sums their shift counts, combines their marked availability, and schedules the total across the union of both &mdash; rather than silently treating one submission as the whole truth and ignoring the other.</p>
+      <div class="meta"><span class="meta-tag">Configurable per physician &middot; <code>combined_with</code></span></div>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Your maximum is never below your request</h3></div><span class="pill hard">Hard</span></div>
+      <p><strong>New.</strong> If a submission states a maximum shift count lower than its own requested count (a data-entry slip), the maximum is automatically raised to match the request &mdash; so a physician's own stated cap can never accidentally shut out their own ask.</p>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Slight incentive to fill toward your max</h3></div><span class="pill soft">Soft</span></div>
+      <p>A small, flat per-shift nudge toward using your full available range, not just your bare requested minimum, once everything more important is already satisfied.</p>
+      <div class="weight"><div class="tierbar low" style="width:16%"></div><span class="weightnum">weight 3 &middot; Low</span></div>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Hardest-to-staff shifts filled first</h3></div><span class="pill soft">Soft</span></div>
+      <p>When not every slot can be filled, the solver prioritises which ones get a person at all: 2400h nights first, then weekend shifts, then 0600h starts, ahead of an ordinary weekday daytime shift. This only decides what's left unfilled under real pressure &mdash; it doesn't change who ends up in a slot once it's going to be filled regardless.</p>
+      <div class="weight"><div class="tierbar critical" style="width:100%"></div><span class="weightnum">base 1000, +100 to +600 by category &middot; Critical</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= VARIETY ======================= -->
+<section class="cat" id="variety">
+  <div class="cat-head"><h2>Site &amp; variety rules</h2><span class="count">9 rules</span></div>
+  <p class="cat-intro">Spreading work across sites and shift times so a month doesn't flatten into the same site or the same hour, over and over.</p>
+  <div class="cards">
+    <div class="card">
+      <div class="top"><div><h3>No repeated shift code on back-to-back days</h3></div><span class="pill hard">Hard</span></div>
+      <p>The exact same time-and-site combination can never be assigned to you two days running.</p>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Acute / non-acute balance (Group A/B)</h3></div><span class="pill soft">Soft</span></div>
+      <p>Each physician's month aims for roughly 40% acute-site (RAH A/B) shifts and 60% non-acute (RAH I, NEHC, RAH F) &mdash; enforced by rewarding an A-then-B or B-then-A pattern on consecutive days and penalising two acute shifts in a row.</p>
+      <div class="weight"><div class="tierbar medium" style="width:34%"></div><span class="weightnum">+30 toward the A target, +20 alternation, &minus;40 A-then-A &middot; Medium</span></div>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Within-Group-B site preference</h3></div><span class="pill soft">Soft</span></div>
+      <p>A physician can set a standing preference for NEHC, generic RAH, or specifically RAH F side within their non-acute allocation &mdash; a gentle tie-break between otherwise-equal options.</p>
+      <div class="weight"><div class="tierbar low" style="width:16%"></div><span class="weightnum">weight 6 &middot; Low</span></div>
+      <div class="meta"><span class="meta-tag">Applies to: physicians with <code>group_b_site_preference</code></span></div>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Float-shift (RAH F) target</h3></div><span class="pill soft">Soft</span></div>
+      <p>For a physician who specifically wants RAH F ("float") shifts, a stronger targeted push toward a set monthly count &mdash; needed because only one float slot exists per day across the whole roster, so the generic tie-break above isn't assertive enough on its own.</p>
+      <div class="weight"><div class="tierbar medium" style="width:34%"></div><span class="weightnum">weight 35 &middot; Medium</span></div>
+      <div class="meta"><span class="meta-tag">Applies to: physicians with <code>float_shift_target</code></span></div>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Cluster your night shifts</h3></div><span class="pill soft">Soft</span></div>
+      <p>Two consecutive 2400h nights earn a bonus over two isolated ones &mdash; a run of nights is easier on a physician and the roster than scattered singletons.</p>
+      <div class="weight"><div class="tierbar medium" style="width:34%"></div><span class="weightnum">weight 18 &middot; Medium</span></div>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Complete your full night run</h3></div><span class="pill soft">Soft</span></div>
+      <p>For a physician who specifically wants their nights clustered into one long run rather than several short ones, a stronger bonus specifically for reaching their own full max-consecutive-nights length.</p>
+      <div class="weight"><div class="tierbar medium" style="width:34%"></div><span class="weightnum">weight 45 &middot; Medium</span></div>
+      <div class="meta"><span class="meta-tag">Applies to: physicians with <code>prefer_clustered_nights</code></span></div>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Prefer isolated nights, when asked</h3></div><span class="pill soft">Soft</span></div>
+      <p>The opposite of the above: a physician who's flagged as preferring singleton nights is exempted from the "no isolated night" hard rule, and the solver actively discourages stacking their nights consecutively.</p>
+      <div class="weight"><div class="tierbar veryhigh" style="width:78%"></div><span class="weightnum">weight 400 &middot; Very High</span></div>
+      <div class="meta"><span class="meta-tag">Applies to: physicians with <code>prefer_singleton_nights</code></span></div>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Reward consecutive working days generally</h3></div><span class="pill soft">Soft</span></div>
+      <p>Beyond nights specifically, any two consecutive worked days (of any shift type) earn a small bonus &mdash; discouraging isolated single-day assignments scattered across the month.</p>
+      <div class="weight"><div class="tierbar low" style="width:16%"></div><span class="weightnum">weight 10 &middot; Low</span></div>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Don't settle into one start time</h3></div><span class="pill soft">Soft</span></div>
+      <p>Two mechanisms stop a month from quietly becoming "the same start time, almost every shift": a same-time-two-days-running penalty, plus an overall monthly cap on how many shifts of one start time you can rack up, scaled to how much you requested overall. (2400h is excluded &mdash; nights have their own clustering logic above.)</p>
+      <div class="weight"><div class="tierbar high" style="width:56%"></div><span class="weightnum">&minus;40 repeat, &minus;60 monthly overage &middot; Medium / High</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= WEEKENDS (folded into fairness/variety nav target but own small block) ======================= -->
+<section class="cat" id="weekends-anchor" style="margin-top:-24px;">
+  <div class="cards">
+    <div class="card">
+      <div class="top"><div><h3>Weekend cap</h3></div><span class="pill soft">Soft</span></div>
+      <p>Each physician has an effective cap on how many distinct weekends they touch in a month, scaled to how much they requested. Going over is allowed under pressure but costly. A physician with "prefer weekends" set has this waived entirely.</p>
+      <div class="weight"><div class="tierbar veryhigh" style="width:78%"></div><span class="weightnum">weight 250 &middot; Very High</span></div>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Concentrate weekends, don't spread them thin</h3></div><span class="pill soft">Soft</span></div>
+      <p>For a similar total number of weekend shifts, the solver prefers piling them onto fewer distinct weekends (one solid Fri/Sat/Sun stretch) over touching many weekends lightly. Applies to everyone except physicians with "prefer weekends" set, since that flag's whole point is the opposite.</p>
+      <div class="weight"><div class="tierbar low" style="width:16%"></div><span class="weightnum">weight 15 &middot; Low</span></div>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Prefer-weekends bonus &amp; continuity</h3></div><span class="pill soft">Soft</span></div>
+      <p>A physician who wants more weekend work gets an active per-shift push toward Friday/Saturday/Sunday shifts, plus a penalty for an awkward Friday-and-Sunday-but-not-Saturday gap within one weekend.</p>
+      <div class="weight"><div class="tierbar high" style="width:56%"></div><span class="weightnum">+80 per weekend shift, &minus;220 for a Sat gap &middot; High</span></div>
+      <div class="meta"><span class="meta-tag">Applies to: physicians with <code>prefer_weekends</code></span></div>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Avoid a protected weekday</h3></div><span class="pill soft">Soft</span></div>
+      <p>A physician can mark one weekday (e.g. a standing admin day) to be avoided &mdash; a mild per-shift penalty on that day specifically. The older "avoid Mondays" flag still works as shorthand for this.</p>
+      <div class="weight"><div class="tierbar low" style="width:16%"></div><span class="weightnum">weight 5 &middot; Low</span></div>
+      <div class="meta"><span class="meta-tag">Applies to: physicians with <code>avoid_weekday</code> / <code>avoid_mondays</code></span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= NAMED PAIR RULES ======================= -->
+<section class="cat" id="pairs">
+  <div class="cat-head"><h2>Named-pair &amp; individual overrides</h2><span class="count">6 rules</span></div>
+  <p class="cat-intro">These aren't general rules &mdash; each exists for one specific physician or pair, configured by name in <code>scheduler_config.yaml</code>.</p>
+  <div class="cards">
+    <div class="card">
+      <div class="top"><div><h3>Linked-rest pairs</h3></div><span class="pill hard">Hard</span></div>
+      <p>Two physicians who split one position (P52 &amp; P53 today) are treated as a single combined timeline for rest purposes: never both scheduled the same day, the same 23-hour/36-hour/swing rules apply across their <em>combined</em> sequence, and their combined consecutive-day run is capped the same way one person's own run is.</p>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Conditional co-working</h3></div><span class="pill hard">Soft</span></div>
+      <p>A named pair (today: P27 &amp; P42) can never both work a weekend, and on a weekday where both work, exactly one of them must be on a specified shift time.</p>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Timed separation</h3></div><span class="pill hard">Hard</span></div>
+      <p>A named pair (today: P09 &amp; P29) must keep a minimum hour gap between their shift start times whenever both work the same day, extended across adjacent days too, plus specific time combinations banned outright regardless of gap.</p>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Forbidden precursor shift</h3></div><span class="pill hard">Hard</span></div>
+      <p>For a specific physician (today: P28), certain shift times the day before a 2400h night are banned outright &mdash; only an early-enough shift, or nothing at all, may come immediately before a night for them.</p>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>Night-chain ramp-in</h3></div><span class="pill soft">Soft</span></div>
+      <p>For a named physician (today: P92), starting a run of night shifts cold off a day completely off is discouraged; a smaller bonus rewards having a specific preferred shift time (e.g. 1800h) the day right before a night run begins.</p>
+      <div class="weight"><div class="tierbar medium" style="width:34%"></div><span class="weightnum">&minus;30 cold start, +15 preferred lead-in &middot; Medium / Low</span></div>
+    </div>
+    <div class="card">
+      <div class="top"><div><h3>On-call placement preference</h3></div><span class="pill soft">Soft</span></div>
+      <p>A physician can set whether their on-call (day/night-call) assignments should land right after their own last regular shift, specifically before an evening shift the next day, or kept apart from their own shifts entirely. Handled by a separate on-call assignment step, not the main shift solve.</p>
+      <div class="meta"><span class="meta-tag">Applies to: physicians with <code>call_linkage</code> set</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= VALIDATION ======================= -->
+<section class="cat" id="validation">
+  <div class="cat-head"><h2>Submission validation</h2><span class="count">4 checks</span></div>
+  <p class="cat-intro">These run <em>before</em> scheduling, on each physician's monthly submission &mdash; they check whether a request is even complete enough to schedule, and have nothing to do with how the solver actually assigns shifts.</p>
+  <div class="flaglist">
+    <div class="flagrow"><span class="flagname">min_valid_days</span><p>At least 1.5 available days marked for every shift requested &mdash; a request for 10 shifts needs at least 15 days on offer.</p></div>
+    <div class="flagrow"><span class="flagname">min_valid_blocks</span><p>At least 4 available time blocks in total for every shift requested.</p></div>
+    <div class="flagrow"><span class="flagname">min_weekend_days</span><p>At least 0.6 available weekend days for every shift requested.</p></div>
+    <div class="flagrow"><span class="flagname">min_anchored_days</span><p>At least 0.5 available early/late ("anchored") days for every shift requested.</p></div>
+  </div>
+  <p class="cat-intro" style="margin-top:14px;">Each of the four can be individually lowered or switched off per physician via a <code>rule_overrides</code> entry in physicians.yaml, and physicians flagged <code>special_provisions</code> or <code>casual</code> have validation failures auto-resolved every month rather than needing a human to click through them &mdash; the underlying issue still shows in the Validate page's detail view, just already marked resolved.</p>
+</section>
+
+<!-- ======================= FLAGS ======================= -->
+<section class="cat" id="flags">
+  <div class="cat-head"><h2>Per-physician flags, in full</h2><span class="count">24 flags</span></div>
+  <p class="cat-intro">Every standing override available in a physician's roster entry, in one place. Most physicians have none of these set and simply run on the defaults above.</p>
+  <div class="flaglist">
+    <div class="flagrow"><span class="flagname">forbidden_sites</span><p>Sites this physician can never be assigned to. Hard.</p></div>
+    <div class="flagrow"><span class="flagname">only_2400h</span><p>Only ever assigned 2400h night shifts. Hard.</p></div>
+    <div class="flagrow"><span class="flagname">only_0600h</span><p>Only ever assigned 0600h shifts. Hard.</p></div>
+    <div class="flagrow"><span class="flagname">forbidden_shift_times</span><p>A list of specific shift start times this physician is never assigned. Hard.</p></div>
+    <div class="flagrow"><span class="flagname">no_call</span><p>Exempt from on-call (day-call/night-call) assignment entirely. Enforced in the on-call step, not the main shift solve.</p></div>
+    <div class="flagrow"><span class="flagname">cap_at_requested</span><p>Hard-caps total shifts at the requested count rather than the submitted maximum &mdash; no "going beyond what I asked for," ever.</p></div>
+    <div class="flagrow"><span class="flagname">prefer_weekends</span><p>Waives the weekend cap entirely and actively pushes weekend shifts their way (see Named-pair &amp; individual overrides above).</p></div>
+    <div class="flagrow"><span class="flagname">max_weekends</span><p>A manual, fixed weekend cap that overrides the usual proportional calculation &mdash; for a standing exception like someone who always works every weekend.</p></div>
+    <div class="flagrow"><span class="flagname">honor_all_requests</span><p>Elevates this physician's specifically-marked daily picks far above an ordinary available cell.</p></div>
+    <div class="flagrow"><span class="flagname">prefer_singleton_nights</span><p>Exempts them from the "no isolated night" rule and actively discourages stacking their nights consecutively.</p></div>
+    <div class="flagrow"><span class="flagname">prefer_clustered_nights</span><p>The opposite: rewards completing their full-length night run rather than several shorter ones.</p></div>
+    <div class="flagrow"><span class="flagname">rest_after_late_shift</span><p>Forces the entire next day off after any 1600h/1800h/2000h shift. Hard.</p></div>
+    <div class="flagrow"><span class="flagname">max_consecutive_1800h</span><p>A personal cap on consecutive 1800h shifts, when lowered below the default of 3.</p></div>
+    <div class="flagrow"><span class="flagname">post_block_rest_days / post_block_min_length</span><p>A mandatory multi-day cooldown after finishing a work stretch of a set minimum length. Hard.</p></div>
+    <div class="flagrow"><span class="flagname">max_consecutive_same_site</span><p>A personal cap on consecutive days at the one site. Hard.</p></div>
+    <div class="flagrow"><span class="flagname">avoid_weekday / avoid_mondays</span><p>A soft penalty on one protected weekday (e.g. a standing admin day).</p></div>
+    <div class="flagrow"><span class="flagname">anchor_preference</span><p>A standing override for which anchor type (0600h or 2400h) this physician absorbs overage in, when a month's own numbers don't make it obvious.</p></div>
+    <div class="flagrow"><span class="flagname">group_b_site_preference</span><p>A standing tie-break preference for NEHC, generic RAH, or RAH F specifically within the non-acute allocation.</p></div>
+    <div class="flagrow"><span class="flagname">float_shift_target</span><p>A specific monthly target count of RAH F (float) shifts the solver actively pursues.</p></div>
+    <div class="flagrow"><span class="flagname">priority_weight</span><p>A manual multiplier on how much this physician's own requested count matters, relative to everyone else.</p></div>
+    <div class="flagrow"><span class="flagname">hire_year</span><p><strong>New.</strong> Feeds the seniority multiplier &mdash; unset means no bonus at all, never treated as "hired this year."</p></div>
+    <div class="flagrow"><span class="flagname">combined_with</span><p><strong>New.</strong> Marks this submission as one half of a shared position; its numbers and availability get merged into the named target physician and it's dropped from separate scheduling.</p></div>
+    <div class="flagrow"><span class="flagname">default_shifts_requested</span><p>Overrides a month's submitted requested count with a fixed standing number &mdash; for a physician whose monthly numbers are unreliable but who should still get normal priority every month.</p></div>
+    <div class="flagrow"><span class="flagname">special_provisions / casual</span><p>Auto-resolves this physician's monthly validation failures without a human needing to click through them. <code>casual</code> additionally deprioritizes them behind every non-casual physician's own requested count (see Fairness above).</p></div>
+  </div>
+</section>
+
+<!-- ======================= RECENT ======================= -->
+<section class="cat" id="recent">
+  <div class="cat-head"><h2>Recently added or changed</h2></div>
+  <div class="callout">
+    <h3>From this session</h3>
+    <ul>
+      <li><strong>Seniority weighting</strong> &mdash; a new <code>hire_year</code> field and multiplier, composing with the existing priority weight.</li>
+      <li><strong>Shared-position merging</strong> (<code>combined_with</code>) &mdash; fixes a real case where two physicians splitting one position (P52 &amp; P53) were being scheduled as if they were entirely unrelated, each against only their own half of the real combined demand.</li>
+      <li><strong>Maximum-never-below-request floor</strong> &mdash; closes a data-entry trap where a stated maximum lower than the stated request silently shut out part of someone's own ask.</li>
+      <li><strong>0/0 anchor minimum floor</strong> &mdash; a physician who explicitly asks for zero of both anchor types still gets a soft nudge toward at least one. This is the least proven change here: a solo synthetic test needed a notably strong weight (400) before it had any effect at all, and it hasn't yet been checked against a real multi-physician solve.</li>
+    </ul>
+  </div>
+  <div class="callout">
+    <h3>Known inconsistencies worth knowing about</h3>
+    <ul>
+      <li>A handful of settings still live in <code>scheduler_config.yaml</code> &mdash; <code>same_shift_consecutive</code>, <code>run_group_mix</code>, <code>linked_pairs</code>, and the whole <code>singleton</code> block &mdash; that look configurable but are no longer read by the solver at all. The real behaviour they describe is hardcoded directly into the rules above (e.g. the same-shift-code rule and the Group A/B alternation reward); changing those YAML values today would do nothing.</li>
+      <li>The code's own internal rule numbering has a small duplicate: two unrelated hard rules are both labelled "HC-11" in the source (the anchor-shift limit, and the late-shift rest privilege). Purely a documentation slip in the code comments &mdash; it doesn't affect how either rule actually behaves.</li>
+    </ul>
+  </div>
+</section>
+
+<footer class="page">
+  Reflects the CP-SAT solver's logic as of this review. Weights and thresholds are tuned over time against real monthly solves &mdash; treat the numbers here as a snapshot, not a permanent contract.
+</footer>
+
+</div>

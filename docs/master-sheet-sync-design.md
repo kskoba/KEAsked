@@ -59,17 +59,62 @@ Consequences, i.e. where to look first when something "stops working":
    month's sheet (last week row). A January problem on day 1 is a
    December-sheet problem.
 
-## Planned: sked reads the sheet daily and republishes (option B)
+## Built 2026-10-28 (night): the official folder, and the daily sync
 
-Decisions (2026-10-28): the **sheet is the source of truth** for what
+- The department's official **"Schedules" folder is
+  (id kept out of git: `drive_folder_id` in the real `google_sheets.yaml`, and sked's `SHEETS_FOLDER_ID` secret)** (shared "anyone with the link can
+  view"). It holds one Drive **shortcut** per month, not the spreadsheets
+  themselves (the files are owned by the department's sheet owner, not the scheduling mailbox), so
+  `find_month_file_id` now also matches shortcuts and returns the target
+  spreadsheet id. Both readers (Python, TS) handle this. KEAsked's
+  `drive_folder_id` still points at the Test Schedules folder while the
+  push is being tested; the push cannot write to the official folder
+  anyway (view-only share).
+- **sked Worker sync is live** (sked `src/lib/sheetSync.ts`,
+  `sheetReader.ts` = TS port of `sheets_schedule_reader`, `googleAuth.ts`
+  = service-account JWT via WebCrypto, `scheduleStore.ts` = the one
+  replace-a-period helper shared with `PUT /api/admin/schedule`;
+  migration `0012_sheet_sync.sql`: `physician_aliases`,
+  `sheet_sync_log`). Cron `0 12 * * *` (05:00/06:00 Edmonton) syncs
+  previous/current/next month. Worker vars `SHEETS_FOLDER_ID`,
+  `SHEETS_FILE_NAME_PATTERN`, `SYNC_REPORT_TO`, `SYNC_REPORT_FROM`;
+  secret `GOOGLE_SERVICE_ACCOUNT_JSON`.
+- Verified: the TS reader produced **identical rows** to the Python reader
+  for Oct/Nov/Dec 2026 and Jan 2027 from the official folder
+  (`sked/scripts/sheet-sync-check.ts` vs `KEAsked/tools/dump_sheet_rows.py`).
+  Oct/Nov/Dec were then synced live (705/701/704 rows). January was NOT
+  synced: sked's 2027-01 period holds KEAsked's generated test schedule
+  (685 rows) while the official sheet has the department's own January
+  (684 rows); the cron only touches January from December onward.
+- Routes: `PUT /api/admin/physician-aliases` (KEAsked pushes
+  `build_alias_index` + display names on every roster save, and sked
+  refuses an empty table), `POST /api/admin/sheet-sync {year, month,
+  dryRun}`, `GET /api/admin/sheet-sync-log`. KEAsked side:
+  `sked_client.push_physician_aliases`, `sked_client.request_sheet_sync`,
+  `server._push_physician_aliases`.
+- Safety: a sheet that parses to zero slots, an empty alias table, or zero
+  resolved names → status `error`, nothing written. Dates a sheet staffs
+  are deleted from every other period when written, so the 1st of a month
+  (on the previous month's sheet) can never appear twice.
+- Email: `src/lib/email.ts` sends through a `send_email` binding when one
+  exists; the binding is **not yet in wrangler.jsonc** (Email Routing on
+  keatools.org still being enabled by the user). Until then problems are
+  only in the sync log / Worker logs.
+- Not done yet: Push to Master Sheet still pushes assignments to sked
+  itself rather than asking sked to sync; the `send_email` binding;
+  switching KEAsked's `drive_folder_id` to the official folder.
+
+## Decisions (2026-10-28): sked reads the sheet daily and republishes (option B)
+
+The **sheet is the source of truth** for what
 physicians see. sked's Cloudflare Worker, on a **daily cron**, reads the
 previous, current and next month's sheets and replaces each period's
 published assignments **and learners**; the physician scheduler sees
 nothing of this; learner schedulers only edit the sheet. Errors are
-**emailed to the scheduler's address** and kept in a sync log in sked.
+**emailed to the scheduler's address** (sked's `SYNC_REPORT_TO` secret) and kept in a sync log in sked.
 
 - Credentials: the existing service account
-  (`the service account (address in google_service_account.json)`),
+  (address in the gitignored `google_service_account.json`),
   shared on the folder as **Viewer**, its key stored as a Worker secret.
   Folder id + name pattern as Worker vars. Same by-name lookup as above,
   so the consequences above apply to the sync too.
@@ -87,8 +132,8 @@ nothing of this; learner schedulers only edit the sheet. Errors are
   colour dot, and in the .ics event description.
 - KEAsked's Push to Master Sheet will write the sheet, then ask sked to
   sync that month immediately (one code path); the match light stays.
-- Email: Cloudflare Email Routing on keatools.org with the scheduler's address
-  as a verified destination, `send_email` binding from the Worker.
+- Email: Cloudflare Email Routing on keatools.org with the scheduler's
+  address as a verified destination, `send_email` binding from the Worker.
 - Order of work: alias push → TypeScript sheet reader with a dry-run
   endpoint (check against December before anything writes) → learner
   display → cron + email.

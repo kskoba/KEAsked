@@ -682,6 +682,26 @@ def _push_physician_rules_summary(physician_id: str, cfg: PhysicianConfig, roste
         print(f"[sked sync] WARNING: could not push rules summary for {physician_id!r}: {exc}")
 
 
+def _push_physician_aliases(roster: dict) -> None:
+    """
+    Auto-sync: replace sked's physician alias table with this roster's
+    alias index on every roster save, so sked's daily master-sheet sync can
+    resolve the surnames on the department's sheet (docs/master-sheet-sync-
+    design.md). Never raises -- same contract as _push_physician_rules_summary.
+    """
+    sked_config = sked_client.load_sked_config()
+    if sked_config is None or not sked_client.is_fully_configured(sked_config):
+        return
+    try:
+        names = build_display_names(roster)
+        sked_client.push_physician_aliases(
+            sked_config, build_alias_index(roster),
+            [{"id": pid, "name": names.get(pid, pid)} for pid in sorted(roster)],
+        )
+    except Exception as exc:
+        print(f"[sked sync] WARNING: could not push physician aliases: {exc}")
+
+
 def _display_name_or_id(pid: str, display_names: dict[str, str]) -> str:
     return display_names.get(pid, pid)
 
@@ -1136,6 +1156,7 @@ def update_physician(physician_id: str, body: PhysicianUpdateRequest) -> Physici
 
     roster[physician_id] = cfg
     _push_physician_rules_summary(physician_id, cfg, roster)
+    _push_physician_aliases(roster)
 
     return _physician_to_detail(cfg)
 
@@ -1186,6 +1207,7 @@ def create_physician(body: CreatePhysicianRequest) -> PhysicianDetail:
 
     roster[new_id] = cfg
     _push_physician_rules_summary(new_id, cfg, roster)
+    _push_physician_aliases(roster)
 
     return _physician_to_detail(cfg)
 
@@ -1214,6 +1236,8 @@ def delete_physician(physician_id: str, body: RemovePhysicianRequest) -> RemoveP
         raise HTTPException(status_code=500, detail=str(exc))
 
     _state.get("roster", {}).pop(physician_id, None)
+    roster.pop(physician_id, None)
+    _push_physician_aliases(roster)
 
     return RemovePhysicianResponse(ok=True, status=f"Removed {physician_id}.")
 

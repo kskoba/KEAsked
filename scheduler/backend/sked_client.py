@@ -200,6 +200,49 @@ def push_physician_rules(config: SkedConfig, physician_id: str, items: list[str]
         raise SkedApiError(f"Could not push rules summary for {physician_id!r}: {res.text}")
 
 
+def push_physician_aliases(config: SkedConfig, aliases: dict[str, str], physicians: list[dict]) -> None:
+    """
+    Replace sked's physician alias table with this roster's alias index
+    (physician_resolver.build_alias_index: normalized name variant ->
+    physician id) plus display names. sked's daily master-sheet sync
+    resolves the surnames on the department's Google sheet through this
+    table -- it has no roster of its own. Full replace; called on every
+    roster save (see server.py's _push_physician_aliases), swallow errors
+    there like the rules-summary push.
+    """
+    with httpx.Client(timeout=30) as client:
+        res = client.put(
+            f"{config.base_url}/api/admin/physician-aliases",
+            headers=_headers(config),
+            json={"aliases": aliases, "physicians": physicians},
+        )
+    if res.status_code != 200:
+        raise SkedApiError(f"Could not push physician aliases: {res.text}")
+
+
+def request_sheet_sync(config: SkedConfig, year: int, month: int, dry_run: bool = False) -> dict:
+    """
+    Ask sked to read that month's master sheet now and republish the
+    period from it (the same code path as its daily cron). Returns sked's
+    SyncOutcome dict (status ok|skipped|error, shifts, onCalls,
+    learnerSlots, unresolved[], message, ...). A sked-reported error comes
+    back as a SkedApiError.
+    """
+    with httpx.Client(timeout=120) as client:
+        res = client.post(
+            f"{config.base_url}/api/admin/sheet-sync",
+            headers=_headers(config),
+            json={"year": year, "month": month, "dryRun": dry_run},
+        )
+    try:
+        data = res.json()
+    except ValueError:
+        data = {}
+    if res.status_code != 200:
+        raise SkedApiError(data.get("message") or data.get("error") or f"sheet sync failed: {res.text}")
+    return data
+
+
 def push_schedule(config: SkedConfig, period_id: str, assignments: list[dict],
                   physicians: list[dict] | None = None) -> None:
     """

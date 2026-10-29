@@ -1,0 +1,165 @@
+<title>Start of a New Month</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  /* Layout: one reading column; numbered stages, each a short checklist; app buttons drawn inline with the app's own icons. */
+  :root {
+    --bg: #f6f7f8;
+    --surface: #ffffff;
+    --fg: #1b2430;
+    --muted: #5b6673;
+    --line: #d9dee4;
+    --accent: #0f6e72;
+    --accent-soft: #e2f1f1;
+    --warn: #8a5a00;
+    --warn-soft: #fbf1d9;
+    --chip-bg: #1e293b;
+    --chip-fg: #ffffff;
+    --sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+    --mono: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141a20; --surface: #1c242c; --fg: #e6ebf0; --muted: #9aa6b2; --line: #2c3842;
+      --accent: #5fc3c5; --accent-soft: #163538; --warn: #e3b35a; --warn-soft: #3a2d10;
+      --chip-bg: #334155; --chip-fg: #ffffff;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141a20; --surface: #1c242c; --fg: #e6ebf0; --muted: #9aa6b2; --line: #2c3842;
+    --accent: #5fc3c5; --accent-soft: #163538; --warn: #e3b35a; --warn-soft: #3a2d10;
+    --chip-bg: #334155; --chip-fg: #ffffff;
+    color-scheme: dark;
+  }
+  body { background: var(--bg); color: var(--fg); font-family: var(--sans); line-height: 1.55; font-size: 15px; }
+  .wrap { max-width: 760px; margin: 0 auto; padding-block: 32px 64px; padding-inline: 16px; }
+  header { display: flex; flex-direction: column; gap: 6px; margin-bottom: 24px; }
+  .eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+  h1 { font-size: 30px; font-weight: 600; margin: 0; letter-spacing: -0.01em; text-wrap: balance; }
+  .lede { font-size: 17px; color: var(--muted); margin: 0; max-width: 62ch; }
+  h2 { font-size: 21px; font-weight: 600; margin: 40px 0 6px; letter-spacing: -0.01em; text-wrap: balance; display: flex; align-items: center; gap: 10px; }
+  h2 .step { font-family: var(--mono); font-size: 13px; font-weight: 500; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 2px 9px; flex-shrink: 0; }
+  h3 { font-size: 15px; font-weight: 600; margin: 18px 0 6px; }
+  p { margin: 0 0 10px; max-width: 68ch; }
+  ol, ul { margin: 0 0 12px; padding-left: 24px; max-width: 68ch; }
+  li { margin-bottom: 7px; }
+  li ul { margin-top: 6px; }
+  .goal { color: var(--muted); font-style: italic; margin-bottom: 12px; }
+  /* App-button chips: the same icon the app shows, next to the button's name */
+  .btn { display: inline-flex; align-items: center; gap: 6px; vertical-align: -3px; background: var(--chip-bg); color: var(--chip-fg); border-radius: 6px; padding: 2px 8px 2px 6px; font-size: 13px; font-weight: 500; white-space: nowrap; }
+  .btn svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
+  .btn.light { background: var(--surface); color: var(--fg); border: 1px solid var(--line); }
+  .btn.green { background: #047857; color: #fff; }
+  .btn.blue { background: #0369a1; color: #fff; }
+  .btn.red { background: #b91c1c; color: #fff; }
+  .btn.amber { background: #b45309; color: #fff; }
+  .ui { font-weight: 600; }
+  code { font-family: var(--mono); font-size: 0.92em; background: var(--accent-soft); color: var(--fg); padding: 1px 5px; border-radius: 3px; }
+  .callout { background: var(--warn-soft); border-left: 3px solid var(--warn); padding: 10px 14px; border-radius: 0 4px 4px 0; margin: 14px 0; max-width: 68ch; }
+  .callout p { margin: 0; }
+  .tip { background: var(--accent-soft); border-left: 3px solid var(--accent); padding: 10px 14px; border-radius: 0 4px 4px 0; margin: 14px 0; max-width: 68ch; }
+  .tip p { margin: 0; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 16px; padding: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+  .toolbar .btn { font-size: 13px; }
+  .table-wrap { overflow-x: auto; margin: 10px 0 14px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-weight: 600; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+  footer { margin-top: 44px; font-size: 13px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 14px; }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">KEAsked scheduler · how-to · updated 8 October 2026</div>
+    <h1>Start of a New Month</h1>
+    <p class="lede">Everything you do in the scheduler app from the moment a new month opens until the physicians' requests are in ByteBloc. Follow the stages in order.</p>
+  </header>
+
+  <p>The buttons you will use live along the top of the app. They look like this, and this page uses the same pictures whenever it tells you to click one:</p>
+  <div class="toolbar">
+    <span class="btn"><svg viewBox="0 0 24 24"><path d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>Send Monthly Shift Requests</span>
+    <span class="btn"><svg viewBox="0 0 24 24"><path d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>Physician Roster</span>
+    <span class="btn"><svg viewBox="0 0 24 24"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>Scheduling Rules</span>
+    <span class="btn"><svg viewBox="0 0 24 24"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><circle cx="12" cy="12" r="3"/></svg>Settings</span>
+  </div>
+  <p>Hovering the mouse over any button in the app shows its name, so if a picture here doesn't match what you see, hover and read the name instead.</p>
+
+  <h2><span class="step">Before you start</span> Two things to have ready</h2>
+  <ul>
+    <li><strong>This month's request template.</strong> The Excel file physicians fill in, the same "Master Preferences" workbook that has always gone out, already set up for the new month with the right dates along the top. Save it somewhere easy to find, for example a folder called <code>KEA Scheduling</code> with the month in the file name, such as <code>February 2027 Master Preferences.xlsx</code>.</li>
+    <li><strong>The app open and pointed at the right computer.</strong> Click <span class="btn"><svg viewBox="0 0 24 24"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><circle cx="12" cy="12" r="3"/></svg>Settings</span> and check the <span class="ui">Backend</span> choice. <span class="ui">Local</span> means the scheduler runs on this computer, which is what you want for the steps on this page. <span class="ui">Remote</span> is only for long schedule-building runs on the server.</li>
+  </ul>
+
+  <h2><span class="step">1</span> Check the roster</h2>
+  <p class="goal">Goal: the list of physicians the app will email and schedule is correct for this month.</p>
+  <ol>
+    <li>Click <span class="btn"><svg viewBox="0 0 24 24"><path d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>Physician Roster</span>. A window opens with every physician down the left side; click a name to see their details on the right. There is a search box at the top of the list.</li>
+    <li>For anyone who has <strong>left the department</strong>, untick <span class="ui">Active</span>. Don't remove them; inactive physicians are kept but not emailed or scheduled.</li>
+    <li>For anyone who is <strong>new</strong>, use the add button at the top of the list, fill in first and last name, and make sure <span class="ui">Active</span> is ticked.</li>
+    <li>Check each person's <span class="ui">Email</span>. This is the address the request link goes to, so a typo means they never receive it.</li>
+    <li>Tick <span class="ui">Casual</span> for casual staff. Casuals are only given shifts after everyone else has their requested number.</li>
+    <li>If a physician has an <strong>admin role</strong> and shouldn't be given early or night shifts they didn't ask for, tick <span class="ui">Admin role, exempt from mandatory anchors</span>.</li>
+    <li>Click <span class="ui">Save</span> after each person you change. A small "Saved." appears next to the button.</li>
+  </ol>
+  <div class="tip"><p>The <span class="btn light"><svg viewBox="0 0 24 24"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>Scheduling Rules</span> button shows, in plain English, every rule the scheduler applies to each physician. Useful if someone asks why they keep getting a certain pattern. It is read-only.</p></div>
+
+  <h2><span class="step">2</span> Send the monthly requests</h2>
+  <p class="goal">Goal: every active physician receives an email with their personal link to fill in their preferences online.</p>
+  <ol>
+    <li>Click <span class="btn"><svg viewBox="0 0 24 24"><path d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>Send Monthly Shift Requests</span>. A window opens.</li>
+    <li>Leave <span class="ui">Load existing period</span> on "new period". The app pre-fills the next month for you: the <span class="ui">Period ID</span> (for example <code>2027-02</code>), the <span class="ui">Label</span> physicians will see (for example <code>February 2027</code>), and the dates the submission window opens and closes. Check the month and year are the one you mean. The close date is the deadline physicians see; the 15th is the usual default and you can change it.</li>
+    <li>Next to <span class="ui">Master schedule template (.xlsx)</span>, click the browse button and pick the template file you prepared. This is the file physicians will fill in online.</li>
+    <li>If you want a note in the email, type it under <span class="ui">Additional message</span>. For example: "Please block your holiday requests before submitting."</li>
+    <li>Click <span class="btn blue">Send Monthly Shift Requests</span> at the bottom. The app asks you to confirm, then sends one email to every active physician who has an email on file. This takes a minute or two; leave the window open until it finishes.</li>
+  </ol>
+  <h3>If someone says they didn't get the email</h3>
+  <p>Open the same window, choose the month under <span class="ui">Load existing period</span>, and a list of physicians appears below the form. Find the person and click the send-again button beside their name. Only that person is emailed. First check their address in the roster, since a wrong address is the usual cause.</p>
+  <div class="callout"><p>If the window says sked or email is "not configured", the app can't send anything from this computer. That is a setup problem on the computer, not a mistake in your steps; it needs the configuration files copied over.</p></div>
+
+  <h2><span class="step">3</span> Collect the requests as they come in</h2>
+  <p class="goal">Goal: pull everyone's answers into the app and see who still hasn't submitted.</p>
+  <ol>
+    <li>On the main screen, in the <span class="ui">Schedule Setup</span> box, click <span class="btn light">From Web (sked)</span>.</li>
+    <li>Under <span class="ui">Sked Period</span>, pick the month you sent out. Check the <span class="ui">Month</span> and <span class="ui">Year</span> fields just below it say the same month. If they disagree, every date in the import will be wrong.</li>
+    <li>Click <span class="btn blue">Pull In Requests</span>. The app downloads every submitted request and checks each one against the rules.</li>
+    <li>A list titled <span class="ui">Not submitted yet</span> shows anyone who hasn't finished. "Draft" means they started but didn't press submit; "Not started" means they never opened the link. As the deadline gets close, click <span class="btn amber">Send reminder</span> beside a name to email that person a reminder with their link.</li>
+  </ol>
+  <p>You can pull in requests as many times as you like. Each pull replaces the previous one with whatever has been submitted so far, so do a final pull after the deadline.</p>
+
+  <h2><span class="step">4</span> Review and fix what was submitted</h2>
+  <p class="goal">Goal: every physician's request is marked Valid, or you have decided to accept its problems.</p>
+  <p>After a pull, the <span class="ui">Validate</span> table lists every physician with their requested number of shifts and a green <span class="ui">Valid</span> or red <span class="ui">Invalid</span> badge. Click a row to see the specific problems, for example "fewer than the minimum available days" or "no night shifts offered".</p>
+  <ol>
+    <li><strong>Look at the request itself.</strong> Beside each name is a small file icon. Clicking it opens that physician's filled-in spreadsheet in Excel, so you can see exactly what they marked. Only works when the app is set to the Local backend.</li>
+    <li><strong>Tell people what to fix.</strong> Click <span class="btn light">Generate Error Report</span>. A window lists every physician with problems and what each problem is. Beside each person is <span class="btn blue">Send Reminder Email</span>, which emails that physician their own list of problems and their link so they can correct and resubmit. Pull in requests again once they have.</li>
+    <li><strong>Accept problems you're fine with.</strong> Open a physician's row and click <span class="ui">Override</span> next to a problem to accept it, or <span class="btn light">Override All Errors</span> to accept all of theirs at once. An overridden problem is greyed out and no longer counts against them. Physicians marked "Special Provisions" in the roster are overridden automatically.</li>
+  </ol>
+  <div class="tip"><p>Aim for zero red badges before the next step, either by people resubmitting or by you overriding. The count of valid physicians is shown at the top of the table.</p></div>
+
+  <h2><span class="step">5</span> Send the availability to ByteBloc</h2>
+  <p class="goal">Goal: ByteBloc has each physician's availability, so scheduling can continue there as before.</p>
+  <ol>
+    <li>Click <span class="btn red">Send Requests to ByteBloc</span> at the top of the Validate table. A panel opens showing a <strong>preview</strong>: how many requests will be sent and for whom. Nothing has been sent yet.</li>
+    <li>Leave <span class="ui">Only send changes</span> ticked unless you have a reason not to. It sends only what is new or different since the last time, which is what you normally want.</li>
+    <li>Read the preview. If something looks wrong, close the panel and fix it in the steps above.</li>
+    <li>Type the word <code>CONFIRM</code> in capitals in the box. This is deliberate: the button stays disabled until the word is typed exactly.</li>
+    <li>Click <span class="btn red">Send to ByteBloc</span> and wait for "Sent successfully".</li>
+  </ol>
+  <div class="callout"><p><strong>ByteBloc accepts one send every 15 minutes.</strong> If you click send twice in a row, the second one is refused. Make your corrections, then send once. If you do need a second send, wait 15 minutes first.</p></div>
+  <p>From here, carry on in ByteBloc as you normally would. Building the schedule inside this app is the next phase, and it has its own instructions.</p>
+
+  <h2><span class="step">If something goes wrong</span></h2>
+  <div class="table-wrap">
+  <table>
+    <tr><th>What you see</th><th>What it usually means</th><th>What to do</th></tr>
+    <tr><td>A button is greyed out</td><td>Something it needs is missing: a template file not chosen, a month not picked, or <code>CONFIRM</code> not typed.</td><td>Hover over the button; the app explains what's missing.</td></tr>
+    <tr><td>"sked is not configured" or "Email sending is not configured"</td><td>The computer is missing its setup files.</td><td>Not fixable from the app. Use the usual computer, or ask for the configuration to be copied.</td></tr>
+    <tr><td>Everyone's request is Invalid with the same error</td><td>The wrong Month or Year was chosen when pulling in.</td><td>Correct the month and year and pull in again.</td></tr>
+    <tr><td>A physician is missing from the Validate table</td><td>They haven't submitted, or they aren't Active in the roster.</td><td>Check the Not-submitted list first, then the roster.</td></tr>
+    <tr><td>The file icon beside a name does nothing</td><td>The app is set to the Remote backend, so the files are on the server, not here.</td><td>Switch Settings to Local, or open the file from the shared folder.</td></tr>
+    <tr><td>ByteBloc send is refused</td><td>Fewer than 15 minutes since the last send.</td><td>Wait and send once.</td></tr>
+  </table>
+  </div>
+
+  <footer>Based on the department's "Start of a New Month" notes, expanded with the app's current buttons and screens. Keep this page with the other scheduler how-tos.</footer>
+</div>

@@ -1,0 +1,159 @@
+<title>Month Boundary Scheduling</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  /* Layout: one reading column, a range diagram up top, dense reference tables below. */
+  :root {
+    --bg: #f6f7f8;
+    --surface: #ffffff;
+    --fg: #1b2430;
+    --muted: #5b6673;
+    --line: #d9dee4;
+    --accent: #0f6e72;
+    --accent-soft: #e2f1f1;
+    --warn: #8a5a00;
+    --warn-soft: #fbf1d9;
+    --sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+    --mono: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141a20; --surface: #1c242c; --fg: #e6ebf0; --muted: #9aa6b2; --line: #2c3842;
+      --accent: #5fc3c5; --accent-soft: #163538; --warn: #e3b35a; --warn-soft: #3a2d10;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141a20; --surface: #1c242c; --fg: #e6ebf0; --muted: #9aa6b2; --line: #2c3842;
+    --accent: #5fc3c5; --accent-soft: #163538; --warn: #e3b35a; --warn-soft: #3a2d10;
+    color-scheme: dark;
+  }
+  body { background: var(--bg); color: var(--fg); font-family: var(--sans); line-height: 1.55; }
+  .wrap { max-width: 760px; margin: 0 auto; padding-block: 32px 64px; padding-inline: 16px; }
+  header { display: flex; flex-direction: column; gap: 6px; margin-bottom: 28px; }
+  .eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+  h1 { font-size: 30px; font-weight: 600; margin: 0; letter-spacing: -0.01em; text-wrap: balance; }
+  .lede { font-size: 17px; color: var(--muted); margin: 0; max-width: 62ch; }
+  h2 { font-size: 20px; font-weight: 600; margin: 40px 0 10px; letter-spacing: -0.01em; text-wrap: balance; }
+  p { margin: 0 0 12px; max-width: 68ch; }
+  ul, ol { margin: 0 0 12px; padding-left: 22px; max-width: 68ch; }
+  li { margin-bottom: 6px; }
+  code { font-family: var(--mono); font-size: 0.92em; background: var(--accent-soft); color: var(--fg); padding: 1px 5px; border-radius: 3px; }
+  .ranges { display: grid; gap: 10px; margin: 14px 0 6px; }
+  .range { display: grid; grid-template-columns: 92px 1fr; gap: 12px; align-items: center; }
+  .range .m { font-family: var(--mono); font-size: 13px; color: var(--muted); }
+  .bar { position: relative; height: 34px; background: var(--surface); border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+  .seg { position: absolute; top: 0; bottom: 0; display: flex; align-items: center; padding-inline: 10px; font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+  .seg.solve { background: var(--accent-soft); color: var(--fg); border-right: 2px solid var(--accent); }
+  .seg.prior { background: transparent; color: var(--muted); border-right: 1px dashed var(--line); }
+  .seg.spill { background: var(--accent); color: #fff; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .seg.spill { color: #0b1416; } }
+  :root[data-theme="dark"] .seg.spill { color: #0b1416; }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+  .legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; border: 1px solid var(--line); }
+  .legend .l-solve::before { background: var(--accent-soft); }
+  .legend .l-spill::before { background: var(--accent); }
+  .legend .l-prior::before { background: transparent; }
+  .table-wrap { overflow-x: auto; margin: 10px 0 14px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-weight: 600; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+  td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .callout { background: var(--warn-soft); border-left: 3px solid var(--warn); padding: 10px 14px; border-radius: 0 4px 4px 0; margin: 14px 0; }
+  .callout p { margin: 0; }
+  .ok { background: var(--accent-soft); border-left: 3px solid var(--accent); padding: 10px 14px; border-radius: 0 4px 4px 0; margin: 14px 0; }
+  .ok p { margin: 0; }
+  .commits { font-family: var(--mono); font-size: 13px; display: grid; gap: 6px; }
+  .commits div { display: grid; grid-template-columns: 76px 1fr; gap: 10px; }
+  .commits .h { color: var(--accent); }
+  footer { margin-top: 44px; font-size: 13px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 14px; }
+  @media (max-width: 480px) { .range { grid-template-columns: 1fr; gap: 4px; } .commits div { grid-template-columns: 1fr; gap: 0; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">KEAsked scheduler · 7 October 2026 · commit 30d4ef4</div>
+    <h1>Month Boundary Scheduling</h1>
+    <p class="lede">What was wrong with how the solver handled Dec 1 and Jan 1, what changed, and what it does now for every month of the year.</p>
+  </header>
+
+  <h2>The convention the solver now follows</h2>
+  <p>For November and December the department's request template carries the next month's first day as a trailing column, and that day is scheduled with the month whose sheet holds it. November keeps its own Nov 1 and gains Dec 1; December has no Dec 1 column and gains Jan 1; January has no Jan 1 column and runs from Jan 2. February and every other month run from the 1st to the last day as normal.</p>
+
+  <div class="legend">
+    <span class="l-solve">Days the solver schedules</span>
+    <span class="l-spill">Next month's day 1, carried by this sheet</span>
+    <span class="l-prior">Day 1, already scheduled on the previous sheet</span>
+  </div>
+  <div class="ranges">
+    <div class="range"><div class="m">November</div><div class="bar">
+      <div class="seg solve" style="left:0;width:93%">Nov 1 → Nov 30</div>
+      <div class="seg spill" style="left:93%;width:7%">Dec 1</div></div></div>
+    <div class="range"><div class="m">December</div><div class="bar">
+      <div class="seg prior" style="left:0;width:7%">Dec 1</div>
+      <div class="seg solve" style="left:7%;width:86%">Dec 2 → Dec 31</div>
+      <div class="seg spill" style="left:93%;width:7%">Jan 1</div></div></div>
+    <div class="range"><div class="m">January</div><div class="bar">
+      <div class="seg prior" style="left:0;width:7%">Jan 1</div>
+      <div class="seg solve" style="left:7%;width:93%">Jan 2 → Jan 31</div></div></div>
+    <div class="range"><div class="m">February</div><div class="bar">
+      <div class="seg solve" style="left:0;width:100%">Feb 1 → Feb 28</div></div></div>
+  </div>
+  <p>Nothing about this is hard-coded to those months. The solver looks at what the request sheets actually contain. A sheet whose date row ends with a wrapped "1" extends the schedule by that day; a sheet with no column for its own day 1 leaves that day to the previous month. A February template has a Feb 1 column and no trailing day, so February is untouched.</p>
+
+  <h2>What was wrong</h2>
+  <p>Two problems, found while checking how <code>cpsatv2-jan2</code> managed to staff Jan 1 when no January sheet offers it.</p>
+  <ol>
+    <li><strong>The importer invented Jan 1 availability.</strong> The January template's date row runs 2 to 31. For a day missing from that row, the importer fell back to a fixed column offset, and the offset for day 1 is column B, which on this template is Jan 2. All 78 January submissions came in with Jan 1 identical to Jan 2. Thirty physicians looked available on a day nobody had offered, and the solver filled all 21 slots from that. December had the mirror problem: its trailing Jan 1 column was being read as Dec 1.</li>
+    <li><strong>The solver could only work a calendar month.</strong> Even with the right availability, a December solve stopped at Dec 31. The Jan 1 preferences live only on the December sheets, so there was no way to staff Jan 1 from them.</li>
+  </ol>
+
+  <h2>What changed</h2>
+  <ol>
+    <li><strong>Importer.</strong> The date row is split into runs of increasing day numbers. The longest run is the month. A day with no column is simply not offered. A trailing run that wraps to a small number is the next month's leading day, stored on the submission as spill-over availability dated in that next month. Verified on real files: Jan 1 availability in the January folder went from 30 physicians to 0; all 74 December files carry a Jan 1 column and 45 physicians offered it.</li>
+    <li><strong>Solver range.</strong> A solve now extends past the end of its month, one contiguous day at a time, for as long as the submissions carry those days. Availability and anchor-shift accounting include them. A December solve produces Dec 2 to Jan 1 with the result still filed under December. Opt-out exists for tests.</li>
+    <li><strong>Start day.</strong> When the previous month's schedule already staffs the leading day(s) of the month being solved, the solve starts after them and treats them as already worked, so the rest and consecutive-shift rules see Jan 1 exactly as they would see Dec 31. This works whether the December schedule came from the human master sheet or from the solver.</li>
+    <li><strong>Everything downstream follows the extra day.</strong> The Excel export writes it in the last week row, the department's own layout. Re-importing that export resolves it to the right date rather than mistaking it for day 1 of the month. Loading a saved schedule shows it on the grid and lets you edit it. The master-sheet push writes it into that month's own sheet. On-call assignment covers it, and skips any leading day the solve did not schedule.</li>
+    <li><strong>Previous-month panel.</strong> When you load December as the previous month before a January solve, the panel reports "Jan 1 already staffed on this sheet (23 shifts), the next month will be solved from day 2."</li>
+  </ol>
+
+  <h2>How each month behaves now</h2>
+  <div class="table-wrap">
+  <table>
+    <tr><th>Solving</th><th>Previous month loaded</th><th>Schedule produced</th><th>Why</th></tr>
+    <tr><td>November</td><td>October</td><td class="num">Nov 1 → Dec 1</td><td>The November template has its own Nov 1 column and carries Dec 1 at the end.</td></tr>
+    <tr><td>December</td><td>November</td><td class="num">Dec 2 → Jan 1</td><td>Dec 1 is on the November sheet; the December sheets carry Jan 1.</td></tr>
+    <tr><td>January</td><td>December</td><td class="num">Jan 2 → Jan 31</td><td>Jan 1 is on the December sheet; no January sheet has a Jan 1 column.</td></tr>
+    <tr><td>January</td><td>nothing</td><td class="num">Jan 2 → Jan 31, Jan 1 left empty</td><td>Nobody offered Jan 1, so its 21 slots stay unfilled rather than being guessed.</td></tr>
+    <tr><td>February</td><td>January</td><td class="num">Feb 1 → Feb 28</td><td>The February template has a Feb 1 column and no trailing day.</td></tr>
+  </table>
+  </div>
+
+  <h2>Verification</h2>
+  <ul>
+    <li>Backend test suite: 125 tests passing. The new ones cover a December solve staffing Jan 1 only for physicians who offered it, a November solve staffing Dec 1, the opt-out, an export-then-reimport round trip that keeps Jan 1 dated in 2027, on-call on the extra day, and the start-day logic for a solver-made December.</li>
+    <li>Real data: the importer fix was checked against every January, December and November submission on this machine. November: 77 of 80 sheets label days 1 to 30 and then Dec 1; 42 physicians offer Nov 1 and 35 offer Dec 1. Last night's November solve staffed Nov 1 from those genuine Nov 1 preferences; what the old importer lost was the Dec 1 column, which the solver can now schedule.</li>
+    <li>Not yet exercised: a full real December solve on the new code. The first one is worth a look at the Jan 1 column of the export, and at Jan 2 and Jan 3 after a January solve that follows it.</li>
+  </ul>
+
+  <div class="callout">
+    <p><strong>One data issue to fix by hand.</strong> P02's November sheet records 10 requested 2400h shifts while offering nights on no days; her total probably went into the night cell. Every schedule leaves it unmet. P88's November sheet requests one 0600h but offers 0600h on no days.</p>
+  </div>
+
+  <h2>What's left for you</h2>
+  <ol>
+    <li><strong>Push from the other computer.</strong> Everything is committed locally and syncing through Dropbox. From the repo, run <code>git push origin master</code>. The branch is <code>master</code>, not <code>main</code>.</li>
+    <li><strong>Rebuild Unraid.</strong> The container was last rebuilt around mid-afternoon and has none of the evening work. After the push, rebuild per the update-unraid-backend procedure, then run the config sync so the four admin anchor exemptions and the P52-P53 (shared position) alias in physicians.yaml reach the box.</li>
+    <li><strong>First real run.</strong> Load December as the previous month in the app (sheet link plus the December requests folder), then generate January. Check the Previous-month panel says it is solving from day 2.</li>
+  </ol>
+
+  <div class="ok">
+    <p>The two commits that make up this change, newest first. Both are on your local <code>master</code> and will reach GitHub with your next push.</p>
+  </div>
+  <div class="commits">
+    <div><span class="h">30d4ef4</span><span>A month's solve schedules the next month's leading day(s) its templates carry; January is Jan 2–31.</span></div>
+    <div><span class="h">0390790</span><span>Importer no longer borrows a neighbouring column for a day the sheet omits; spill-over day columns captured as next-month availability.</span></div>
+    <div><span class="h">2bb9ec5</span><span>Earlier today: spill-over days from the previous month's sheet move the next solve's start day and count as already worked.</span></div>
+  </div>
+
+  <footer>Written for the hand-off between machines. The same facts are in CLAUDE.md in the repo for the next session.</footer>
+</div>

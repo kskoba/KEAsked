@@ -10,19 +10,30 @@ order). Never put real names back into tracked files.
 
 ## ⭐ Next task — start here
 
-**2026-10-28 (night) — NEXT: the daily sheet → calendar sync (option B).**
-Design + decisions + the "how a month's sheet is found" failure modes are
-in `docs/master-sheet-sync-design.md`. Read it before touching the Google
-Sheets integration or sked's schedule tables. Live today: OAuth push with
-full formatting, match light in the header, acute/non-acute counts in
-the sidebar. Backend on this machine may still need `kea backend` for the
-compare route if it wasn't restarted (clears the loaded month -- ask).
+**2026-10-28 (late night) — the daily sheet → calendar sync is LIVE in
+sked.** Read `docs/master-sheet-sync-design.md` ("Built 2026-10-28" section)
+before touching the Google Sheets integration or sked's schedule tables.
+Official folder (id kept out of git: `drive_folder_id` in the real `google_sheets.yaml`, and sked's `SHEETS_FOLDER_ID` secret) (shortcuts per month;
+`find_month_file_id` follows them). sked cron 12:00 UTC syncs prev/current/
+next month; Oct/Nov/Dec 2026 synced from the official sheets; January NOT
+(sked's 2027-01 period still holds KEAsked's generated test month --
+user to decide). KEAsked pushes its alias table to sked on every roster
+save (`_push_physician_aliases`). Remaining: (1) `send_email` binding in
+sked's wrangler.jsonc once the user has Email Routing on keatools.org
+verified for the scheduler's address (code in `sked/src/lib/email.ts` is ready,
+binding name `EMAIL`); (2) Push to Master Sheet should call
+`sked_client.request_sheet_sync` after writing the sheet instead of
+pushing assignments itself; (3) switch `drive_folder_id` to the official
+folder when the push test in Test Schedules is done (the official share is
+view-only, so the push would need Editor there). Backend on this machine
+needs `kea backend` for the alias push + shortcut lookup (clears the
+loaded month -- ask first).
 
 **2026-10-28 (evening) — Google Sheets integration is LIVE on this machine
 in OAuth mode (commit 4ba98af + follow-ups):**
 - `google_sheets.yaml` has `auth: oauth`, `drive_folder_id` = the
   "Test Schedules" folder in the scheduling mailbox's My Drive. Signed in as
-  the scheduling mailbox via `scripts/google-oauth-login.py`; token in
+  that mailbox via `scripts/google-oauth-login.py`; token in
   `google_oauth_token.json` (gitignored, refreshed automatically). Cloud
   project "kea-scheduler" under that account, consent screen published
   (homepage https://sked.keatools.org/manual, privacy

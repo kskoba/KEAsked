@@ -25,6 +25,8 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+_SPREADSHEET_MIME = "application/vnd.google-apps.spreadsheet"
+_SHORTCUT_MIME = "application/vnd.google-apps.shortcut"
 _SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
@@ -205,27 +207,45 @@ def month_file_name(config: GoogleSheetsConfig, year: int, month: int) -> str:
 
 
 def find_month_file_id(config: GoogleSheetsConfig, year: int, month: int) -> str | None:
-    """Search the configured Drive folder for that month's spreadsheet file. None if not found."""
+    """
+    Search the configured Drive folder for that month's spreadsheet file.
+    None if not found. A Drive SHORTCUT with that name is followed to the
+    spreadsheet it points at -- the department's official "Schedules"
+    folder holds one shortcut per month, not the files themselves
+    (confirmed 2026-10-28), so a spreadsheet-only query there finds nothing.
+    """
     name = month_file_name(config, year, month)
     escaped = name.replace("'", "\\'")
     query = (
-        f"'{config.drive_folder_id}' in parents and name = '{escaped}' "
-        "and trashed = false and mimeType = 'application/vnd.google-apps.spreadsheet'"
+        f"'{config.drive_folder_id}' in parents and name = '{escaped}' and trashed = false "
+        f"and (mimeType = '{_SPREADSHEET_MIME}' or mimeType = '{_SHORTCUT_MIME}')"
     )
     try:
         res = (
             _drive_service(config)
             .files()
-            .list(q=query, fields="files(id, name)", pageSize=5,
-                  supportsAllDrives=True, includeItemsFromAllDrives=True)
+            .list(q=query, fields="files(id, name, mimeType, shortcutDetails(targetId, targetMimeType))",
+                  pageSize=10, supportsAllDrives=True, includeItemsFromAllDrives=True)
             .execute()
         )
     except HttpError as exc:
         raise GoogleSheetsApiError(f"Could not search Drive for {name!r}: {exc}") from exc
-    files = res.get("files", [])
-    if not files:
-        return None
-    return files[0]["id"]
+    return resolve_spreadsheet_id(res.get("files", []))
+
+
+def resolve_spreadsheet_id(files: list[dict]) -> str | None:
+    """
+    The spreadsheet id among Drive search results: a real spreadsheet wins,
+    else the target of a shortcut that points at a spreadsheet, else None.
+    """
+    for f in files:
+        if f.get("mimeType") == _SPREADSHEET_MIME:
+            return f["id"]
+    for f in files:
+        details = f.get("shortcutDetails") or {}
+        if f.get("mimeType") == _SHORTCUT_MIME and details.get("targetMimeType") == _SPREADSHEET_MIME:
+            return details.get("targetId") or None
+    return None
 
 
 def create_month_file(

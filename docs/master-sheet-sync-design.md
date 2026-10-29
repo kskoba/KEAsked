@@ -77,8 +77,12 @@ Consequences, i.e. where to look first when something "stops working":
   = service-account JWT via WebCrypto, `scheduleStore.ts` = the one
   replace-a-period helper shared with `PUT /api/admin/schedule`;
   migration `0012_sheet_sync.sql`: `physician_aliases`,
-  `sheet_sync_log`). Cron `0 12 * * *` (05:00/06:00 Edmonton) syncs
-  previous/current/next month. Worker vars `SHEETS_FOLDER_ID`,
+  `sheet_sync_log`). Cron `0 12 * * *` (05:00/06:00 Edmonton) syncs the
+  **current month and every later month that has a sheet in the folder**
+  (the folder is listed each run; past months are never re-read -- user
+  decision 2026-10-28, after September's sheet surfaced a
+  `Surname/Surname(10)` split-shift cell, a convention neither reader
+  handles yet). Worker vars `SHEETS_FOLDER_ID`,
   `SHEETS_FILE_NAME_PATTERN`, `SYNC_REPORT_TO`, `SYNC_REPORT_FROM`;
   secret `GOOGLE_SERVICE_ACCOUNT_JSON`.
 - Verified: the TS reader produced **identical rows** to the Python reader
@@ -99,7 +103,9 @@ Consequences, i.e. where to look first when something "stops working":
 - Email: `src/lib/email.ts` sends through a `send_email` binding when one
   exists; the binding is **not yet in wrangler.jsonc** (Email Routing on
   keatools.org still being enabled by the user). Until then problems are
-  only in the sync log / Worker logs.
+  only in the sync log / Worker logs. **Update:** Email Routing is enabled
+  and the `send_email` binding (`EMAIL`, unrestricted) is live; a report
+  goes out only when a month errors or has unmatched names.
 - Not done yet: Push to Master Sheet still pushes assignments to sked
   itself rather than asking sked to sync (and cannot write to the official
   folder, see above); the `send_email` binding.
@@ -118,8 +124,9 @@ nothing of this; learner schedulers only edit the sheet. Errors are
   shared on the folder as **Viewer**, its key stored as a Worker secret.
   Folder id + name pattern as Worker vars. Same by-name lookup as above,
   so the consequences above apply to the sync too.
-- Months: previous (for the spill-over day), current, next. No sheet or
-  no sked period → skipped and logged.
+- Months: the current month and all later months with a sheet in the
+  folder (originally previous/current/next; changed 2026-10-28). A
+  missing sked period is created.
 - Names → physician ids: KEAsked will push its alias table to sked on
   every roster save (like the rules summary). Unresolved surnames stay on
   the slot with no physician id and are listed in the run log/email.

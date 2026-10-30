@@ -10,6 +10,101 @@ order). Never put real names back into tracked files.
 
 ## ⭐ Next task — start here
 
+**2026-10-29 (overnight, unattended) — jan6 feedback round implemented;
+five rule changes behind `features:` flags in `scheduler_config.yaml`
+(commits f9ec434, d3433a7, c197f0f), then a 60-min January run.**
+The schedulers' feedback on the January solve (relayed 2026-10-29; the
+details match `Tests/cpsatv2-jan6.xlsx`, NOT the Oct 12
+`Tests/CPSAT-Jan2027.xlsx` that was thought to be the reviewed file --
+confirm with them which they had) and what was built:
+1. **DOC rest**: no DOC within 2 days after a shift starting 1700h+
+   (`_eligible` in generator.py, flag `doc_rest_after_late_shift_two_days`).
+   Replay on the Oct 12 run: 11/54 -> 0, fill unchanged.
+2. **Rolling density** (flag `weekly_density_penalty`, generator_cpsat.py
+   after the 4-run penalty): 5th shift in the trailing 7 days 50, 5 in
+   6 days 100, 6 in 7 days 400, once per worked day; prefer_clustered_nights
+   exempt. Measured first: the human January also has 5-in-7 for 22
+   physicians, so only the extremes carry weight (6-in-7: solver 5 vs human
+   1; run/one-off/run holding 5+: 16-17 vs 5).
+3. **`max_shifts_per_7_days`** (hard, HC-8b, cross-month aware) and
+4. **`max_late_shifts_per_month`** (hard, HC-12d, starts >= 1700h) on
+   PhysicianConfig: yaml, preference-sheet line, schema, PUT, Roster Editor.
+   P19 = 3 and 1 in the LOCAL physicians.yaml (needs
+   `sync-config-to-unraid.sh`). Blank = no cap for everyone else.
+5. **Anchor overage** (flags `anchor_overage_redirect`, `anchor_ledger`):
+   unrequested anchor costs 90 (not 150) when stated anchors sit 2+ below
+   fair share; a new lexicographic stage before the final solve maximises
+   fill x2 minus anchor costs and locks it (the swap chains that move
+   overage off requesters); `scheduler/backend/anchor_ledger.py` remembers
+   who worked more 2400h/0600h than stated (gitignored
+   `config/anchor_overage_ledger.yaml`) -- written on a successful push,
+   automatically when the trailing month + its submissions resolve, or
+   `POST /api/anchor-ledger/record`; `GET /api/anchor-ledger`. Listed
+   physicians pay 450 per unrequested anchor of that type for 3 months
+   and lose the night-person discount. No UI yet for the ledger.
+8. **Floor as request** (flag `anchor_floor_as_request`): the 0/0 anchor
+   floor enters anchor stages A/B as a stated request of 1-2 (either
+   type). REVERSES the 2026-10-10 rule (user decision 2026-10-29: a
+   requester may finish one night short so nobody sits at zero -- the Oct
+   12 run had P57 0/2 while three nights went out as overage).
+   `test_anchor_floor_vs_requester_depth.py` pins both the new rule and
+   the flag-off old one.
+Not done (user): item 6 roster edits (P10 nights 2 + isolated, P19 site
+pref, P30 forbid Intake) -- wait for ramp-in results first; item 7
+(half-month proportional spread) on hold.
+**Rollback**: set the flag to `false` in `scheduler_config.yaml` (the
+real, gitignored file -- the template documents the keys) and restart the
+backend; or `git revert` the commit. Tests: `test_oncall_doc_rest_two_days.py`
+(3), `test_density_and_late_caps.py` (5), `test_anchor_ledger.py` (4),
+flipped depth test (2). Unraid needs push + rebuild + config sync.
+**Run**: see the "2026-10-30 run" section right below.
+
+**2026-10-30 run — `Tests/cpsatv2-jan8.xlsx` (60 min, local backend,
+commit a84513f, all flags on, trailing from the official December sheet +
+sked 2026-12, Jan 2-31 solved, ledger empty):**
+- **First attempt failed and is the reason a84513f exists**: the redirect
+  stage had locked `redirect_expr >= best` (one constraint over every
+  shift variable plus the un-hinted penalty indicators) and the final
+  solve found NO solution in 55 min (UNKNOWN, 630 unfilled) while the
+  stage's own schedule sat unused. Now: per-physician locks (combined
+  anchors <= max(held, target), >= held at/below target) and, if the
+  final solve ever ends empty again, the last stage's incumbent is
+  returned with a note in `issues`. Stage log of the good run: tier 1
+  OPTIMAL 7 s, tier 2 FEASIBLE 120 s, stage A OPTIMAL, stage B FEASIBLE
+  60 s, floor OPTIMAL ("at zero: none; below floor: none"), redirect
+  FEASIBLE 120 s ("beyond target: P31 8/7, P92 4/3"), final FEASIBLE
+  807330, gap 3.35%, first solution at 27 s, 716 improvements, last
+  152 s before the end, recent gain 0.12%.
+- **Against the five items (jan8 / Oct 12 / jan6 / human)**: DOC within
+  2 days after a 1700h+ start **0** / 11 / 9 / 2; physicians with 6 in 7
+  days **0** / 1 / 5 / 1; 5 in 6 days **1** / 11 / 13 / 5; run-off-run
+  holding 5+ **1** / 13 / 15 / 6; P19 7/7 shifts, max 3 in any 7 days,
+  1 late (1800h); P10 12/12, 2/2 nights, halves 6/6, runs 3-1-2-3-3;
+  P29 10/10, 0 nights; P30 11/11 but still 2 Intake (item 6 roster edit
+  deferred, so expected); P31 11/11, **still 6/5 nights** (pairs Jan
+  2-3, 23-24, 29-30), halves 3/8; P39 10/10, 2/3 nights.
+- **Anchors**: floor physicians below floor 0 (Oct 12: 2, jan6: 4,
+  human: 3); **P57 2 nights** (Jan 2 RAH A, Jan 9 RAH B, both isolated
+  -- he is floor-exempt from HC-13b). Price of the floor-as-request rule:
+  P39 2/3 and P51 2/3 nights (P51 was 4/3 in the Oct 12 run). Overage
+  nights: P31 6/5 and P92 4/3 (Oct 12 also P51 4/3). So the P51 ->
+  P57 redirect happened; the P31/P92 extra nights vs P51's missing third
+  is a chain none of the stages found in 120 s -- watch item, not a
+  bug. 0600h beyond stated: only floor fills (2 each) and P33 7/7
+  (`only_0600h`).
+- **Everything else**: 630/630 filled, 10 physicians one short (same
+  spread as Oct 12), nobody over requested; on-calls 53/60 (Oct 12 54,
+  human 55 -- the DOC rule costs about one); cold night-run starts
+  30/65 = 46% (human 47%, Oct 12 55%; ramp-in now at the human level);
+  Fri+Sun splits 9 (human 12). Analysis script: scratchpad
+  `analyze_run.py` (not committed; compares a run xlsx with the Oct 12,
+  jan6 and human files).
+- Tests after the fix: anchor files 32/32; full suite 213/214 under load, the one miss (`test_excess_anchors_spread_to_fair_share_before_anyone_goes_over`) passes alone twice -- a solve that does not converge when the cores are shared, not a regression.
+- Still to do: `git push` + Unraid rebuild + `sync-config-to-unraid.sh`
+  (P19 caps); a ledger UI; confirm with the schedulers which file they
+  reviewed; the ledger auto-record is untested on real data until a
+  prior month with stated requests exists (sked December had none).
+
 **2026-10-28 (late night) — the daily sheet → calendar sync is LIVE in
 sked.** Read `docs/master-sheet-sync-design.md` ("Built 2026-10-28" section)
 before touching the Google Sheets integration or sked's schedule tables.

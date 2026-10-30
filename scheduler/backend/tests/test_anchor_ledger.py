@@ -66,10 +66,13 @@ def test_re_recording_a_month_replaces_its_entries(tmp_path):
 
 def test_ledger_steers_an_unrequested_night_to_the_physician_not_on_it():
     """Two identical physicians, blank anchor cells, one shift each; the
-    only thing on offer is a single 2400h NEHC slot on day 10 (plus a day
-    shift on day 20 for whoever misses it). The one carried over on the
-    ledger for 2400h must not be the one who takes the night."""
-    offer = {10: frozenset({"2400h NEHC"}), 20: frozenset({"1200h NEHC", "1200h RAH A side"})}
+    only things on offer are a single 2400h NEHC slot on day 10 and a
+    single day shift on day 20, so one of them must take the night. The
+    one carried over on the ledger for 2400h must not be that one. (With
+    two day slots the final objective leaves the night empty instead --
+    1300 fill minus the unrequested-anchor and cold-start penalties loses
+    to a plain 1000 day slot -- which is the fixture, not the ledger.)"""
+    offer = {10: frozenset({"2400h NEHC"}), 20: frozenset({"1200h NEHC"})}
     subs = [_sub("OnLedger", YEAR, MONTH, 1, codes_by_day=offer), _sub("Clean", YEAR, MONTH, 1, codes_by_day=offer)]
     for s in subs:   # only days 10 and 20 are offered at all
         for d in s.days:

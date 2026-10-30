@@ -3509,7 +3509,40 @@ class CpsatScheduleGenerator:
                 redirect_cb.best_objective if redirect_cb.best_values else 0.0, redirect_solver.wall_time, over_now,
             )
             if redirect_status in (_cp_model.OPTIMAL, _cp_model.FEASIBLE) and redirect_cb.best_values:
-                model.add(redirect_expr >= int(redirect_cb.best_objective))
+                # Lock PER PHYSICIAN, like every other stage, not the stage
+                # objective as a whole. The first real run (2026-10-30)
+                # locked `redirect_expr >= best` -- one linear constraint
+                # over every shift variable in the model -- and the final
+                # solve then found NO solution in 55 minutes (UNKNOWN)
+                # even though the hinted incumbent satisfied it (the lock
+                # involved the un-hinted penalty indicator variables, which
+                # hint completion sets the wrong way). Now each physician's
+                # combined anchor count is capped at what this stage gave
+                # them, or their target if that is higher, and a physician
+                # at or below target keeps at least what they were given:
+                # the stage decides who carries how many anchors, the final
+                # solve decides everything else. Overage can shrink (its
+                # holder has no floor above target) and the freed slot can
+                # only go to someone with room under target; it can never
+                # grow or land on somebody new.
+                redirect_held: dict[str, int] = defaultdict(int)
+                for (p_, _d, code), v in redirect_cb.best_values.items():
+                    if v and code_time.get(code) in ("2400h", "0600h"):
+                        redirect_held[p_] += 1
+                for pid in anchor_target_by_pid:
+                    type_vars = [
+                        shifts[(pid, d_idx, shift.code)]
+                        for d_idx in range(len(all_dates))
+                        for block in BLOCKS
+                        for shift in block
+                        if shift.time in ("2400h", "0600h") and (pid, d_idx, shift.code) in shifts
+                    ]
+                    if type_vars:
+                        held = redirect_held[pid]
+                        target = anchor_target_by_pid[pid]
+                        model.add(sum(type_vars) <= max(held, target))
+                        if 0 < held <= target:
+                            model.add(sum(type_vars) >= held)
                 _apply_hint(redirect_cb)
             remaining_time_limit -= redirect_solver.wall_time
             remaining_time_limit = max(30.0, remaining_time_limit)
@@ -3592,6 +3625,30 @@ class CpsatScheduleGenerator:
                     "CP-SAT quality: status=%s  obj=%.0f  bound=%.0f  gap=%.2f%%",
                     result.stats.solver_status, obj, bound, gap_pct,
                 )
+            return result
+
+        # The final solve found nothing. If an earlier lexicographic stage
+        # left an incumbent (every stage's best solution is kept by
+        # _apply_hint), return THAT rather than an empty month: it
+        # satisfies every hard rule and every lock placed before it, it
+        # just hasn't been polished by the full objective. The 2026-10-30
+        # January run threw away a complete schedule from the redirect
+        # stage this way and reported 630 unfilled slots.
+        if latest_best.get("values"):
+            logger.warning(
+                "CP-SAT: final solve found no solution (status=%s); returning the last stage's incumbent instead",
+                solver.status_name(status),
+            )
+            result = self._build_result(year, month, all_dates, latest_best["values"], shift_by_code)
+            result.issues.append(
+                "Final solve found no solution within the time limit; this schedule is the last "
+                "lexicographic stage's incumbent (rules and locks hold, final objective not applied)."
+            )
+            if result.stats:
+                result.stats.solver_status = "feasible"
+                result.stats.optimality_gap_pct = None
+                result.stats.solve_seconds = round(wall_time, 1)
+                result.stats.stalled_seconds = round(wall_time, 1)
             return result
 
         # No feasible solution found — return empty result with all slots unfilled

@@ -196,6 +196,7 @@ linked_pairs: []
 features:
   doc_rest_after_late_shift_two_days: true   # no DOC within 2 days after a 1700h+ start (on-call pass)
   weekly_density_penalty: true               # soft: 5th shift in 7 days 50, 5 in 6 days +100, 6 in 7 days +400
+  window_spread_penalty: true                # soft: 80 per shift beyond the proportional share of any 14-day window
   anchor_floor_as_request: true              # 0/0 anchor floor competes as a stated request of 1-2 in stages A/B
   anchor_overage_redirect: true              # graded below-share cost + a stage that minimises anchors beyond target
   anchor_ledger: true                        # remember who went over stated 2400h/0600h; penalise repeats for 3 months

@@ -114,6 +114,37 @@ class _SolutionCallback(_cp_model.CpSolverSolutionCallback if _ORTOOLS_AVAILABLE
 # Helpers
 # ---------------------------------------------------------------------------
 
+def window_spread_caps(requested: int, offered: list[bool],
+                       window: int = 14, step: int = 7) -> list[tuple[int, int, int]]:
+    """
+    Rolling-window shift caps for the proportional-spread penalty: for each
+    ``window``-day window starting every ``step`` days (plus one ending on
+    the last day), the number of shifts a physician may hold there before
+    paying, ``ceil(requested x offered days in the window / offered days
+    in the month)``. Windows where the physician offered nothing, or whose
+    cap already allows everything that fits, are omitted. Returns
+    (start index, end index exclusive, cap).
+    """
+    n = len(offered)
+    total = sum(1 for o in offered if o)
+    if requested <= 0 or total == 0 or n == 0:
+        return []
+    starts = list(range(0, max(1, n - window + 1), step))
+    if n >= window and starts[-1] != n - window:
+        starts.append(n - window)
+    out: list[tuple[int, int, int]] = []
+    for st in starts:
+        en = min(n, st + window)
+        off_w = sum(1 for k in range(st, en) if offered[k])
+        if off_w == 0:
+            continue
+        cap = math.ceil(requested * off_w / total)
+        if cap >= min(requested, off_w):
+            continue
+        out.append((st, en, cap))
+    return out
+
+
 def recent_gain_pct(history: list[tuple[float, float]], wall_time: float, window: float) -> float | None:
     """
     How much the best objective rose over the last ``window`` seconds of a
@@ -2755,6 +2786,49 @@ class CpsatScheduleGenerator:
                     density_penalty_terms.append(-_DENSITY_5_IN_6_PENALTY * five6)
                     density_penalty_terms.append(-_DENSITY_6_IN_7_PENALTY * six7)
 
+        # ----------------------------------------------------------------
+        # Soft: proportional spread over rolling two-week windows (feature
+        # window_spread_penalty, 2026-10-30, item 7 of the jan6 feedback
+        # round). P10's complaint was 8 of 12 shifts inside Jan 19-31; in
+        # jan9 she still had 6-7 of 12 there, P92 had 7 of 8 in Jan 2-15
+        # (offered 13 of 23 days there) and P39 7 of 10 in the first half
+        # (offered 14 of 27). Half-month totals hide a 13-day clump that
+        # straddles the 15th, so the lens is a 14-day window stepping by
+        # 7 days plus one ending on the last day. Per window the
+        # physician may hold ceil(requested x their offered days in the
+        # window / their offered days in the month) shifts -- proportional
+        # to THEIR availability, so somebody who only offered the first
+        # half is untouched -- and pays 80 per shift beyond that. Nothing
+        # is required of physicians asking for fewer than 6 shifts, or of
+        # prefer_clustered_nights physicians. 80 sits above the 5-point
+        # request bonus, the +10 adjacency bonus, the 50 density
+        # tie-breaker and the 60 4-run penalty, below the 150 split and
+        # the 250+ weekend-cap steps; a 2-shift clump inside two
+        # overlapping windows costs 320.
+        # ----------------------------------------------------------------
+        _WINDOW_SPREAD_PENALTY = 80
+        _WINDOW_SPREAD_MIN_REQUESTED = 6
+        window_spread_terms: list = []
+        if feature_enabled(self.config, "window_spread_penalty"):
+            for pid in pids:
+                spread_cfg = _get_cfg(pid)
+                if spread_cfg and spread_cfg.prefer_clustered_nights:
+                    continue
+                spread_sub = self.submissions[pid]
+                spread_req = spread_sub.shifts_requested or 0
+                if spread_req < _WINDOW_SPREAD_MIN_REQUESTED:
+                    continue
+                day_by_date = {day.date: day for day in spread_sub.days}
+                offered_flags = [
+                    bool((dd := day_by_date.get(d)) and dd.wants_to_work
+                         and (dd.available_blocks or dd.requested_shifts))
+                    for d in all_dates
+                ]
+                for st, en, cap in window_spread_caps(spread_req, offered_flags):
+                    over = model.new_int_var(0, en - st, f"spread_over_{pid}_{st}")
+                    model.add(over >= sum(worked_bool[(pid, k)] for k in range(st, en)) - cap)
+                    window_spread_terms.append(-_WINDOW_SPREAD_PENALTY * over)
+
         # Soft: site variety within a run of consecutive days (2026-10-07).
         # Two parts, per the scheduler's stated rule:
         #   (a) never two shifts at the same site in one run -- RAH A, RAH B,
@@ -2857,6 +2931,7 @@ class CpsatScheduleGenerator:
         objective_terms.extend(any_cluster_terms)
         objective_terms.extend(run_penalty_terms)
         objective_terms.extend(density_penalty_terms)
+        objective_terms.extend(window_spread_terms)
         objective_terms.extend(long_gap_penalty_terms)
         objective_terms.extend(swing_penalty_terms)
         objective_terms.extend(anchor_overage_penalty_terms)

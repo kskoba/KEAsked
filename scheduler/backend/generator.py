@@ -153,6 +153,23 @@ class ScheduleResult:
 
 _DEFAULT_ANCHOR_MAX = 4
 _DEFAULT_MAX_WEEKENDS = 2
+
+
+def feature_enabled(config: dict | None, name: str, default: bool = True) -> bool:
+    """
+    Rule switches under scheduler_config.yaml's `features:` block (added
+    2026-10-29 with the jan6 feedback round so each new rule can be turned
+    off for a rollback run without touching code). A missing block or key
+    means the rule is ON. Keys in use:
+      doc_rest_after_late_shift_two_days  -- generator.py assign_on_calls
+      weekly_density_penalty              -- generator_cpsat.py soft 5/6-in-7 terms
+      anchor_floor_as_request             -- generator_cpsat.py anchor stages A/B
+      anchor_overage_redirect             -- generator_cpsat.py graded cost + redirect stage
+      anchor_ledger                       -- server.py / generator_cpsat.py cross-month overage memory
+    """
+    feats = (config or {}).get("features") or {}
+    value = feats.get(name, default)
+    return bool(default if value is None else value)
 # Monthly shift count a "full-time" physician is assumed to request --
 # max_weekends_per_month is the weekend cap AT this shift count; physicians
 # requesting fewer shifts get a proportionally lower cap (see
@@ -160,6 +177,10 @@ _DEFAULT_MAX_WEEKENDS = 2
 # weekend ceiling as someone working 3x as many shifts that month.
 _DEFAULT_FULL_TIME_SHIFTS = 12
 _DEFAULT_MAX_CONSEC = 3
+# "Late evening" for the on-call rest rule and the per-month late-shift cap
+# (user definition 2026-10-29: 1700-2400 starts -- 1700h NEHC, the three
+# 1800h shifts and 2000h NEHC; the 1600h Float ends at midnight and is out).
+_LATE_EVENING_MIN_START_HOUR = 17
 _WEEKEND_WEEKDAYS = frozenset({4, 5, 6})   # Friday=4, Saturday=5, Sunday=6
 
 
@@ -1637,7 +1658,16 @@ class ScheduleGenerator:
             (_EVENING_SHIFT_TIMES) — the one case confirmed safe regardless
             of exactly when within the DOC window an activation happens.
             NOC is never exempted, for anyone, at either end.
+          - A shift starting 1700h or later TWO days before a DOC blocks it
+            (feature doc_rest_after_late_shift_two_days, 2026-10-29): a
+            2400h on the 24th ends 0600 on the 25th, and a DOC on the 26th
+            can activate at 0500 -- the schedulers asked for a full extra
+            day. The day in between was already covered (only a 0600h may
+            precede a DOC). The Oct 12 January run had 11 of 54 calls in
+            this shape against 2 in the human schedule; a replay with the
+            rule kept the fill rate (53/60) and removed all 11.
         """
+        doc_rest_two_days = feature_enabled(self.config, "doc_rest_after_late_shift_two_days")
         # Build shift index directly from result — no state restoration needed.
         shift_dates: dict[datetime.date, set[str]] = defaultdict(set)
         shift_by_pid_date: dict[tuple[str, datetime.date], Shift] = {}
@@ -1790,6 +1820,10 @@ class ScheduleGenerator:
                 else:  # NOC
                     if prev_shift.start_hour > 18:
                         return False
+            if call_type == "DOC" and doc_rest_two_days:
+                two_before = shift_by_pid_date.get((pid, call_date - datetime.timedelta(days=2)))
+                if two_before is not None and two_before.start_hour >= _LATE_EVENING_MIN_START_HOUR:
+                    return False
             return True
 
         def _assign(pid: str, call_date: datetime.date, call_type: str) -> None:

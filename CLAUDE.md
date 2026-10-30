@@ -57,7 +57,30 @@ real, gitignored file -- the template documents the keys) and restart the
 backend; or `git revert` the commit. Tests: `test_oncall_doc_rest_two_days.py`
 (3), `test_density_and_late_caps.py` (5), `test_anchor_ledger.py` (4),
 flipped depth test (2). Unraid needs push + rebuild + config sync.
-**Run**: see the "2026-10-30 run" section right below.
+**Run**: see the two "2026-10-30 run" sections right below (jan8, then
+jan9 after the HC-13b change).
+
+**2026-10-30 run 2 — `Tests/cpsatv2-jan9.xlsx` (60 min, commit 85746a0,
+same inputs as jan8):** the user's decision after jan8: **HC-13b now
+allows ONE lone night for a physician with a two-night cap and an odd
+stated 2400h request of 3+** (no flag). Reason: with
+`max_consecutive_nights 2` and pairs only, only even counts were
+reachable, so P31 (asked 5) got 6 in every solve and P92/P51/P39 (asked
+3) got 4 or 2 -- the human January hit all four exactly with pairs plus
+one lone night. Result: **P31 5/5, P92 3/3, P51 3/3, P39 3/3**, each
+with exactly one lone night; nights beyond stated: only P57's 2 floor
+nights; redirect stage OPTIMAL in 67 s with nobody beyond target (jan8:
+FEASIBLE at 120 s, two beyond). 630/630, on-calls 54/60, gap 3.22%,
+converged (last gain 445 s before the end, 0.04%). Five items: DOC rule
+0, 6-in-7 0, 5-in-6 **4** (jan8 1, human 5), run-off-run 4 (jan8 1,
+human 6) -- run-to-run variation inside the soft term, still a third of
+the Oct 12 run; P19 7/7, max 3 in 7 days, 1 late; P10 12/12, 2 nights;
+P30 11/11, 3 Intake (roster edit still deferred); splits 4 (best yet);
+cold night starts 32/68 = human. Watch: P31 0600h 1/2 (the only stated
+anchor unmet), P57 halves 9/1, P30 halves 3/8 (item 7 on hold).
+Tests: `test_odd_night_request_one_isolated.py` (3) + 54 night/
+cross-month tests.
+
 
 **2026-10-30 run — `Tests/cpsatv2-jan8.xlsx` (60 min, local backend,
 commit a84513f, all flags on, trailing from the official December sheet +

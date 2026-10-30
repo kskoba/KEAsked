@@ -51,7 +51,8 @@ confirm with them which they had) and what was built:
    the flag-off old one.
 Not done (user): item 6 roster edits (P10 nights 2 + isolated, P19 site
 pref, P30 forbid Intake) -- wait for ramp-in results first; item 7
-(half-month proportional spread) on hold.
+(half-month proportional spread) was on hold, then built 2026-10-30 as a
+rolling two-week term (run 3 below).
 **Rollback**: set the flag to `false` in `scheduler_config.yaml` (the
 real, gitignored file -- the template documents the keys) and restart the
 backend; or `git revert` the commit. Tests: `test_oncall_doc_rest_two_days.py`
@@ -80,6 +81,25 @@ cold night starts 32/68 = human. Watch: P31 0600h 1/2 (the only stated
 anchor unmet), P57 halves 9/1, P30 halves 3/8 (item 7 on hold).
 Tests: `test_odd_night_request_one_isolated.py` (3) + 54 night/
 cross-month tests.
+**2026-10-30 run 3 — `Tests/cpsatv2-jan10.xlsx` (60 min, commit 43a0f5f):
+item 7 taken OFF hold** after the user pointed out jan9 still had P10 with
+6-7 of 12 in Jan 19-31, P92 7 of 8 in Jan 2-15 and P39 7 of 10 in the first
+half. Built as `window_spread_penalty` (flag, on): per 14-day window
+(step 7, plus one ending on the 31st) a physician may hold
+ceil(requested x THEIR offered days in the window / their offered days
+in the month) shifts, 80 per shift beyond; skipped under 6 requested and
+for prefer_clustered_nights; `window_spread_caps()` is the pure helper,
+`test_window_spread.py` (2). Result: P10 5/7/7/6 vs caps 5/7/7/7 (halves
+5/7; she offered 16 of her 27 days after the 15th, so 6 in Jan 19-31 IS
+her proportional share -- the human gave her 6 of 11 there too), P92
+6/3/2/3 vs 6/5/4/4 and 9/9 shifts, P39 5/5/5/3 vs 6/6/5/5 (the human's
+shape exactly). Roster-wide over-cap units excluding P52's merged
+position: jan10 12 over 8 physicians, jan9 15/12, jan8 30/20, Oct 12
+29/21, human 34/20. Everything else held: 630/630, on-calls 53, DOC rule
+0, 6-in-7 0, 5-in-6 1, all stated anchors met except P08 1/2 (an invalid
+submission), redirect OPTIMAL 55 s with nobody beyond target, gap 3.03%,
+splits 7 (jan9 4). Item 7 is DONE; the five-item list is complete.
+
 After jan9 (commit after 85746a0): the redirect lock now FIXES each
 physician's combined anchor count at the stage's value (was cap + floor
 only at/below target): an unconverged final solve had dropped an

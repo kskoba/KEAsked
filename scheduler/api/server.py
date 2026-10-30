@@ -62,6 +62,8 @@ from scheduler.api.schemas import (
     LoadScheduleRequest,
     LoadTrailingScheduleRequest,
     TrailingScheduleStatusResponse,
+    AnchorLedgerEntry,
+    AnchorLedgerResponse,
     GoogleSheetsStatusResponse,
     PushToMasterSheetRequest,
     PushToMasterSheetResponse,
@@ -126,6 +128,7 @@ from scheduler.backend import google_sheets_client
 from scheduler.backend import sheets_schedule_reader
 from scheduler.backend import trailing as trailing_mod
 from scheduler.backend import acute_balance
+from scheduler.backend import anchor_ledger
 from scheduler.backend import anchor_floor_repair, weekend_repair
 from scheduler.backend.config import (
     CALL_LINKAGE_VALUES,
@@ -149,6 +152,7 @@ from scheduler.backend.generator import (
     UnfilledSlot,
     _HARD_VIOLATION_RULES,
     CandidateOption,
+    feature_enabled,
     generate_schedule,
 )
 try:
@@ -2750,6 +2754,9 @@ def push_schedule_to_master_sheet(body: PushToMasterSheetRequest) -> PushToMaste
             if skipped:
                 detail += (f" {skipped} scheduled cell(s) had no matching row/column on the sheet "
                            f"and were NOT written — check the sheet's shift rows and date row.")
+            ledger_note = _record_anchor_ledger_for_active(result)
+            if ledger_note:
+                detail += f" {ledger_note}"
             sheet_result = PushResultDetail(ok=True, detail=detail)
         except google_sheets_client.GoogleSheetsApiError as exc:
             sheet_result = PushResultDetail(ok=False, detail=str(exc))
@@ -2770,6 +2777,51 @@ def push_schedule_to_master_sheet(body: PushToMasterSheetRequest) -> PushToMaste
             sked_result = PushResultDetail(ok=False, detail=f"sked could not sync the month from the sheet: {exc}")
 
     return PushToMasterSheetResponse(sheet=sheet_result, sked=sked_result, spreadsheet_url=spreadsheet_url)
+
+
+def _record_anchor_ledger_for_active(result: ScheduleResult) -> str:
+    """Write the active schedule's anchor overage to the ledger when this
+    session's imported submissions are for the same month. Returns a short
+    note for the UI ('' when nothing was recorded)."""
+    cfg = _state.get("scheduler_config") or {}
+    if not feature_enabled(cfg, "anchor_ledger"):
+        return ""
+    subs = _state.get("submissions") or []
+    if not subs or (_state.get("year"), _state.get("month")) != (result.year, result.month):
+        return "Anchor ledger not updated: this session's imported requests are for a different month."
+    try:
+        written = anchor_ledger.record_month(result, subs)
+    except Exception as exc:
+        return f"Anchor ledger not updated: {exc}"
+    who = ", ".join(f"{e['physician_id']} +{e['over']} {e['type']}" for e in written) or "nobody over"
+    return f"Anchor ledger recorded for {result.year}-{result.month:02d}: {who}."
+
+
+@app.get("/api/anchor-ledger", response_model=AnchorLedgerResponse)
+def get_anchor_ledger() -> AnchorLedgerResponse:
+    """The cross-month anchor-overage ledger, plus who it affects for the month loaded in this session."""
+    entries = [AnchorLedgerEntry(**{k: e.get(k) for k in AnchorLedgerEntry.model_fields}) for e in anchor_ledger.load()]
+    year, month = _state.get("year"), _state.get("month")
+    active = anchor_ledger.recent_overage(year, month) if year and month else {}
+    return AnchorLedgerResponse(
+        path=str(anchor_ledger.ledger_path()), entries=entries, active_year=year, active_month=month,
+        active={pid: sorted(t) for pid, t in active.items()},
+        status=_state.get("anchor_ledger_last_used") or anchor_ledger.describe(active),
+    )
+
+
+@app.post("/api/anchor-ledger/record", response_model=AnchorLedgerResponse)
+def record_anchor_ledger() -> AnchorLedgerResponse:
+    """Record the active schedule's anchor overage (same as a successful Push to Master Sheet does)."""
+    result: ScheduleResult | None = _state.get("result")
+    if result is None:
+        raise HTTPException(status_code=400, detail="No active schedule. Generate or load one first.")
+    note = _record_anchor_ledger_for_active(result)
+    if note.startswith("Anchor ledger not updated"):
+        raise HTTPException(status_code=400, detail=note)
+    resp = get_anchor_ledger()
+    resp.status = note
+    return resp
 
 
 def _describe_sked_sync(outcome: dict) -> PushResultDetail:
@@ -3053,12 +3105,24 @@ async def generate(body: GenerateCachedRequest) -> ScheduleResponse:
     trailing_assignments, prior_month, start_day = _resolve_trailing_assignments(
         body.year, body.month, roster, body.trailing_file, scheduler_cfg=cfg,
     )
+    # Cross-month anchor-overage memory (anchor_ledger.py): who went over
+    # their stated 2400h/0600h in the last three months pays extra for an
+    # unrequested anchor of that type this month.
+    ledger_active: dict[str, set[str]] = {}
+    if feature_enabled(cfg, "anchor_ledger"):
+        try:
+            ledger_active = anchor_ledger.recent_overage(body.year, body.month)
+        except Exception as exc:  # a malformed ledger must never block a solve
+            print(f"[anchor-ledger] could not read the ledger: {exc}")
+        print(f"[anchor-ledger] {anchor_ledger.describe(ledger_active)}")
+    _state["anchor_ledger_last_used"] = anchor_ledger.describe(ledger_active)
 
     try:
         if use_cpsat:
             gen = CpsatScheduleGenerator(
                 submissions, roster, cfg,
                 trailing_assignments=trailing_assignments, prior_month=prior_month,
+                anchor_ledger=ledger_active,
             )
             result = await asyncio.to_thread(
                 gen.generate, body.year, body.month, cpsat_time_limit,
@@ -3847,6 +3911,15 @@ def _resolve_trailing_assignments(
 
     summaries = trailing_mod.build_prior_month_summaries(prior, prior_submissions)
     group_a_target = (scheduler_cfg or {}).get("site_distribution", {}).get("group_a_target", 0.40)
+    # The previous month's finalized schedule and its submissions are both
+    # in hand: record its anchor overage so the ledger fills itself in the
+    # steady state (sheet + sked), without anyone pushing from this machine.
+    if prior_submissions and feature_enabled(scheduler_cfg, "anchor_ledger"):
+        try:
+            written = anchor_ledger.record_month(prior, prior_submissions)
+            print(f"[anchor-ledger] recorded {want}: {len(written)} physician/type entr(ies) over stated request")
+        except Exception as exc:
+            print(f"[anchor-ledger] could not record {want}: {exc}")
 
     if not trailing and not summaries:
         _note(f"Cross-month data from {source_desc} for {want} contained no regular shifts.")

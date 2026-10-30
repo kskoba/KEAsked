@@ -673,6 +673,29 @@ class LoadTrailingScheduleRequest(BaseModel):
     sked_period_id: str | None = None          # sked period to pull submissions from (e.g. "2026-12")
 
 
+class AnchorLedgerEntry(BaseModel):
+    physician_id: str
+    year: int
+    month: int
+    type: str            # "2400h" | "0600h"
+    requested: int
+    worked: int
+    over: int
+    recorded_at: str | None = None
+
+
+class AnchorLedgerResponse(BaseModel):
+    """Cross-month anchor-overage memory (scheduler/backend/anchor_ledger.py)."""
+    path: str
+    entries: list[AnchorLedgerEntry] = []
+    # For the month loaded in this session (if any): who is charged extra
+    # for an unrequested anchor of which type, per the 3-month window.
+    active_year: int | None = None
+    active_month: int | None = None
+    active: dict[str, list[str]] = {}
+    status: str = ""
+
+
 class TrailingScheduleStatusResponse(BaseModel):
     loaded: bool
     year: int | None = None

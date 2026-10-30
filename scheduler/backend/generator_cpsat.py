@@ -204,12 +204,20 @@ class CpsatScheduleGenerator:
         config: dict,
         trailing_assignments: dict[str, list[tuple[datetime.date, Shift]]] | None = None,
         prior_month: dict[str, PriorMonthSummary] | None = None,
+        anchor_ledger: dict[str, set[str]] | None = None,
     ) -> None:
         self.submissions: dict[str, PhysicianSubmission] = {
             s.physician_id: s for s in submissions
         }
         self.roster = roster
         self.config = config
+        # physician_id -> {"2400h", "0600h"}: anchor types this physician
+        # worked beyond their stated request in one of the last few months
+        # (anchor_ledger.recent_overage). An unrequested anchor of that
+        # type costs _ANCHOR_LEDGER_PENALTY extra and the night-person
+        # discount is withdrawn, so overage rotates instead of landing on
+        # the same people every month. Empty = no effect.
+        self._anchor_ledger: dict[str, set[str]] = {k: set(v) for k, v in (anchor_ledger or {}).items()}
         # Known, fixed (not solver-decided) regular shifts each physician
         # actually worked at the end of the previous month, keyed by
         # physician_id -- sourced from the master-Sheet reader (see
@@ -1231,7 +1239,35 @@ class CpsatScheduleGenerator:
         #     more than the 1st on someone else, so excess is spread.
         _ANCHOR_UNREQUESTED_PENALTY = 150
         _ANCHOR_UNREQUESTED_PENALTY_PREFERRED = 60
+        # Item 5 of the 2026-10-29 jan6 feedback round (feature
+        # anchor_overage_redirect): an unrequested anchor is cheaper on a
+        # physician whose STATED anchors sit two or more below their fair
+        # share ("requested 2 nights and 0 0600h but getting 9 shifts"), so
+        # when overage must land somewhere it goes to them before anyone
+        # near or above their share. Stays above the 60 night-person
+        # discount and below the plain 150.
+        _ANCHOR_UNREQUESTED_PENALTY_BELOW_SHARE = 90
+        # Cross-month memory (feature anchor_ledger): a physician who went
+        # over their stated count of this anchor type in one of the last
+        # few months pays this on top of the plain 150 for every
+        # unrequested anchor of that type, and gets no discount of any
+        # kind -- a 450-point unit, costlier than a first fair-share unit
+        # on anyone else and most of a beyond-share step.
+        _ANCHOR_LEDGER_PENALTY = 300
         _ANCHOR_SHARE_OVERAGE_STEPS = (500, 800, 1100)
+        redirect_on = feature_enabled(self.config, "anchor_overage_redirect")
+        anchor_share_steps_all: list = []
+        anchor_target_by_pid: dict[str, int] = {}
+
+        def _unreq_weight(pid: str, time_str: str, preference: Optional[str],
+                          req_anchors: int, fair_share: int) -> int:
+            if time_str in self._anchor_ledger.get(pid, set()):
+                return _ANCHOR_UNREQUESTED_PENALTY + _ANCHOR_LEDGER_PENALTY
+            if preference == time_str:
+                return _ANCHOR_UNREQUESTED_PENALTY_PREFERRED
+            if redirect_on and fair_share - req_anchors >= 2:
+                return _ANCHOR_UNREQUESTED_PENALTY_BELOW_SHARE
+            return _ANCHOR_UNREQUESTED_PENALTY
         # Anchor-heavy physicians (user rule, 2026-10-07, from cpsatv2-jan3:
         # P31 asked for 7 anchors of 11 and was handed a 6th night on a
         # thin weekend because the 500-point first step was the cheapest way
@@ -1409,11 +1445,7 @@ class CpsatScheduleGenerator:
                         if unreq_ub > 0:
                             unreq_2400 = model.new_int_var(0, unreq_ub, f"unreq2400_{pid}")
                             model.add(unreq_2400 >= sum(vars_2400) - sub.shifts_2400h_requested)
-                            weight_2400 = (
-                                _ANCHOR_UNREQUESTED_PENALTY_PREFERRED
-                                if preference == "2400h"
-                                else _ANCHOR_UNREQUESTED_PENALTY
-                            )
+                            weight_2400 = _unreq_weight(pid, "2400h", preference, req_anchors, fair_share)
                             anchor_overage_penalty_terms.append(-weight_2400 * unreq_2400)
                 elif vars_2400:
                     # No stated 2400h preference at all. Unlike 0600h below,
@@ -1431,7 +1463,9 @@ class CpsatScheduleGenerator:
                     # unrequested anchor for the fairness accounting.
                     unreq_2400u = model.new_int_var(0, self._default_2400h_cap_unstated, f"unreq2400u_{pid}")
                     model.add(unreq_2400u >= sum(vars_2400))
-                    anchor_overage_penalty_terms.append(-_ANCHOR_UNREQUESTED_PENALTY * unreq_2400u)
+                    anchor_overage_penalty_terms.append(
+                        -_unreq_weight(pid, "2400h", preference, req_anchors, fair_share) * unreq_2400u
+                    )
 
                 # Per-physician 0600h cap — only when shifts_0600h_stated
                 # (same explicit-0-vs-blank distinction as 2400h above).
@@ -1452,16 +1486,14 @@ class CpsatScheduleGenerator:
                         if unreq_ub > 0:
                             unreq_0600 = model.new_int_var(0, unreq_ub, f"unreq0600_{pid}")
                             model.add(unreq_0600 >= sum(vars_0600) - sub.shifts_0600h_requested)
-                            weight_0600 = (
-                                _ANCHOR_UNREQUESTED_PENALTY_PREFERRED
-                                if preference == "0600h"
-                                else _ANCHOR_UNREQUESTED_PENALTY
-                            )
+                            weight_0600 = _unreq_weight(pid, "0600h", preference, req_anchors, fair_share)
                             anchor_overage_penalty_terms.append(-weight_0600 * unreq_0600)
                 elif vars_0600:
                     unreq_0600u = model.new_int_var(0, len(all_dates), f"unreq0600u_{pid}")
                     model.add(unreq_0600u >= sum(vars_0600))
-                    anchor_overage_penalty_terms.append(-_ANCHOR_UNREQUESTED_PENALTY * unreq_0600u)
+                    anchor_overage_penalty_terms.append(
+                        -_unreq_weight(pid, "0600h", preference, req_anchors, fair_share) * unreq_0600u
+                    )
 
                 # Combined fair-share overage: anchors of EITHER type beyond
                 # anchor_target, escalating, regardless of what was or
@@ -1494,6 +1526,8 @@ class CpsatScheduleGenerator:
                     for k, step in enumerate(share_steps):
                         weight = over_steps[min(k, len(over_steps) - 1)]
                         anchor_overage_penalty_terms.append(-weight * step)
+                    anchor_share_steps_all.extend(share_steps)
+                anchor_target_by_pid[pid] = anchor_target
 
                 # Minimum anchor-shift floor for a physician who explicitly
                 # states they want ZERO of both anchor types (0600h AND
@@ -3077,6 +3111,44 @@ class CpsatScheduleGenerator:
                             if shift.time == time_str
                         ]
                         model.add(sum(type_vars) >= floor)
+            # Floor physicians' synthetic requests (either anchor type).
+            for pid in floor_fill_by_pid:
+                vars_2400, vars_0600, floor_ub = zero_zero_floor_info[pid]
+                achieved_count = sum(
+                    best_values.get((pid, d_idx, shift.code), 0)
+                    for d_idx in range(len(all_dates))
+                    for block in BLOCKS
+                    for shift in block
+                    if shift.time in ("0600h", "2400h")
+                )
+                floor = min(achieved_count, floor_ub)
+                if floor > 0:
+                    model.add(sum(vars_2400) + sum(vars_0600) >= floor)
+
+        # Item 8 of the 2026-10-29 jan6 feedback round (feature
+        # anchor_floor_as_request): the 0/0 anchor floor is treated as if
+        # the physician had REQUESTED that many anchors (2 at 8+ shifts, 1
+        # below; either type), so it competes in stages A and B at the same
+        # standing as everyone's stated 2400h/0600h units. This reverses the
+        # 2026-10-10 rule ("the floor never displaces a stated unit"): in
+        # the Oct 12 January run three nights went out as overage while P57
+        # sat at 0 of 2, because every slot on his five offered dates was
+        # held by someone exactly at their stated request and the floor was
+        # only allowed to redirect overage. User decision: a requester may
+        # now finish one night short so that a 0/0 physician carries their
+        # floor; stage B's scarcity weighting decides who. Flag off =
+        # the 2026-10-10 behaviour (first unit at weight 1 in stage B).
+        floor_as_request = feature_enabled(self.config, "anchor_floor_as_request")
+        floor_fill_by_pid: dict[str, object] = {}
+        if floor_as_request:
+            for pid, (vars_2400, vars_0600, floor_ub) in zero_zero_floor_info.items():
+                fill_floor = model.new_int_var(0, floor_ub, f"anchorfill_floor_{pid}")
+                model.add(fill_floor <= sum(vars_2400) + sum(vars_0600))
+                sub_f = self.submissions[pid]
+                available = _anchor_available_days(sub_f, "2400h") + _anchor_available_days(sub_f, "0600h")
+                weight = max(1, round(_SCARCITY_SCALE * floor_ub / max(available, 1)))
+                anchor_fill_vars_flat.append((fill_floor, weight))
+                floor_fill_by_pid[pid] = fill_floor
 
         if anchor_fill_vars_flat:
             anchor_tier_time_limit = min(60.0, max(5.0, time_limit * 0.1))
@@ -3096,6 +3168,11 @@ class CpsatScheduleGenerator:
                     got = model.new_bool_var(f"anchorgot_{time_str}_{pid}")
                     model.add(got <= sum(type_vars))
                     got_vars_flat.append(got)
+            for pid in floor_fill_by_pid:
+                vars_2400, vars_0600, _floor_ub = zero_zero_floor_info[pid]
+                got = model.new_bool_var(f"anchorgot_floor_{pid}")
+                model.add(got <= sum(vars_2400) + sum(vars_0600))
+                got_vars_flat.append(got)
 
             stageA_expr = sum(got_vars_flat)
             model.maximize(stageA_expr)
@@ -3137,11 +3214,15 @@ class CpsatScheduleGenerator:
             # Solving it inside the depth search, before any slot is
             # locked, is what makes it findable.
             logger.info("CP-SAT lexicographic: anchor-fulfillment floor, stage B (depth + floor first unit)")
+            # With anchor_floor_as_request the floor units are already in
+            # anchor_fill_vars_flat at full standing, so the weight-1
+            # first-unit mechanism below is skipped (requester_scale 1).
             floor_got1_by_pid: dict[str, object] = {}
-            for pid, (vars_2400, vars_0600, _floor_ub) in zero_zero_floor_info.items():
-                got1 = model.new_bool_var(f"zzgot1_{pid}")
-                model.add(got1 <= sum(vars_2400) + sum(vars_0600))
-                floor_got1_by_pid[pid] = got1
+            if not floor_as_request:
+                for pid, (vars_2400, vars_0600, _floor_ub) in zero_zero_floor_info.items():
+                    got1 = model.new_bool_var(f"zzgot1_{pid}")
+                    model.add(got1 <= sum(vars_2400) + sum(vars_0600))
+                    floor_got1_by_pid[pid] = got1
             requester_scale = len(floor_got1_by_pid) + 1
             stageB_expr = (
                 requester_scale * sum(weight * fill_var for fill_var, weight in anchor_fill_vars_flat)
@@ -3385,6 +3466,55 @@ class CpsatScheduleGenerator:
             remaining_time_limit = max(30.0, remaining_time_limit)
             if progress_callback:
                 progress_callback(87, 100, floor_cb.best_objective if floor_cb.best_values else 0.0)
+
+        # ----------------------------------------------------------------
+        # Anchor overage redirect stage (item 5 of the 2026-10-29 jan6
+        # feedback round, feature anchor_overage_redirect). The final
+        # objective already prices an extra night on an anchor-heavy
+        # physician far above one on somebody below their fair share
+        # (1150 vs 90-150), yet the Oct 12 January run still put all three
+        # overage nights on requesters while 26 below-share physicians sat
+        # at their counts: every candidate was at their requested total,
+        # so the redirect is a swap chain (give the taker a night, hand
+        # one of their day shifts back, refill it) that the full-objective
+        # search did not find in 40 minutes. This stage searches for
+        # exactly that with everything else out of the objective: fill
+        # (doubled, so no slot is ever left empty to dodge an overage
+        # step) minus the anchor-placement costs, and then locks the value
+        # it reached so the final solve can only improve on it. Runs after
+        # the floor stages (floors first, then redirect what is left).
+        # ----------------------------------------------------------------
+        if redirect_on and anchor_share_steps_all and anchor_overage_penalty_terms:
+            redirect_time_limit = min(120.0, max(5.0, time_limit * 0.1))
+            logger.info("CP-SAT lexicographic: anchor overage redirect (fill x2 minus anchor costs, %.0fs)", redirect_time_limit)
+            redirect_expr = 2 * filled_expr + sum(anchor_overage_penalty_terms)
+            model.maximize(redirect_expr)
+            redirect_solver = _cp_model.CpSolver()
+            redirect_solver.parameters.max_time_in_seconds = redirect_time_limit
+            redirect_solver.parameters.num_search_workers = num_workers
+            redirect_cb = _SolutionCallback(shifts, should_stop=cancel_check, live_progress=_make_live_reporter(88))
+            redirect_status = redirect_solver.solve(model, redirect_cb)
+            over_now = "n/a"
+            if redirect_cb.best_values:
+                code_time = {shift.code: shift.time for block in BLOCKS for shift in block}
+                held: dict[str, int] = defaultdict(int)
+                for (p_, _d, code), v in redirect_cb.best_values.items():
+                    if v and code_time.get(code) in ("2400h", "0600h"):
+                        held[p_] += 1
+                over_list = [f"{p_} {held[p_]}/{t}" for p_, t in sorted(anchor_target_by_pid.items()) if held[p_] > t]
+                over_now = f"{len(over_list)} physician(s) beyond target: {', '.join(over_list) or 'none'}"
+            logger.info(
+                "CP-SAT lexicographic: anchor overage redirect -> status=%s objective=%.0f wall=%.1fs; %s",
+                redirect_solver.status_name(redirect_status),
+                redirect_cb.best_objective if redirect_cb.best_values else 0.0, redirect_solver.wall_time, over_now,
+            )
+            if redirect_status in (_cp_model.OPTIMAL, _cp_model.FEASIBLE) and redirect_cb.best_values:
+                model.add(redirect_expr >= int(redirect_cb.best_objective))
+                _apply_hint(redirect_cb)
+            remaining_time_limit -= redirect_solver.wall_time
+            remaining_time_limit = max(30.0, remaining_time_limit)
+            if progress_callback:
+                progress_callback(88, 100, redirect_cb.best_objective if redirect_cb.best_values else 0.0)
 
         model.maximize(sum(objective_terms))
 

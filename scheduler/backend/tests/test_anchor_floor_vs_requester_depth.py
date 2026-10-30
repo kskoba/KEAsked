@@ -13,8 +13,18 @@ requested.
 User rule (2026-10-10): a floor physician NEVER displaces a stated
 2400h/0600h request -- "floor physicians should only be given a shift to
 avoid making others go over their requested number of anchor shifts".
-So the floor's first unit is decided inside stage B at a weight below
-every stated unit, and the two tests here pin both sides of that rule.
+So the floor's first unit was decided inside stage B at a weight below
+every stated unit.
+
+REVERSED 2026-10-29 (item 8 of the jan6 feedback round, feature
+anchor_floor_as_request, on by default): the Oct 12 January run still
+left P57 at 0 of 2 while three nights went out as overage, because every
+slot on his five offered dates was held by someone exactly at their
+stated request. The floor is now treated as a stated request of 1-2
+anchors (either type) at the same standing as everyone else's units, so a
+requester may finish one night short. The first test pins the new
+behaviour and, with the flag off, the old one; the second (the floor takes
+what would otherwise be overage) holds either way.
 """
 
 from __future__ import annotations
@@ -58,26 +68,32 @@ def _nights(result, pid: str) -> int:
     return sum(1 for a in result.assignments if a.physician_id == pid and a.shift.time == "2400h")
 
 
-def _solve(subs):
+def _solve(subs, config: dict | None = None):
     # Requesters may work a lone night (P08-style roster flag) so the
     # fixture's single-night days are legal for them; a floor-eligible
     # physician is isolation-exempt already.
     roster = {s.physician_id: PhysicianConfig(id=s.physician_id, name=s.physician_id,
                                               allow_isolated_nights=True) for s in subs}
-    gen = CpsatScheduleGenerator(subs, roster, {}, trailing_assignments=None)
+    gen = CpsatScheduleGenerator(subs, roster, config or {}, trailing_assignments=None)
     return gen.generate(YEAR, MONTH, time_limit=40.0, num_workers=4)
 
 
-def test_stated_requests_beat_the_floor_when_a_slot_is_contested():
+def test_floor_competes_as_a_stated_request_when_a_slot_is_contested():
     """Four requesters each want 2 nights and can only work day 10 and day
     20; ZeroZero can only work nights on day 10 (4 slots, 5 claimants).
-    Every requester keeps both nights; the floor physician gets nothing."""
+    New rule: the floor's unit has the same standing as a stated unit, so
+    stage A (everyone's first) puts ZeroZero on day 10 and one requester
+    finishes a night short. With the feature off, the 2026-10-10 rule
+    holds: every requester keeps both nights and the floor gets nothing."""
     requesters = [_sub(f"Req{i}", 6, {10, 20}, shifts_2400h_stated=True, shifts_2400h_requested=2)
                   for i in range(4)]
     result = _solve([_zz({10})] + requesters)
+    assert _nights(result, "ZeroZero") == 1
+    assert sorted(_nights(result, r.physician_id) for r in requesters) == [1, 2, 2, 2]
 
-    assert [_nights(result, r.physician_id) for r in requesters] == [2, 2, 2, 2]
-    assert _nights(result, "ZeroZero") == 0
+    old = _solve([_zz({10})] + requesters, config={"features": {"anchor_floor_as_request": False}})
+    assert [_nights(old, r.physician_id) for r in requesters] == [2, 2, 2, 2]
+    assert _nights(old, "ZeroZero") == 0
 
 
 def test_floor_takes_the_night_that_would_otherwise_be_someones_overage():

@@ -80,6 +80,13 @@ cold night starts 32/68 = human. Watch: P31 0600h 1/2 (the only stated
 anchor unmet), P57 halves 9/1, P30 halves 3/8 (item 7 on hold).
 Tests: `test_odd_night_request_one_isolated.py` (3) + 54 night/
 cross-month tests.
+After jan9 (commit after 85746a0): the redirect lock now FIXES each
+physician's combined anchor count at the stage's value (was cap + floor
+only at/below target): an unconverged final solve had dropped an
+over-target holder's anchor and left the slot empty
+(`test_excess_anchors_spread_to_fair_share_before_anyone_goes_over`,
+13/14). Full suite 217/217. jan9 is unaffected (its final solve kept
+every count).
 
 
 **2026-10-30 run — `Tests/cpsatv2-jan8.xlsx` (60 min, local backend,

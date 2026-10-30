@@ -3541,14 +3541,16 @@ class CpsatScheduleGenerator:
                 # even though the hinted incumbent satisfied it (the lock
                 # involved the un-hinted penalty indicator variables, which
                 # hint completion sets the wrong way). Now each physician's
-                # combined anchor count is capped at what this stage gave
-                # them, or their target if that is higher, and a physician
-                # at or below target keeps at least what they were given:
-                # the stage decides who carries how many anchors, the final
-                # solve decides everything else. Overage can shrink (its
-                # holder has no floor above target) and the freed slot can
-                # only go to someone with room under target; it can never
-                # grow or land on somebody new.
+                # combined anchor count is fixed at what this stage gave
+                # them: the stage decides who carries how many anchors, the
+                # final solve decides everything else. (A first version
+                # left over-target holders without a floor so overage could
+                # still shrink; an unconverged final solve then simply
+                # dropped an overage anchor and left the slot EMPTY --
+                # test_excess_anchors_spread_to_fair_share_before_anyone_
+                # goes_over, 13 of 14 anchors filled. With 120 s this stage
+                # reaches OPTIMAL on real January data, so the final solve
+                # has nothing to add on anchor counts anyway.)
                 redirect_held: dict[str, int] = defaultdict(int)
                 for (p_, _d, code), v in redirect_cb.best_values.items():
                     if v and code_time.get(code) in ("2400h", "0600h"):
@@ -3563,10 +3565,7 @@ class CpsatScheduleGenerator:
                     ]
                     if type_vars:
                         held = redirect_held[pid]
-                        target = anchor_target_by_pid[pid]
-                        model.add(sum(type_vars) <= max(held, target))
-                        if 0 < held <= target:
-                            model.add(sum(type_vars) >= held)
+                        model.add(sum(type_vars) == held)
                 _apply_hint(redirect_cb)
             remaining_time_limit -= redirect_solver.wall_time
             remaining_time_limit = max(30.0, remaining_time_limit)

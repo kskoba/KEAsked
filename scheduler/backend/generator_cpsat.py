@@ -2399,6 +2399,24 @@ class CpsatScheduleGenerator:
             _isolated_ok = pid_cfg and (
                 pid_cfg.prefer_singleton_nights or pid_cfg.allow_isolated_nights
             ) or pid in zero_zero_floor_info or _max_nights_forces_isolation or _single_night_requested
+            # ONE isolated night for an odd request under a two-night cap
+            # (user decision 2026-10-30). With max_consecutive_nights 2
+            # and no lone nights, only even counts are reachable: P31
+            # asked for 5 and got 6 in every solve, P92/P51/P39 asked for
+            # 3 and got 4 or 2. The human January hit all four exactly,
+            # each time with pairs plus exactly one lone night (P31: 7,
+            # 23-24, 29-30). So: at most one night with no adjacent night;
+            # since every other run is then exactly a pair, the lone
+            # night can only appear when the count is odd. HC-13c
+            # (night / day off / night) still applies.
+            _one_isolated_allowed = bool(
+                not _isolated_ok and pid_cfg
+                and self._effective_max_nights(pid, pid_cfg) == 2
+                and _sub13 and _sub13.shifts_2400h_stated
+                and _sub13.shifts_2400h_requested >= 3
+                and _sub13.shifts_2400h_requested % 2 == 1
+            )
+            lone_night_slack: list = []
             if not _isolated_ok:
                 for d_idx in range(len(all_dates)):
                     curr = night_bool.get((pid, d_idx))
@@ -2420,8 +2438,14 @@ class CpsatScheduleGenerator:
                     # only ever looked at in-month neighbors.
                     if any(_is_trailing_night(pid, d_idx + off) for off in (-1, 1) if d_idx + off < 0):
                         continue
-                    if neighbors:
+                    if _one_isolated_allowed:
+                        lone = model.new_bool_var(f"lone_night_{pid}_{d_idx}")
+                        lone_night_slack.append(lone)
+                        model.add(curr <= sum(neighbors) + lone)
+                    elif neighbors:
                         model.add(curr <= sum(neighbors))
+                if lone_night_slack:
+                    model.add(sum(lone_night_slack) <= 1)
 
             for d_idx in range(len(all_dates) - 2):
                 d0 = night_bool.get((pid, d_idx))

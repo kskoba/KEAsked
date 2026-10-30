@@ -266,6 +266,21 @@ class PhysicianConfig:
     # in a row).
     max_consecutive_1800h: int = 3
 
+    # Hard cap on shifts in ANY rolling 7-day window (2026-10-29, jan6
+    # feedback: P19 has three admin days a week and wants at most 3 shifts
+    # in any 7 days; the jan6 solve gave her 4 in Jan 8-14). None (default)
+    # = no per-physician cap; everyone still gets the soft roster-wide
+    # density penalty (generator_cpsat.py, feature weekly_density_penalty).
+    max_shifts_per_7_days: Optional[int] = None
+
+    # Hard cap on "late evening" shifts per month -- starts of 1700h or
+    # later (1700h NEHC, the 1800h shifts, 2000h NEHC; the 1600h Float
+    # ends at midnight and does not count). 2026-10-29, jan6 feedback:
+    # P19 wants one late evening a month and got an 1800h and a 2000h.
+    # None (default) = no cap. Distinct from max_consecutive_1800h, which
+    # only limits 1800h shifts on consecutive days.
+    max_late_shifts_per_month: Optional[int] = None
+
     # If True, hard-cap total shifts at shifts_requested rather than shifts_max.
     cap_at_requested: bool = False
 
@@ -565,6 +580,13 @@ def describe_physician_facing_rules(cfg: "PhysicianConfig") -> list[str]:
         items.append(_CALL_LINKAGE_TEXT[cfg.call_linkage])
     if cfg.max_consecutive_same_site is not None:
         items.append(f"You're never scheduled more than {cfg.max_consecutive_same_site} day(s) in a row at the same site.")
+    if cfg.max_shifts_per_7_days is not None:
+        items.append(f"You're never scheduled more than {cfg.max_shifts_per_7_days} shift(s) in any 7-day period.")
+    if cfg.max_late_shifts_per_month is not None:
+        items.append(
+            f"You're scheduled at most {cfg.max_late_shifts_per_month} late-evening shift(s) a month "
+            "(shifts starting 1700h or later)."
+        )
     if cfg.anchor_preference and cfg.anchor_preference in _ANCHOR_PREFERENCE_TEXT:
         items.append(_ANCHOR_PREFERENCE_TEXT[cfg.anchor_preference])
 
@@ -671,6 +693,11 @@ def _parse_physician(raw: dict) -> PhysicianConfig:
         int(raw_float_target) if raw_float_target is not None else None
     )
 
+    raw_max_7 = sched.get("max_shifts_per_7_days")
+    parsed_max_7: Optional[int] = int(raw_max_7) if raw_max_7 is not None else None
+    raw_max_late = sched.get("max_late_shifts_per_month")
+    parsed_max_late: Optional[int] = int(raw_max_late) if raw_max_late is not None else None
+
     return PhysicianConfig(
         id=str(raw["id"]),
         name=str(raw["name"]),
@@ -719,6 +746,8 @@ def _parse_physician(raw: dict) -> PhysicianConfig:
         avoid_mondays=bool(sched.get("avoid_mondays", False)),
         rest_after_late_shift=bool(sched.get("rest_after_late_shift", False)),
         max_consecutive_1800h=int(sched.get("max_consecutive_1800h", 3)),
+        max_shifts_per_7_days=parsed_max_7,
+        max_late_shifts_per_month=parsed_max_late,
         cap_at_requested=bool(sched.get("cap_at_requested", False)),
         special_provisions=bool(sched.get("special_provisions", False)),
         casual=bool(sched.get("casual", False)),
@@ -846,6 +875,10 @@ def physician_config_to_raw(cfg: PhysicianConfig) -> dict:
         sched["rest_after_late_shift"] = True
     if cfg.max_consecutive_1800h != 3:
         sched["max_consecutive_1800h"] = cfg.max_consecutive_1800h
+    if cfg.max_shifts_per_7_days is not None:
+        sched["max_shifts_per_7_days"] = cfg.max_shifts_per_7_days
+    if cfg.max_late_shifts_per_month is not None:
+        sched["max_late_shifts_per_month"] = cfg.max_late_shifts_per_month
     if cfg.cap_at_requested:
         sched["cap_at_requested"] = True
     if cfg.special_provisions:

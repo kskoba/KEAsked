@@ -40,8 +40,10 @@ from scheduler.backend.generator import (
     _DEFAULT_MAX_CONSEC,
     _DEFAULT_MAX_WEEKENDS,
     _HARD_VIOLATION_RULES,
+    _LATE_EVENING_MIN_START_HOUR,
     _WEEKEND_WEEKDAYS,
     _weekend_key,
+    feature_enabled,
 )
 from scheduler.backend.models import PhysicianSubmission
 from scheduler.backend.trailing import PriorMonthSummary, acute_eligible
@@ -670,6 +672,31 @@ class CpsatScheduleGenerator:
                                 for shift in block:
                                     window_vars.append(shifts[(pid, d_idx, shift.code)])
                     model.add(sum(window_vars) + window_total <= mc)
+
+        # ----------------------------------------------------------------
+        # HC-8b: per-physician hard cap on shifts in ANY rolling 7-day
+        # window (PhysicianConfig.max_shifts_per_7_days, 2026-10-29 jan6
+        # feedback -- P19: three admin days a week, at most 3 shifts in 7).
+        # Same window shape as HC-8, including the cross-month windows that
+        # count the previous month's trailing days as fixed facts.
+        # ----------------------------------------------------------------
+        for pid in pids:
+            cap7_cfg = _get_cfg(pid)
+            cap7 = cap7_cfg.max_shifts_per_7_days if cap7_cfg else None
+            if cap7 is None or cap7 < 0:
+                continue
+            for start in range(-6, len(all_dates) - 6):
+                window_total = 0
+                window_vars = []
+                for d_idx in range(start, start + 7):
+                    if d_idx < 0:
+                        window_total += 1 if _trailing_shift(pid, d_idx) is not None else 0
+                    else:
+                        for block in BLOCKS:
+                            for shift in block:
+                                window_vars.append(shifts[(pid, d_idx, shift.code)])
+                if window_vars:
+                    model.add(sum(window_vars) + window_total <= cap7)
 
         # ----------------------------------------------------------------
         # HC-9: 23h spacing between adjacent-day shifts
@@ -2489,6 +2516,30 @@ class CpsatScheduleGenerator:
                     model.add(sum(window_vars) <= mc1800)
 
         # ----------------------------------------------------------------
+        # HC-12d: per-physician hard cap on late-evening shifts per month
+        # (PhysicianConfig.max_late_shifts_per_month, 2026-10-29 jan6
+        # feedback -- P19 wants one late evening a month and the jan6 solve
+        # gave her an 1800h and a 2000h). Late = a start of 1700h or later
+        # (_LATE_EVENING_MIN_START_HOUR); the 1600h Float does not count.
+        # Counted over every scheduled day of the solve, spill-over
+        # included, so a December solve's Jan 1 counts toward December.
+        # ----------------------------------------------------------------
+        for pid in pids:
+            late_cfg = _get_cfg(pid)
+            late_cap = late_cfg.max_late_shifts_per_month if late_cfg else None
+            if late_cap is None or late_cap < 0:
+                continue
+            late_vars = [
+                shifts[(pid, d_idx, shift.code)]
+                for d_idx in range(len(all_dates))
+                for block in BLOCKS
+                for shift in block
+                if shift.start_hour >= _LATE_EVENING_MIN_START_HOUR and shift.time != "2400h"
+            ]
+            if late_vars:
+                model.add(sum(late_vars) <= late_cap)
+
+        # ----------------------------------------------------------------
         # HC-12b: Post-block cool-down (post_block_rest_days)
         # If a physician works a stretch of >= post_block_min_length
         # consecutive days that is immediately followed by a day off (i.e.
@@ -2589,6 +2640,62 @@ class CpsatScheduleGenerator:
                 model.add_implication(run4, w3)
                 model.add(w0 + w1 + w2 + w3 <= 3 + run4)
                 run_penalty_terms.append(-_RUN4_PENALTY * run4)
+
+        # ----------------------------------------------------------------
+        # Soft: rolling density (feature weekly_density_penalty, 2026-10-29
+        # jan6 feedback: P10 got 8 of 12 shifts in Jan 19-31 as 2 on / 1 off
+        # / 3 on, P31 6 shifts in 7 days, P19 4 in 7). Nothing in the
+        # objective paced a month before this -- the only run-shape terms
+        # were the +10 adjacency bonus, the 4-run penalty and the hard SIAR
+        # cap. Measured against the human January schedule, "5 in 7 days"
+        # is NOT what separates the solver from the human (22 physicians
+        # over a flat 4-per-7 in the human schedule vs 23-26 in the solver
+        # runs; 20-odd physicians request so many shifts in so few offered
+        # days that 5 in 7 is forced), so that step is only a tie-breaker.
+        # The real gaps are at the extreme: 6 in 7 days (jan6 5 physicians,
+        # human 1) and a run / single day off / run holding 5+ shifts
+        # (16-17 vs 5). Hence three steps, each counted once per worked
+        # day whose TRAILING window reaches the threshold (so a 5-day
+        # cluster pays its 5th-shift step once, not in every window that
+        # contains it):
+        #   5 in the trailing 7 days  ->  50   (tie-breaker)
+        #   5 in the trailing 6 days  -> 100   (the 2-off-3 / 3-off-2 sandwich)
+        #   6 in the trailing 7 days  -> 400
+        # prefer_clustered_nights physicians (P52: full-length night runs by
+        # choice) are exempt. A per-physician hard cap is
+        # max_shifts_per_7_days (HC-8b). Trailing days from the previous
+        # month count as worked in the first windows.
+        # ----------------------------------------------------------------
+        _DENSITY_5_IN_7_PENALTY = 50
+        _DENSITY_5_IN_6_PENALTY = 100
+        _DENSITY_6_IN_7_PENALTY = 400
+        density_penalty_terms: list = []
+        if feature_enabled(self.config, "weekly_density_penalty"):
+            def _worked_or_trailing(pid: str, d_idx: int):
+                if d_idx < 0:
+                    return 1 if _trailing_shift(pid, d_idx) is not None else 0
+                return worked_bool[(pid, d_idx)]
+
+            for pid in pids:
+                dens_cfg = _get_cfg(pid)
+                if dens_cfg and dens_cfg.prefer_clustered_nights:
+                    continue
+                for d_idx in range(len(all_dates)):
+                    w_today = worked_bool[(pid, d_idx)]
+                    win7 = sum(_worked_or_trailing(pid, k) for k in range(d_idx - 6, d_idx + 1))
+                    win6 = sum(_worked_or_trailing(pid, k) for k in range(d_idx - 5, d_idx + 1))
+                    # Each step literal must be 1 when today is worked and the
+                    # trailing window is at/over the threshold; it may stay 0
+                    # on a day off (the "- 7 * (1 - w_today)" slack).
+                    five7 = model.new_bool_var(f"dens5in7_{pid}_{d_idx}")
+                    model.add(five7 >= win7 - 4 - 7 * (1 - w_today))
+                    five6 = model.new_bool_var(f"dens5in6_{pid}_{d_idx}")
+                    model.add(five6 >= win6 - 4 - 7 * (1 - w_today))
+                    six7 = model.new_bool_var(f"dens6in7_{pid}_{d_idx}")
+                    model.add(six7 >= win7 - 5 - 7 * (1 - w_today))
+                    density_penalty_terms.append(-_DENSITY_5_IN_7_PENALTY * five7)
+                    density_penalty_terms.append(-_DENSITY_5_IN_6_PENALTY * five6)
+                    density_penalty_terms.append(-_DENSITY_6_IN_7_PENALTY * six7)
 
         # Soft: site variety within a run of consecutive days (2026-10-07).
         # Two parts, per the scheduler's stated rule:
@@ -2691,6 +2798,7 @@ class CpsatScheduleGenerator:
         objective_terms.extend(clustering_bonus_terms)
         objective_terms.extend(any_cluster_terms)
         objective_terms.extend(run_penalty_terms)
+        objective_terms.extend(density_penalty_terms)
         objective_terms.extend(long_gap_penalty_terms)
         objective_terms.extend(swing_penalty_terms)
         objective_terms.extend(anchor_overage_penalty_terms)

@@ -480,6 +480,22 @@ export default function RosterEditor() {
                     nullable
                   />
                 </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <IntegerField
+                    label="Max shifts in any 7 days (blank = no cap)"
+                    value={form.max_shifts_per_7_days}
+                    onChange={(v) => setField('max_shifts_per_7_days', v)}
+                    nullable
+                    hint="Hard cap in every rolling 7-day window. Everyone also gets the soft roster-wide density rule (5th shift in 7 days discouraged, 6th strongly)."
+                  />
+                  <IntegerField
+                    label="Max late-evening shifts per month (blank = no cap)"
+                    value={form.max_late_shifts_per_month}
+                    onChange={(v) => setField('max_late_shifts_per_month', v)}
+                    nullable
+                    hint="Hard cap on shifts starting 1700h or later (1700h, 1800h, 2000h)."
+                  />
+                </div>
                 <SelectField
                   label="Non-acute site preference"
                   value={form.group_b_site_preference || ''}

@@ -577,6 +577,8 @@ class PhysicianDetail(BaseModel):
     avoid_mondays: bool = False
     rest_after_late_shift: bool = False
     max_consecutive_1800h: int = 3
+    max_shifts_per_7_days: Optional[int] = None    # hard cap in any rolling 7 days (blank = none)
+    max_late_shifts_per_month: Optional[int] = None  # hard cap on 1700h+ starts per month (blank = none)
     cap_at_requested: bool = False
     special_provisions: bool = False
     casual: bool = False

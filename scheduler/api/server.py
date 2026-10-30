@@ -1016,6 +1016,8 @@ def _physician_to_detail(cfg: PhysicianConfig) -> PhysicianDetail:
         avoid_mondays=cfg.avoid_mondays,
         rest_after_late_shift=cfg.rest_after_late_shift,
         max_consecutive_1800h=cfg.max_consecutive_1800h,
+        max_shifts_per_7_days=cfg.max_shifts_per_7_days,
+        max_late_shifts_per_month=cfg.max_late_shifts_per_month,
         cap_at_requested=cfg.cap_at_requested,
         special_provisions=cfg.special_provisions,
         casual=cfg.casual,
@@ -1131,6 +1133,8 @@ def update_physician(physician_id: str, body: PhysicianUpdateRequest) -> Physici
         # form state at this point (the input was removed from the UI), so
         # it's never read here.
         max_consecutive_1800h=body.max_consecutive_shifts,
+        max_shifts_per_7_days=body.max_shifts_per_7_days,
+        max_late_shifts_per_month=body.max_late_shifts_per_month,
         cap_at_requested=body.cap_at_requested,
         special_provisions=body.special_provisions,
         casual=body.casual,

@@ -84,12 +84,17 @@ def upsert_period(config: SkedConfig, period_id: str, label: str, opens_at: str,
 
 def upload_period_template(config: SkedConfig, period_id: str, template_path: str | Path) -> None:
     template_path = Path(template_path)
-    xlsx_b64 = base64.b64encode(template_path.read_bytes()).decode("ascii")
+    upload_period_template_bytes(config, period_id, template_path.name, template_path.read_bytes())
+
+
+def upload_period_template_bytes(config: SkedConfig, period_id: str, filename: str, data: bytes) -> None:
+    """Upload a template that only exists in memory (built by request_template.py)."""
+    xlsx_b64 = base64.b64encode(data).decode("ascii")
     with httpx.Client(timeout=60) as client:
         res = client.put(
             f"{config.base_url}/api/admin/period-template",
             headers=_headers(config),
-            json={"periodId": period_id, "filename": template_path.name, "xlsxBase64": xlsx_b64},
+            json={"periodId": period_id, "filename": filename, "xlsxBase64": xlsx_b64},
         )
     if res.status_code != 200:
         raise SkedApiError(f"Could not upload template for period {period_id!r}: {res.text}")

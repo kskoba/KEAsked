@@ -10,6 +10,63 @@ order). Never put real names back into tracked files.
 
 ## ⭐ Next task — start here
 
+**2026-10-31 — the monthly request template is GENERATED, not hand-made
+(first use: the March 2027 requests, everyone entering on sked).** The
+scheduler used to copy last month's blank xlsx, retype rows 3-4, paint the
+holiday window yellow, type its label in row 2 and edit A60 ("Return by
+MIDNIGHT ...", which went stale: the Jan 2027 and Feb 2027 sheets still
+said SEPTEMBER 30; Feb 2027 also missed Family Day). Now:
+- `scheduler/backend/month_calendar.py` (pure): `period_days` (Nov 1 -> Dec
+  1, Dec 2 -> Jan 1, Jan 2 -> 31, else whole month; `SPILLOVER_MONTHS`),
+  Alberta's 9 statutory holidays + 3 optional (Easter Monday, Heritage
+  Day, Boxing Day -- hints only), `suggested_marks` (every statutory
+  holiday in the period; Dec 24 -> Jan 1 relabelled "Christmas Rules
+  Apply", as every December sheet on record 2024-2026), `labelled_runs` /
+  `describe_runs`. User decision: pre-mark ALL statutory holidays; the EPSB
+  spring break moves yearly and is always clicked by hand.
+- `scheduler/backend/request_template.py`: `build_request_template(year,
+  month, marks, closes_at)` patches the committed master
+  `scheduler/data/request_template_master.xlsx` (the blank Feb 2027 sheet
+  from sked's /api/sample-template; the ONE tracked xlsx -- see the
+  .gitignore exception) -- rows 3/4 for the period's days, every shift
+  code on every day (column B of the master is the code source; AK labels
+  are sanity-checked, 23 rows), yellow FFFF00 on rows 2-4 of marked days,
+  the run label in row 2 above its first day, "Jan"/"Dec" above a
+  spill-over day, A1 placeholder, A2 empty (sked's comment cell), A60
+  "Return by MIDNIGHT <Month> <day> to keasked@gmail.com" (user: keep the
+  original address). Filename `<Month YYYY> Master Preferences with 0600
+  and night Q.xlsx` (sked reads month + year from it). Verified: parses
+  identically to the hand-made Dec 2026 sheet through sked's app.js logic
+  (dayCols 31, yellow 24..1) and through importer.py.
+- Routes: `POST /api/monthly-requests/plan {year, month}` (days, spill-over,
+  suggested + optional marks, window defaults = the month before, master
+  health), `POST /api/monthly-requests/template-preview` (saves under
+  `<config>/generated-templates/`), and `/send` accepts `generate_template
+  + year + month + marks` (builds in memory, `sked_client.
+  upload_period_template_bytes`, keeps a copy in generated-templates/; the
+  email then states the covered days, the deadline and the yellow runs).
+  `template_path` (own file) and "reuse what's on sked" still work.
+- Pane (`MonthlyRequestsPanel.jsx`): Month/Year pickers drive period id,
+  label, window; a Monday-first calendar of the period's days (spill-over
+  day italic) -- click toggles yellow, a new mark takes the holiday's name
+  or extends the neighbouring run's label; one label input per run; "Reset
+  to suggested"; "Preview the .xlsx" (opens locally, path on a remote
+  backend); radio "Use my own .xlsx file" keeps the old picker; an existing
+  period reuses its template unless "Replace the template" is ticked.
+- Tests: `test_month_calendar.py` (4), `test_request_template.py` (4),
+  `test_monthly_request_template_routes.py` (3). sked manual 3.2 updated
+  (sked repo, uncommitted -- deploy with `npm run deploy`). sked itself
+  needs NO change for this: it still receives an xlsx per period.
+- The bigger plan the user approved (not started): sked renders the grid
+  from a period definition (days + marks + shift catalogue pushed by
+  KEAsked) instead of parsing the xlsx, submissions keyed by date|code,
+  KEAsked imports sked JSON directly, the physician Export button becomes a
+  print view, the Previous-month folder picker retires after a few
+  sked-collected months; old template-based periods stay openable until
+  their month has passed. xlsx stays available throughout (this builder is
+  the scheduler-side "Export All" source once sked stops holding templates)
+  and is removed only when nothing legacy needs it.
+
 **2026-10-29 (overnight, unattended) — jan6 feedback round implemented;
 five rule changes behind `features:` flags in `scheduler_config.yaml`
 (commits f9ec434, d3433a7, c197f0f), then a 60-min January run.**

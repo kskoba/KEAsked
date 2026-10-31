@@ -183,16 +183,66 @@ class EmailCalendarLinksResponse(BaseModel):
     needs_attention: list[EmailCalendarLinksResult]
 
 
+class MarkedDayModel(BaseModel):
+    """One yellow 'holiday / bonus window' day in the request template."""
+    date: str   # ISO date
+    label: str = ""
+
+
+class PeriodPlanRequest(BaseModel):
+    year: int
+    month: int
+
+
+class PeriodPlanDay(BaseModel):
+    date: str
+    dow: str            # M T W R F S SU
+    in_month: bool      # False for the spill-over day (Dec 1 / Jan 1)
+
+
+class PeriodPlanResponse(BaseModel):
+    period_id: str
+    label: str
+    days: list[PeriodPlanDay]
+    spillover_day: str | None
+    suggested_marks: list[MarkedDayModel]      # pre-ticked: statutory holidays + the Christmas window
+    optional_holidays: list[MarkedDayModel]    # hints only (Easter Monday, Heritage Day, Boxing Day)
+    template_filename: str
+    default_opens_at: str   # ISO date
+    default_closes_at: str  # ISO date
+    master_ok: bool
+    master_error: str = ""
+
+
+class TemplatePreviewRequest(BaseModel):
+    year: int
+    month: int
+    marks: list[MarkedDayModel] = []
+    closes_at: str | None = None   # ISO date or datetime; fills the "Return by MIDNIGHT ..." line
+
+
+class TemplatePreviewResponse(BaseModel):
+    path: str
+    filename: str
+    marks_summary: list[str]
+
+
 class SendMonthlyRequestsRequest(BaseModel):
     period_id: str
     label: str
     opens_at: str  # ISO 8601
     closes_at: str  # ISO 8601
-    # Local filesystem path to that month's master schedule .xlsx. Optional
-    # when re-sending/targeting an already-existing period on sked (it
-    # already has a template) -- omit to reuse whatever's already uploaded
-    # there instead of re-uploading.
+    # Where the period's blank template comes from, in priority order:
+    # (1) `template_path`: a local .xlsx the scheduler picked (legacy path);
+    # (2) `generate_template` with `year`/`month`/`marks`: KEAsked builds it
+    #     from the committed master (scheduler/backend/request_template.py);
+    # (3) neither: reuse whatever is already uploaded to this period on sked
+    #     (the "resend / target specific people" path).
     template_path: str | None = None
+    generate_template: bool = False
+    year: int | None = None
+    month: int | None = None
+    marks: list[MarkedDayModel] = []
     extra_message: str = ""  # free text from the scheduler, included in the email body
     physician_ids: list[str] | None = None  # None = every active physician; otherwise just these
 

@@ -182,6 +182,24 @@ export async function sendMonthlyRequests(payload) {
 }
 
 /**
+ * The request period for a month: its days (incl. the Nov/Dec spill-over
+ * day), the pre-ticked holiday marks, optional-holiday hints and defaults.
+ * @returns {PeriodPlanResponse}
+ */
+export async function planMonthlyRequests(year, month) {
+  return request('POST', '/api/monthly-requests/plan', { year, month })
+}
+
+/**
+ * Build the month's blank template from the committed master with the given
+ * yellow marks and save it on the backend; returns the path to open.
+ * @returns {{ path: string, filename: string, marks_summary: string[] }}
+ */
+export async function previewMonthlyRequestTemplate(payload) {
+  return request('POST', '/api/monthly-requests/template-preview', payload)
+}
+
+/**
  * List annual-survey periods on sked.
  * @returns {{ surveys: { id: string, label: string, opens_at: string, closes_at: string }[] }}
  */

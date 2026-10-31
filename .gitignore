@@ -81,3 +81,7 @@ Request-Imports/
 docs/physician-pseudonyms.md
 analyze_schedules.py
 scheduler/config/anchor_overage_ledger.yaml
+
+# The blank shift-request master (no names in it) is the one xlsx that is tracked:
+# scheduler/backend/request_template.py builds each month's template from it.
+!scheduler/data/request_template_master.xlsx

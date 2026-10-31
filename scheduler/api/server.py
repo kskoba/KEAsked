@@ -108,6 +108,12 @@ from scheduler.api.schemas import (
     SendMonthlyRequestsRequest,
     SendMonthlyRequestsResult,
     SendMonthlyRequestsResponse,
+    MarkedDayModel,
+    PeriodPlanRequest,
+    PeriodPlanDay,
+    PeriodPlanResponse,
+    TemplatePreviewRequest,
+    TemplatePreviewResponse,
     SurveyInfo,
     SurveysResponse,
     SurveyCompletionRow,
@@ -130,6 +136,8 @@ from scheduler.backend import trailing as trailing_mod
 from scheduler.backend import acute_balance
 from scheduler.backend import anchor_ledger
 from scheduler.backend import anchor_floor_repair, weekend_repair
+from scheduler.backend import month_calendar
+from scheduler.backend import request_template
 from scheduler.backend.config import (
     CALL_LINKAGE_VALUES,
     GROUP_B_PREFS,
@@ -1818,6 +1826,98 @@ def sked_physician_link(body: PhysicianLinkRequest) -> PhysicianLinkResponse:
     return PhysicianLinkResponse(url=links[0]["url"])
 
 
+def _parse_marks(models: list[MarkedDayModel]) -> list[month_calendar.MarkedDay]:
+    out: list[month_calendar.MarkedDay] = []
+    for m in models:
+        try:
+            d = datetime.date.fromisoformat(m.date[:10])
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Bad marked day: {m.date!r}")
+        out.append(month_calendar.MarkedDay(d, (m.label or "").strip()))
+    return out
+
+
+def _parse_iso_date(value: str | None) -> datetime.date | None:
+    if not value:
+        return None
+    try:
+        return datetime.date.fromisoformat(value[:10])
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Bad date: {value!r}")
+
+
+def _generated_templates_dir() -> Path:
+    d = _CONFIG_DIR / "generated-templates"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+@app.post("/api/monthly-requests/plan", response_model=PeriodPlanResponse)
+def plan_monthly_requests(body: PeriodPlanRequest) -> PeriodPlanResponse:
+    """
+    Everything the Send Monthly Shift Requests pane needs to draw a month:
+    the period's days (Nov 1 -> Dec 1, Dec 2 -> Jan 1, Jan 2 -> 31, else the
+    whole month), the pre-ticked yellow days (Alberta statutory holidays +
+    the Dec 24 -> Jan 1 Christmas window), optional-holiday hints, and the
+    window defaults (opens the 1st, closes the last day of the month before).
+    """
+    if not 1 <= body.month <= 12 or not 2020 <= body.year <= 2099:
+        raise HTTPException(status_code=400, detail="year/month out of range")
+    y, m = body.year, body.month
+    days = month_calendar.period_days(y, m)
+    spill = month_calendar.spillover_day(y, m)
+    # Requests go out the month before: window opens on its 1st, closes on its last day.
+    py, pm = month_calendar.previous_month(y, m)
+    opens = datetime.date(py, pm, 1)
+    closes = datetime.date(py, pm, calendar.monthrange(py, pm)[1])
+    master_ok, master_error = True, ""
+    try:
+        wb = openpyxl.load_workbook(request_template.MASTER_PATH, read_only=False)
+        request_template._check_master(wb.worksheets[0])
+    except Exception as exc:  # missing file or drifted layout: the pane shows it, the send refuses
+        master_ok, master_error = False, f"{request_template.MASTER_PATH}: {exc}"
+    return PeriodPlanResponse(
+        period_id=month_calendar.period_id(y, m),
+        label=month_calendar.period_label(y, m),
+        days=[
+            PeriodPlanDay(date=d.isoformat(), dow=month_calendar.DOW_LABELS[d.weekday()], in_month=(d.month == m))
+            for d in days
+        ],
+        spillover_day=spill.isoformat() if spill else None,
+        suggested_marks=[MarkedDayModel(date=mk.date.isoformat(), label=mk.label) for mk in month_calendar.suggested_marks(y, m)],
+        optional_holidays=[MarkedDayModel(date=mk.date.isoformat(), label=mk.label) for mk in month_calendar.optional_holidays_in_period(y, m)],
+        template_filename=request_template.template_filename(y, m),
+        default_opens_at=opens.isoformat(),
+        default_closes_at=closes.isoformat(),
+        master_ok=master_ok,
+        master_error=master_error,
+    )
+
+
+def _build_template_or_400(year: int, month: int, marks: list[MarkedDayModel], closes_at: str | None) -> tuple[bytes, str]:
+    try:
+        data = request_template.build_request_template(
+            year, month, _parse_marks(marks), closes_at=_parse_iso_date(closes_at),
+        )
+    except (ValueError, request_template.MasterTemplateError) as exc:
+        raise HTTPException(status_code=400, detail=f"Could not build the request template: {exc}")
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail=f"Master template missing: {exc}")
+    return data, request_template.template_filename(year, month)
+
+
+@app.post("/api/monthly-requests/template-preview", response_model=TemplatePreviewResponse)
+def preview_monthly_request_template(body: TemplatePreviewRequest) -> TemplatePreviewResponse:
+    """Build the month's template with the pane's current marks and save it for the scheduler to open."""
+    data, filename = _build_template_or_400(body.year, body.month, body.marks, body.closes_at)
+    path = _generated_templates_dir() / filename
+    path.write_bytes(data)
+    return TemplatePreviewResponse(
+        path=str(path), filename=filename,
+        marks_summary=month_calendar.describe_runs(_parse_marks(body.marks)),
+    )
+
+
 @app.post("/api/monthly-requests/send", response_model=SendMonthlyRequestsResponse)
 def send_monthly_requests(body: SendMonthlyRequestsRequest) -> SendMonthlyRequestsResponse:
     sked_config = sked_client.load_sked_config()
@@ -1836,10 +1936,20 @@ def send_monthly_requests(body: SendMonthlyRequestsRequest) -> SendMonthlyReques
         )
 
     template_path: Path | None = None
+    generated: tuple[bytes, str] | None = None
     if body.template_path:
         template_path = Path(body.template_path)
         if not template_path.is_file():
             raise HTTPException(status_code=400, detail=f"Template file not found: {body.template_path}")
+    elif body.generate_template:
+        if body.year is None or body.month is None:
+            raise HTTPException(status_code=400, detail="year and month are required to generate the template")
+        generated = _build_template_or_400(body.year, body.month, body.marks, body.closes_at)
+        # Keep a copy beside the previews so the scheduler can see exactly what went out.
+        try:
+            (_generated_templates_dir() / generated[1]).write_bytes(generated[0])
+        except OSError as exc:
+            print(f"[monthly-requests] could not save a copy of the generated template: {exc}")
 
     roster: dict = _state.get("roster") or {}
     if not roster:
@@ -1865,6 +1975,8 @@ def send_monthly_requests(body: SendMonthlyRequestsRequest) -> SendMonthlyReques
         sked_client.upsert_period(sked_config, body.period_id, body.label, body.opens_at, body.closes_at)
         if template_path is not None:
             sked_client.upload_period_template(sked_config, body.period_id, template_path)
+        elif generated is not None:
+            sked_client.upload_period_template_bytes(sked_config, body.period_id, generated[1], generated[0])
         # else: reuse whatever's already uploaded to this period on sked --
         # the "resend / target specific people on an existing period" path.
         links = sked_client.generate_period_links(
@@ -1888,6 +2000,20 @@ def send_monthly_requests(body: SendMonthlyRequestsRequest) -> SendMonthlyReques
     except sked_client.SkedApiError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
+    # When KEAsked built the template it knows the period's days and the
+    # yellow windows, so the email can say them outright.
+    period_note = ""
+    if generated is not None and body.year is not None and body.month is not None:
+        days = month_calendar.period_days(body.year, body.month)
+        closes = _parse_iso_date(body.closes_at)
+        lines = [f"\nThe sheet covers {days[0]:%b %-d} to {days[-1]:%b %-d}."]
+        if closes is not None:
+            lines.append(f"Please submit by midnight on {closes:%B %-d}.")
+        runs = month_calendar.describe_runs(_parse_marks(body.marks))
+        if runs:
+            lines.append("Holiday / bonus window days marked in yellow: " + "; ".join(runs) + ".")
+        period_note = "\n".join(lines) + "\n"
+
     results: list[SendMonthlyRequestsResult] = []
     for link in links:
         physician_id, name, email, url, has_email = (
@@ -1909,6 +2035,7 @@ def send_monthly_requests(body: SendMonthlyRequestsRequest) -> SendMonthlyReques
             f"This link is unique to you — please don't forward it. It saves your progress "
             f"automatically, so you can close the window and come back to this same link "
             f"any time to pick up where you left off, right up until the submission window closes.\n"
+            + period_note
             + (f"\n{extra}\n" if extra else "")
         )
         try:

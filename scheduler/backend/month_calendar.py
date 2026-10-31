@@ -4,11 +4,14 @@ Period calendar rules for the monthly shift-request template.
 Pure functions, no I/O. Everything the scheduler used to encode by hand in
 the month's blank xlsx lives here:
 
-- which calendar days a request period covers (`period_days`): November runs
-  Nov 1 -> Dec 1 and December Dec 2 -> Jan 1 (the department's spill-over
-  convention, so holiday planning can see the first day of the next month);
-  January therefore starts on the 2nd; every other month is the whole month.
-  User-confirmed ranges 2026-10-08.
+- which calendar days a request period covers (`period_days`): by default
+  November runs Nov 1 -> Dec 1 and December Dec 2 -> Jan 1 (the department's
+  spill-over convention, so holiday planning can see the first day of the
+  next month); January therefore starts on the 2nd; every other month is the
+  whole month (user-confirmed ranges 2026-10-08). These are DEFAULTS: the
+  scheduler may type the period's first and last day in the pane (user
+  request 2026-10-31), so every function here takes an optional explicit
+  range and `validate_period_range` says what an acceptable one is.
 - Alberta's statutory general holidays (`alberta_statutory_holidays`) and
   the optional ones employers may observe (`alberta_optional_holidays`).
 - the suggested yellow "holiday / bonus window" marks for a period
@@ -70,21 +73,69 @@ def next_month(year: int, month: int) -> tuple[int, int]:
     return (year + 1, 1) if month == 12 else (year, month + 1)
 
 
-def period_days(year: int, month: int) -> list[dt.date]:
-    """Every calendar day the request period for `year`/`month` covers, in order."""
+# A period may run at most this many days past the end of its month (the
+# department's convention is one; the template itself fits 32 columns).
+MAX_SPILLOVER_DAYS = 7
+
+
+def default_period_range(year: int, month: int) -> tuple[dt.date, dt.date]:
+    """The department's conventional first and last day for `year`/`month`'s sheet."""
     prev_month = previous_month(year, month)[1]
     first_day = 2 if prev_month in SPILLOVER_MONTHS else 1
     last_day = calendar.monthrange(year, month)[1]
-    days = [dt.date(year, month, d) for d in range(first_day, last_day + 1)]
+    last = dt.date(year, month, last_day)
     if month in SPILLOVER_MONTHS:
-        days.append(dt.date(year, month, last_day) + dt.timedelta(days=1))
-    return days
+        last += dt.timedelta(days=1)
+    return dt.date(year, month, first_day), last
 
 
-def spillover_day(year: int, month: int) -> dt.date | None:
-    """The trailing next-month day in this period's template, if any."""
-    days = period_days(year, month)
-    return days[-1] if days[-1].month != month else None
+def validate_period_range(year: int, month: int, first: dt.date, last: dt.date) -> None:
+    """
+    Raise ValueError unless `first`..`last` is a sensible sheet range for
+    `year`/`month`: it starts inside the month and ends in the month or at
+    most MAX_SPILLOVER_DAYS into the next one.
+    """
+    if (first.year, first.month) != (year, month):
+        raise ValueError(
+            f"the period's first day must fall in {period_label(year, month)} (got {first.isoformat()})"
+        )
+    if last < first:
+        raise ValueError(f"the period's last day {last.isoformat()} is before its first day {first.isoformat()}")
+    month_end = dt.date(year, month, calendar.monthrange(year, month)[1])
+    if last > month_end + dt.timedelta(days=MAX_SPILLOVER_DAYS):
+        raise ValueError(
+            f"the period's last day may run at most {MAX_SPILLOVER_DAYS} days past "
+            f"{month_end:%b %-d} (got {last.isoformat()})"
+        )
+
+
+def resolve_period_range(
+    year: int, month: int, first_day: dt.date | None = None, last_day: dt.date | None = None,
+) -> tuple[dt.date, dt.date]:
+    """The explicit range where given, the default otherwise; validated."""
+    dfirst, dlast = default_period_range(year, month)
+    first = first_day or dfirst
+    last = last_day or dlast
+    validate_period_range(year, month, first, last)
+    return first, last
+
+
+def period_days(
+    year: int, month: int, first_day: dt.date | None = None, last_day: dt.date | None = None,
+) -> list[dt.date]:
+    """Every calendar day the request period for `year`/`month` covers, in order."""
+    first, last = resolve_period_range(year, month, first_day, last_day)
+    return [first + dt.timedelta(days=i) for i in range((last - first).days + 1)]
+
+
+def spillover_day(
+    year: int, month: int, first_day: dt.date | None = None, last_day: dt.date | None = None,
+) -> dt.date | None:
+    """The first next-month day in this period's template, if any."""
+    for d in period_days(year, month, first_day, last_day):
+        if d.month != month:
+            return d
+    return None
 
 
 def _nth_weekday(year: int, month: int, weekday: int, n: int) -> dt.date:
@@ -131,28 +182,35 @@ def in_christmas_window(d: dt.date) -> bool:
     return (d.month, d.day) >= _CHRISTMAS_WINDOW_START or (d.month, d.day) <= _CHRISTMAS_WINDOW_END
 
 
-def suggested_marks(year: int, month: int) -> list[MarkedDay]:
+def suggested_marks(
+    year: int, month: int, first_day: dt.date | None = None, last_day: dt.date | None = None,
+) -> list[MarkedDay]:
     """
     The pre-ticked yellow days for a period: every Alberta statutory holiday
     that falls inside it, with the Dec 24 -> Jan 1 window relabelled as the
     department's Christmas rules window (it swallows Christmas Day and New
-    Year's Day, as the hand-made templates did).
+    Year's Day, as the hand-made templates did). The relabel only applies
+    when the sheet actually reaches Dec 24: a January sheet that someone
+    starts on the 1st shows New Year's Day under its own name.
     """
-    days = period_days(year, month)
+    days = period_days(year, month, first_day, last_day)
     statutory: dict[dt.date, str] = {}
     for y in sorted({d.year for d in days}):
         statutory.update(alberta_statutory_holidays(y))
+    christmas = any((d.month, d.day) >= _CHRISTMAS_WINDOW_START for d in days)
     out: list[MarkedDay] = []
     for d in days:
-        if in_christmas_window(d):
+        if christmas and in_christmas_window(d):
             out.append(MarkedDay(d, CHRISTMAS_WINDOW_LABEL))
         elif d in statutory:
             out.append(MarkedDay(d, statutory[d]))
     return out
 
 
-def optional_holidays_in_period(year: int, month: int) -> list[MarkedDay]:
-    days = period_days(year, month)
+def optional_holidays_in_period(
+    year: int, month: int, first_day: dt.date | None = None, last_day: dt.date | None = None,
+) -> list[MarkedDay]:
+    days = period_days(year, month, first_day, last_day)
     optional: dict[dt.date, str] = {}
     for y in sorted({d.year for d in days}):
         optional.update(alberta_optional_holidays(y))

@@ -186,8 +186,10 @@ export async function sendMonthlyRequests(payload) {
  * day), the pre-ticked holiday marks, optional-holiday hints and defaults.
  * @returns {PeriodPlanResponse}
  */
-export async function planMonthlyRequests(year, month) {
-  return request('POST', '/api/monthly-requests/plan', { year, month })
+export async function planMonthlyRequests(year, month, firstDay = null, lastDay = null) {
+  return request('POST', '/api/monthly-requests/plan', {
+    year, month, first_day: firstDay || null, last_day: lastDay || null
+  })
 }
 
 /**

@@ -1856,16 +1856,19 @@ def _generated_templates_dir() -> Path:
 def plan_monthly_requests(body: PeriodPlanRequest) -> PeriodPlanResponse:
     """
     Everything the Send Monthly Shift Requests pane needs to draw a month:
-    the period's days (Nov 1 -> Dec 1, Dec 2 -> Jan 1, Jan 2 -> 31, else the
-    whole month), the pre-ticked yellow days (Alberta statutory holidays +
-    the Dec 24 -> Jan 1 Christmas window), optional-holiday hints, and the
-    window defaults (opens the 1st, closes the last day of the month before).
+    the period's days (the typed first_day/last_day, else the department's
+    default: Nov 1 -> Dec 1, Dec 2 -> Jan 1, Jan 2 -> 31, else the whole
+    month), the pre-ticked yellow days (Alberta statutory holidays + the Dec
+    24 -> Jan 1 Christmas window), optional-holiday hints, and the window
+    defaults (opens the 1st, closes the last day of the month before).
     """
     if not 1 <= body.month <= 12 or not 2020 <= body.year <= 2099:
         raise HTTPException(status_code=400, detail="year/month out of range")
     y, m = body.year, body.month
-    days = month_calendar.period_days(y, m)
-    spill = month_calendar.spillover_day(y, m)
+    first, last = _period_range_or_400(y, m, body.first_day, body.last_day)
+    default_first, default_last = month_calendar.default_period_range(y, m)
+    days = month_calendar.period_days(y, m, first, last)
+    spill = month_calendar.spillover_day(y, m, first, last)
     # Requests go out the month before: window opens on its 1st, closes on its last day.
     py, pm = month_calendar.previous_month(y, m)
     opens = datetime.date(py, pm, 1)
@@ -1879,13 +1882,19 @@ def plan_monthly_requests(body: PeriodPlanRequest) -> PeriodPlanResponse:
     return PeriodPlanResponse(
         period_id=month_calendar.period_id(y, m),
         label=month_calendar.period_label(y, m),
+        first_day=first.isoformat(),
+        last_day=last.isoformat(),
+        default_first_day=default_first.isoformat(),
+        default_last_day=default_last.isoformat(),
         days=[
             PeriodPlanDay(date=d.isoformat(), dow=month_calendar.DOW_LABELS[d.weekday()], in_month=(d.month == m))
             for d in days
         ],
         spillover_day=spill.isoformat() if spill else None,
-        suggested_marks=[MarkedDayModel(date=mk.date.isoformat(), label=mk.label) for mk in month_calendar.suggested_marks(y, m)],
-        optional_holidays=[MarkedDayModel(date=mk.date.isoformat(), label=mk.label) for mk in month_calendar.optional_holidays_in_period(y, m)],
+        suggested_marks=[MarkedDayModel(date=mk.date.isoformat(), label=mk.label)
+                         for mk in month_calendar.suggested_marks(y, m, first, last)],
+        optional_holidays=[MarkedDayModel(date=mk.date.isoformat(), label=mk.label)
+                           for mk in month_calendar.optional_holidays_in_period(y, m, first, last)],
         template_filename=request_template.template_filename(y, m),
         default_opens_at=opens.isoformat(),
         default_closes_at=closes.isoformat(),
@@ -1894,10 +1903,27 @@ def plan_monthly_requests(body: PeriodPlanRequest) -> PeriodPlanResponse:
     )
 
 
-def _build_template_or_400(year: int, month: int, marks: list[MarkedDayModel], closes_at: str | None) -> tuple[bytes, str]:
+def _period_range_or_400(
+    year: int, month: int, first_day: str | None, last_day: str | None,
+) -> tuple[datetime.date, datetime.date]:
+    """The sheet's first/last day: the scheduler's own when typed, else the month's default."""
+    try:
+        return month_calendar.resolve_period_range(
+            year, month, _parse_iso_date(first_day), _parse_iso_date(last_day),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+def _build_template_or_400(
+    year: int, month: int, marks: list[MarkedDayModel], closes_at: str | None,
+    first_day: str | None = None, last_day: str | None = None,
+) -> tuple[bytes, str]:
+    first, last = _period_range_or_400(year, month, first_day, last_day)
     try:
         data = request_template.build_request_template(
             year, month, _parse_marks(marks), closes_at=_parse_iso_date(closes_at),
+            first_day=first, last_day=last,
         )
     except (ValueError, request_template.MasterTemplateError) as exc:
         raise HTTPException(status_code=400, detail=f"Could not build the request template: {exc}")
@@ -1909,7 +1935,9 @@ def _build_template_or_400(year: int, month: int, marks: list[MarkedDayModel], c
 @app.post("/api/monthly-requests/template-preview", response_model=TemplatePreviewResponse)
 def preview_monthly_request_template(body: TemplatePreviewRequest) -> TemplatePreviewResponse:
     """Build the month's template with the pane's current marks and save it for the scheduler to open."""
-    data, filename = _build_template_or_400(body.year, body.month, body.marks, body.closes_at)
+    data, filename = _build_template_or_400(
+        body.year, body.month, body.marks, body.closes_at, body.first_day, body.last_day,
+    )
     path = _generated_templates_dir() / filename
     path.write_bytes(data)
     return TemplatePreviewResponse(
@@ -1944,7 +1972,9 @@ def send_monthly_requests(body: SendMonthlyRequestsRequest) -> SendMonthlyReques
     elif body.generate_template:
         if body.year is None or body.month is None:
             raise HTTPException(status_code=400, detail="year and month are required to generate the template")
-        generated = _build_template_or_400(body.year, body.month, body.marks, body.closes_at)
+        generated = _build_template_or_400(
+            body.year, body.month, body.marks, body.closes_at, body.first_day, body.last_day,
+        )
         # Keep a copy beside the previews so the scheduler can see exactly what went out.
         try:
             (_generated_templates_dir() / generated[1]).write_bytes(generated[0])
@@ -2004,7 +2034,8 @@ def send_monthly_requests(body: SendMonthlyRequestsRequest) -> SendMonthlyReques
     # yellow windows, so the email can say them outright.
     period_note = ""
     if generated is not None and body.year is not None and body.month is not None:
-        days = month_calendar.period_days(body.year, body.month)
+        first, last = _period_range_or_400(body.year, body.month, body.first_day, body.last_day)
+        days = month_calendar.period_days(body.year, body.month, first, last)
         closes = _parse_iso_date(body.closes_at)
         lines = [f"\nThe sheet covers {days[0]:%b %-d} to {days[-1]:%b %-d}."]
         if closes is not None:

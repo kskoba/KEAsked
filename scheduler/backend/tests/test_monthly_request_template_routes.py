@@ -131,3 +131,36 @@ def test_send_generates_and_uploads_the_template(monkeypatch, tmp_path):
         "generate_template": True,
     })
     assert r.status_code == 400
+
+
+def test_plan_and_preview_accept_a_typed_period_range(monkeypatch, tmp_path):
+    monkeypatch.setattr(server, "_CONFIG_DIR", tmp_path)
+    client = TestClient(server.app)
+    r = client.post("/api/monthly-requests/plan", json={
+        "year": 2026, "month": 12, "first_day": "2026-12-01", "last_day": "2026-12-31",
+    })
+    assert r.status_code == 200, r.text
+    plan = r.json()
+    assert plan["first_day"] == "2026-12-01" and plan["last_day"] == "2026-12-31"
+    assert plan["default_first_day"] == "2026-12-02" and plan["default_last_day"] == "2027-01-01"
+    assert plan["days"][0]["date"] == "2026-12-01" and plan["days"][-1]["date"] == "2026-12-31"
+    assert plan["spillover_day"] is None and all(d["in_month"] for d in plan["days"])
+    assert [m["date"] for m in plan["suggested_marks"]][-1] == "2026-12-31"
+
+    # Without a range the defaults are echoed back as the range.
+    plan = client.post("/api/monthly-requests/plan", json={"year": 2026, "month": 12}).json()
+    assert (plan["first_day"], plan["last_day"]) == ("2026-12-02", "2027-01-01")
+
+    bad = client.post("/api/monthly-requests/plan", json={
+        "year": 2026, "month": 12, "first_day": "2026-11-30",
+    })
+    assert bad.status_code == 400 and "first day must fall in December 2026" in bad.json()["detail"]
+
+    r = client.post("/api/monthly-requests/template-preview", json={
+        "year": 2027, "month": 1, "first_day": "2027-01-01", "closes_at": "2026-11-30",
+        "marks": [{"date": "2027-01-01", "label": "New Year's Day"}],
+    })
+    assert r.status_code == 200, r.text
+    ws = openpyxl.load_workbook(r.json()["path"]).worksheets[0]
+    assert ws["B3"].value == 1 and ws["AF3"].value == 31 and ws["B2"].value == "New Year's Day"
+    assert r.json()["marks_summary"] == ["Jan 1: New Year's Day"]

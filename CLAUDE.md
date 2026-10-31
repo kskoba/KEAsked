@@ -16,8 +16,14 @@ scheduler used to copy last month's blank xlsx, retype rows 3-4, paint the
 holiday window yellow, type its label in row 2 and edit A60 ("Return by
 MIDNIGHT ...", which went stale: the Jan 2027 and Feb 2027 sheets still
 said SEPTEMBER 30; Feb 2027 also missed Family Day). Now:
-- `scheduler/backend/month_calendar.py` (pure): `period_days` (Nov 1 -> Dec
-  1, Dec 2 -> Jan 1, Jan 2 -> 31, else whole month; `SPILLOVER_MONTHS`),
+- `scheduler/backend/month_calendar.py` (pure): `period_days` (DEFAULT Nov
+  1 -> Dec 1, Dec 2 -> Jan 1, Jan 2 -> 31, else whole month;
+  `SPILLOVER_MONTHS`; the scheduler may type the sheet's first and last day
+  instead -- user request 2026-10-31 -- `resolve_period_range` /
+  `validate_period_range`: first day inside the month, last day at most
+  `MAX_SPILLOVER_DAYS`=7 past month end, builder caps at 32 columns; the
+  Christmas relabel applies only when the sheet reaches Dec 24, so a
+  January sheet started on the 1st shows "New Year's Day"),
   Alberta's 9 statutory holidays + 3 optional (Easter Monday, Heritage
   Day, Boxing Day -- hints only), `suggested_marks` (every statutory
   holiday in the period; Dec 24 -> Jan 1 relabelled "Christmas Rules
@@ -38,16 +44,21 @@ said SEPTEMBER 30; Feb 2027 also missed Family Day). Now:
   and night Q.xlsx` (sked reads month + year from it). Verified: parses
   identically to the hand-made Dec 2026 sheet through sked's app.js logic
   (dayCols 31, yellow 24..1) and through importer.py.
-- Routes: `POST /api/monthly-requests/plan {year, month}` (days, spill-over,
-  suggested + optional marks, window defaults = the month before, master
-  health), `POST /api/monthly-requests/template-preview` (saves under
+- Routes: `POST /api/monthly-requests/plan {year, month, first_day?,
+  last_day?}` (days, spill-over, suggested + optional marks, the range used
+  + the month's default range, window defaults = the month before, master
+  health; 400 on a bad range), `POST /api/monthly-requests/template-preview` (saves under
   `<config>/generated-templates/`), and `/send` accepts `generate_template
   + year + month + marks` (builds in memory, `sked_client.
   upload_period_template_bytes`, keeps a copy in generated-templates/; the
   email then states the covered days, the deadline and the yellow runs).
   `template_path` (own file) and "reuse what's on sked" still work.
 - Pane (`MonthlyRequestsPanel.jsx`): Month/Year pickers drive period id,
-  label, window; a Monday-first calendar of the period's days (spill-over
+  label, window; "Sheet's first day" / "Sheet's last day" date inputs
+  (blank = default, shown under them with a "Use the default" link;
+  retyping the range keeps the marks still inside it and pre-marks
+  holidays on newly added days; `first_day`/`last_day` ride along on
+  plan, preview and send); a Monday-first calendar of the period's days (spill-over
   day italic) -- click toggles yellow, a new mark takes the holiday's name
   or extends the neighbouring run's label; one label input per run; "Reset
   to suggested"; "Preview the .xlsx" (opens locally, path on a remote

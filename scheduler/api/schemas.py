@@ -192,6 +192,11 @@ class MarkedDayModel(BaseModel):
 class PeriodPlanRequest(BaseModel):
     year: int
     month: int
+    # The sheet's first and last day (ISO dates). Omitted = the department's
+    # default range for the month (Nov 1 -> Dec 1, Dec 2 -> Jan 1, Jan 2 ->
+    # 31, else the whole month); the scheduler may type their own.
+    first_day: str | None = None
+    last_day: str | None = None
 
 
 class PeriodPlanDay(BaseModel):
@@ -203,6 +208,10 @@ class PeriodPlanDay(BaseModel):
 class PeriodPlanResponse(BaseModel):
     period_id: str
     label: str
+    first_day: str            # the range actually described (ISO dates)
+    last_day: str
+    default_first_day: str    # the department's conventional range for this month
+    default_last_day: str
     days: list[PeriodPlanDay]
     spillover_day: str | None
     suggested_marks: list[MarkedDayModel]      # pre-ticked: statutory holidays + the Christmas window
@@ -217,6 +226,8 @@ class PeriodPlanResponse(BaseModel):
 class TemplatePreviewRequest(BaseModel):
     year: int
     month: int
+    first_day: str | None = None   # ISO dates; omitted = the default range
+    last_day: str | None = None
     marks: list[MarkedDayModel] = []
     closes_at: str | None = None   # ISO date or datetime; fills the "Return by MIDNIGHT ..." line
 
@@ -234,14 +245,17 @@ class SendMonthlyRequestsRequest(BaseModel):
     closes_at: str  # ISO 8601
     # Where the period's blank template comes from, in priority order:
     # (1) `template_path`: a local .xlsx the scheduler picked (legacy path);
-    # (2) `generate_template` with `year`/`month`/`marks`: KEAsked builds it
-    #     from the committed master (scheduler/backend/request_template.py);
+    # (2) `generate_template` with `year`/`month`/`marks` (and optionally
+    #     `first_day`/`last_day`): KEAsked builds it from the committed
+    #     master (scheduler/backend/request_template.py);
     # (3) neither: reuse whatever is already uploaded to this period on sked
     #     (the "resend / target specific people" path).
     template_path: str | None = None
     generate_template: bool = False
     year: int | None = None
     month: int | None = None
+    first_day: str | None = None
+    last_day: str | None = None
     marks: list[MarkedDayModel] = []
     extra_message: str = ""  # free text from the scheduler, included in the email body
     physician_ids: list[str] | None = None  # None = every active physician; otherwise just these

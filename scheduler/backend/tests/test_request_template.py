@@ -98,3 +98,29 @@ def test_generated_template_imports_through_importer(tmp_path):
 def test_marks_outside_the_period_are_rejected():
     with pytest.raises(ValueError):
         rt.build_request_template(2027, 1, [mc.MarkedDay(dt.date(2027, 1, 1), "New Year's Day")])
+
+
+def test_explicit_range_changes_the_day_columns():
+    # December typed as Dec 1 -> Jan 2: 33 days do not fit the 32 columns.
+    with pytest.raises(ValueError, match="do not fit"):
+        rt.build_request_template(2026, 12, first_day=dt.date(2026, 12, 1), last_day=dt.date(2027, 1, 2))
+    # December typed as Dec 1 -> Dec 31 (no spill-over day).
+    marks = mc.suggested_marks(2026, 12, dt.date(2026, 12, 1), dt.date(2026, 12, 31))
+    ws = _sheet(rt.build_request_template(
+        2026, 12, marks, first_day=dt.date(2026, 12, 1), last_day=dt.date(2026, 12, 31),
+    ))
+    assert [ws.cell(3, c).value for c in range(2, 33)] == list(range(1, 32))
+    assert ws.cell(3, 33).value is None
+    assert ws.cell(4, 2).value == "T"                          # Dec 1 2026 is a Tuesday
+    assert _yellow_days(ws, 3) == list(range(24, 32))
+    assert ws.cell(2, 2 + 23).value == mc.CHRISTMAS_WINDOW_LABEL   # above Dec 24 (col Y)
+    assert all(ws.cell(2, c).value != "Jan" for c in range(2, 34))
+    # Two spill-over days: "Jan" sits above the first only; a mark on the
+    # second is accepted because it is inside the typed range.
+    ws = _sheet(rt.build_request_template(
+        2026, 12, [mc.MarkedDay(dt.date(2027, 1, 2), "")],
+        first_day=dt.date(2026, 12, 3), last_day=dt.date(2027, 1, 2),
+    ))
+    assert [ws.cell(3, c).value for c in range(2, 33)] == list(range(3, 32)) + [1, 2]
+    assert ws.cell(2, 31).value == "Jan" and ws.cell(2, 32).value is None
+    assert _yellow_days(ws, 3) == [2]

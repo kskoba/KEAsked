@@ -123,15 +123,18 @@ def build_request_template(
     closes_at: dt.date | None = None,
     mailbox: str = RETURN_TO_MAILBOX,
     master_path: Path | str = MASTER_PATH,
+    first_day: dt.date | None = None,
+    last_day: dt.date | None = None,
 ) -> bytes:
     """
     The blank request template for `year`/`month` as xlsx bytes.
 
     `marks` are the yellow days (any order; a mark outside the period is an
     error -- the UI only offers period days). `closes_at` fills A60; None
-    leaves the master's line untouched.
+    leaves the master's line untouched. `first_day`/`last_day` override the
+    department's default range for the month (see month_calendar).
     """
-    days = period_days(year, month)
+    days = period_days(year, month, first_day, last_day)
     if len(days) > _MAX_DAY_COLS:
         raise ValueError(f"{len(days)} days do not fit the template's {_MAX_DAY_COLS} day columns")
     marks = list(marks)
@@ -185,8 +188,9 @@ def build_request_template(
     for start, _end, label in labelled_runs(marks):
         if label:
             ws.cell(_ROW_LABEL, col_of[start]).value = label
-    for d in days:
-        if d.month != month and ws.cell(_ROW_LABEL, col_of[d]).value in (None, ""):
+    for prev, d in zip([None, *days], days):
+        first_spill = d.month != month and (prev is None or prev.month == month)
+        if first_spill and ws.cell(_ROW_LABEL, col_of[d]).value in (None, ""):
             ws.cell(_ROW_LABEL, col_of[d]).value = d.strftime("%b")
 
     ws.cell(_ROW_NAME, 1).value = NAME_PLACEHOLDER

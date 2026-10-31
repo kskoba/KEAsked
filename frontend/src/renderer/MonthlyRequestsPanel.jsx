@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react'
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   getSkedStatus, getEmailStatus, getPhysiciansFull, getSkedPeriods, sendMonthlyRequests,
   planMonthlyRequests, previewMonthlyRequestTemplate, setApiBaseUrl, getApiBaseUrl
@@ -43,6 +43,11 @@ function shortDate(iso) {
   return `${MONTH_NAMES[m - 1].slice(0, 3)} ${d}`
 }
 
+function monthEnd(year, month) {
+  const last = new Date(Date.UTC(year, month, 0)).getUTCDate()
+  return `${year}-${String(month).padStart(2, '0')}-${String(last).padStart(2, '0')}`
+}
+
 // Consecutive marked days sharing a label form one run -- the unit the
 // template labels (row 2 above the first day) and the email lists.
 function runsOf(marks) {
@@ -72,6 +77,12 @@ export default function MonthlyRequestsPanel() {
   const [plan, setPlan] = useState(null)          // PeriodPlanResponse for year/month
   const [planError, setPlanError] = useState(null)
   const [marks, setMarks] = useState({})          // isoDate -> label (yellow days)
+  // The sheet's first and last day, typed by the scheduler. '' = the
+  // department's default for the month (Dec 2 -> Jan 1 and so on), which the
+  // plan reports back as default_first_day / default_last_day.
+  const [firstDay, setFirstDay] = useState('')
+  const [lastDay, setLastDay] = useState('')
+  const lastPlanKey = useRef(null)               // "year-month" of the plan the marks belong to
 
   const [periodId, setPeriodId] = useState('')
   const [label, setLabel] = useState('')
@@ -116,20 +127,39 @@ export default function MonthlyRequestsPanel() {
     getSkedPeriods('shift_request').then((r) => setExistingPeriods(r.periods)).catch(() => setExistingPeriods([]))
   }, [apiBaseResolved])
 
+  // Picking another month drops any typed range: the new month gets its own default.
+  const changeMonth = useCallback((m) => { setMonth(m); setFirstDay(''); setLastDay('') }, [])
+  const changeYear = useCallback((y) => { setYear(y); setFirstDay(''); setLastDay('') }, [])
+
   // The month drives everything: period id, label, window defaults and the
-  // suggested yellow days. Re-fetched whenever the scheduler picks a month.
+  // suggested yellow days. Re-fetched whenever the scheduler picks a month
+  // or retypes the sheet's first / last day.
   useEffect(() => {
     if (!apiBaseResolved) return
     let cancelled = false
     setPlan(null)
     setPlanError(null)
-    planMonthlyRequests(year, month)
+    planMonthlyRequests(year, month, firstDay || null, lastDay || null)
       .then((p) => {
         if (cancelled) return
         setPlan(p)
+        const key = `${year}-${month}`
         const suggested = {}
         for (const m of p.suggested_marks) suggested[m.date] = m.label
-        setMarks(suggested)
+        if (lastPlanKey.current === key) {
+          // Same month, different range: keep the scheduler's marks that are
+          // still inside the sheet and pre-mark holidays on newly added days.
+          setMarks((prev) => {
+            const inRange = new Set(p.days.map((d) => d.date))
+            const next = {}
+            for (const [d, lbl] of Object.entries(prev)) if (inRange.has(d)) next[d] = lbl
+            for (const [d, lbl] of Object.entries(suggested)) if (!(d in next) && !(d in prev)) next[d] = lbl
+            return next
+          })
+        } else {
+          setMarks(suggested)
+        }
+        lastPlanKey.current = key
         if (!selectedExistingPeriodId) {
           setPeriodId(p.period_id)
           setLabel(p.label)
@@ -140,7 +170,7 @@ export default function MonthlyRequestsPanel() {
       .catch((err) => { if (!cancelled) setPlanError(err.message) })
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiBaseResolved, year, month])
+  }, [apiBaseResolved, year, month, firstDay, lastDay])
 
   const handleLoadExistingPeriod = useCallback((id) => {
     setSelectedExistingPeriodId(id)
@@ -166,6 +196,8 @@ export default function MonthlyRequestsPanel() {
     if (m) {
       setYear(Number(m[1]))
       setMonth(Number(m[2]))
+      setFirstDay('')
+      setLastDay('')
     }
   }, [existingPeriods, plan])
 
@@ -211,6 +243,14 @@ export default function MonthlyRequestsPanel() {
     for (const m of plan.suggested_marks) suggested[m.date] = m.label
     setMarks(suggested)
   }, [plan])
+
+  const resetRange = useCallback(() => { setFirstDay(''); setLastDay('') }, [])
+  const rangeIsDefault = !firstDay && !lastDay
+  // Bounds for the two date inputs (the backend enforces the same rule:
+  // first day inside the month, last day at most a week past month end).
+  const monthStartIso = `${year}-${String(month).padStart(2, '0')}-01`
+  const monthEndIso = monthEnd(year, month)
+  const lastDayMax = addDays(monthEndIso, 7)
 
   const activePhysicians = useMemo(() => {
     const list = (physicians || []).filter((p) => p.active)
@@ -258,18 +298,23 @@ export default function MonthlyRequestsPanel() {
       payload.generate_template = true
       payload.year = year
       payload.month = month
+      payload.first_day = firstDay || null
+      payload.last_day = lastDay || null
       payload.marks = marksPayload()
     }
     if (physicianIds) payload.physician_ids = physicianIds
     return payload
-  }, [periodId, label, opensAt, closesAt, extraMessage, templateSource, templatePath, year, month, marksPayload])
+  }, [periodId, label, opensAt, closesAt, extraMessage, templateSource, templatePath, year, month, firstDay, lastDay, marksPayload])
 
   const handlePreview = useCallback(async () => {
     if (!plan || previewing) return
     setPreviewing(true)
     setPreviewNote(null)
     try {
-      const res = await previewMonthlyRequestTemplate({ year, month, marks: marksPayload(), closes_at: closesAt || null })
+      const res = await previewMonthlyRequestTemplate({
+        year, month, first_day: firstDay || null, last_day: lastDay || null,
+        marks: marksPayload(), closes_at: closesAt || null
+      })
       let opened = false
       if (!remote && window.electronAPI?.openPath) {
         const err = await window.electronAPI.openPath(res.path)
@@ -283,7 +328,7 @@ export default function MonthlyRequestsPanel() {
     } finally {
       setPreviewing(false)
     }
-  }, [plan, previewing, year, month, marksPayload, closesAt, remote])
+  }, [plan, previewing, year, month, firstDay, lastDay, marksPayload, closesAt, remote])
 
   const handleSend = useCallback(async () => {
     if (!canSend) return
@@ -411,7 +456,7 @@ export default function MonthlyRequestsPanel() {
               <span className="text-slate-600 font-medium">Month</span>
               <select
                 value={month}
-                onChange={(e) => setMonth(Number(e.target.value))}
+                onChange={(e) => changeMonth(Number(e.target.value))}
                 disabled={!!selectedExistingPeriodId || sending}
                 className="mt-1 w-full rounded border border-slate-300 bg-white px-3 py-1.5 text-sm"
               >
@@ -422,7 +467,7 @@ export default function MonthlyRequestsPanel() {
               <span className="text-slate-600 font-medium">Year</span>
               <select
                 value={year}
-                onChange={(e) => setYear(Number(e.target.value))}
+                onChange={(e) => changeYear(Number(e.target.value))}
                 disabled={!!selectedExistingPeriodId || sending}
                 className="mt-1 w-full rounded border border-slate-300 bg-white px-3 py-1.5 text-sm"
               >
@@ -481,10 +526,55 @@ export default function MonthlyRequestsPanel() {
               {plan && (
                 <span className="text-xs text-slate-500">
                   {shortDate(plan.days[0].date)} – {shortDate(plan.days[plan.days.length - 1].date)} · {plan.days.length} days
-                  {plan.spillover_day ? ` (includes ${shortDate(plan.spillover_day)})` : ''}
+                  {plan.spillover_day ? ` (runs into ${MONTH_NAMES[Number(plan.spillover_day.slice(5, 7)) - 1]})` : ''}
                 </span>
               )}
             </div>
+
+            {templateSource !== 'file' && (
+              <div className="grid grid-cols-2 gap-4">
+                <label className="block text-sm">
+                  <span className="text-slate-600 font-medium">Sheet's first day</span>
+                  <input
+                    type="date"
+                    value={firstDay || plan?.default_first_day || ''}
+                    min={monthStartIso}
+                    max={monthEndIso}
+                    disabled={!calendarEditable || sending}
+                    onChange={(e) => setFirstDay(e.target.value)}
+                    className="mt-1 w-full rounded border border-slate-300 px-3 py-1.5 text-sm disabled:bg-slate-50 disabled:text-slate-500"
+                  />
+                </label>
+                <label className="block text-sm">
+                  <span className="text-slate-600 font-medium">Sheet's last day</span>
+                  <input
+                    type="date"
+                    value={lastDay || plan?.default_last_day || ''}
+                    min={firstDay || monthStartIso}
+                    max={lastDayMax}
+                    disabled={!calendarEditable || sending}
+                    onChange={(e) => setLastDay(e.target.value)}
+                    className="mt-1 w-full rounded border border-slate-300 px-3 py-1.5 text-sm disabled:bg-slate-50 disabled:text-slate-500"
+                  />
+                </label>
+                <span className="col-span-2 -mt-2 block text-xs text-slate-400">
+                  {plan
+                    ? `Default for ${MONTH_NAMES[month - 1]}: ${shortDate(plan.default_first_day)} – ${shortDate(plan.default_last_day)}` +
+                      (plan.default_last_day.slice(5, 7) !== String(month).padStart(2, '0')
+                        ? ' (November and December sheets carry the 1st of the next month, so January starts on the 2nd).'
+                        : '.')
+                    : 'The days the sheet covers; the default follows the department\'s November / December spill-over convention.'}
+                  {!rangeIsDefault && calendarEditable && (
+                    <>
+                      {' '}
+                      <button type="button" onClick={resetRange} className="text-sky-700 hover:text-sky-900 underline">
+                        Use the default
+                      </button>
+                    </>
+                  )}
+                </span>
+              </div>
+            )}
 
             {selectedExistingPeriodId && (
               <label className="flex items-center gap-2 text-sm text-slate-700">
@@ -506,7 +596,7 @@ export default function MonthlyRequestsPanel() {
               </div>
             )}
 
-            {planError && <p className="text-xs text-red-700">Could not describe this month: {planError}</p>}
+            {planError && <p className="text-xs text-red-700">Could not describe this period: {planError}</p>}
             {plan && !plan.master_ok && (
               <p className="text-xs text-red-700">The committed master template cannot be used: {plan.master_error}</p>
             )}

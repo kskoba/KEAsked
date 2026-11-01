@@ -10,6 +10,47 @@ order). Never put real names back into tracked files.
 
 ## ⭐ Next task — start here
 
+**HANDOFF 2026-11-01 (written on the Linux machine for the work PC; the
+repo itself syncs via Dropbox, so the files below are already here):**
+- **Template work is in two commits, both local, NOT pushed**: `366124b`
+  (generated template + holiday calendar pane) and `0126bf8` (typed
+  "Sheet's first day / last day" with the department's range as the
+  default). 12 commits sit ahead of `origin/master` in all -- run
+  `git push` from the work PC. The full description is the 2026-10-31
+  section right below this one.
+- **Working tree is clean** except the user's untracked note
+  `docs/# Start of a New Month.md` (leave it).
+- **Not yet done anywhere**: Unraid rebuild (`update-unraid-backend`
+  skill, SSH only when told) so the new `/api/monthly-requests/plan`,
+  `/template-preview` and the `generate_template` send reach the
+  container; `sync-config-to-unraid.sh` (P19 caps, P24 ramp change) --
+  BUT the user wants physicians.yaml kept to Dropbox only for now (see
+  the email note), so ask before syncing it anywhere. The local backend
+  on the Linux machine was never restarted onto this code.
+- **sked manual** `public/manual.html` section 3.2 + overview line edited
+  in the sked repo (Dropbox-synced, uncommitted): describes the pane,
+  the yellow calendar and the typed range. Needs a commit and
+  `npm run deploy`. sked's code needs NO change for the template work.
+- **physicians.yaml (gitignored) gained 89 emails on 2026-10-31** from
+  the department's email list xlsx in the Dropbox "KEA Scheduling"
+  folder (every active physician now has one; a dated backup of the
+  pre-edit yaml sits in that same folder). User instruction: neither
+  that folder nor physicians.yaml is to be synced anywhere other than
+  Dropbox. Open decisions for the user: P07 kept the roster's existing
+  address over the sheet's different one; one casual on the sheet has no
+  roster entry at all; P101 is not on the sheet (existing address kept).
+- **Quick smoke test on the work PC**: start the stack (`run-kea-scheduler`
+  skill), open Send Monthly Shift Requests, pick March 2027: Good Friday
+  (Mar 26) should be yellow, "Sheet's first day" 2027-03-01 / last
+  2027-03-31; click Mar 27-31 for EPSB spring break, "Preview the .xlsx",
+  check rows 2/3/4 and A60 in Excel. Nothing is sent until the Send
+  button. Tests: `pytest scheduler/backend/tests/test_month_calendar.py
+  test_request_template.py test_monthly_request_template_routes.py`
+  (14) and `cd frontend && npx electron-vite build`.
+- **Approved next phase, not started**: see the last bullet of the
+  2026-10-31 section (sked renders from a period definition, JSON import,
+  print view).
+
 **2026-10-31 — the monthly request template is GENERATED, not hand-made
 (first use: the March 2027 requests, everyone entering on sked).** The
 scheduler used to copy last month's blank xlsx, retype rows 3-4, paint the

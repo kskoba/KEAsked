@@ -33,7 +33,12 @@ a = Analysis(
     ['scheduler/api/server.py'],
     pathex=['.'],
     binaries=_ortools_binaries + _libs_dlls,
-    datas=_ortools_datas,
+    datas=_ortools_datas + [
+        # The committed blank request sheet that request_template.py patches
+        # into each month's template (looked up as scheduler/data/ next to
+        # the frozen scheduler package -- see request_template.MASTER_PATH).
+        ('scheduler/data/request_template_master.xlsx', 'scheduler/data'),
+    ],
     hiddenimports=_ortools_hiddenimports + [
         # uvicorn dynamic imports
         'uvicorn.logging',

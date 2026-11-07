@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import datetime as dt
 import io
+import sys
 from copy import copy
 from pathlib import Path
 from typing import Iterable
@@ -56,7 +57,21 @@ from scheduler.backend.month_calendar import (
     period_label,
 )
 
-MASTER_PATH = Path(__file__).resolve().parent.parent / "data" / "request_template_master.xlsx"
+
+
+def _master_path() -> Path:
+    """
+    scheduler/data/request_template_master.xlsx -- next to this package in a
+    checkout, or under PyInstaller's unpack directory in the packaged app
+    (the spec bundles it at scheduler/data/, matching the source layout).
+    """
+    base = Path(getattr(sys, "_MEIPASS", "")) if getattr(sys, "frozen", False) else None
+    if base is not None:
+        return base / "scheduler" / "data" / "request_template_master.xlsx"
+    return Path(__file__).resolve().parent.parent / "data" / "request_template_master.xlsx"
+
+
+MASTER_PATH = _master_path()
 
 # The mailbox physicians have always been told to return the sheet to
 # (user decision 2026-10-31: keep the original address).

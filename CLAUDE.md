@@ -50,6 +50,20 @@ repo itself syncs via Dropbox, so the files below are already here):**
 - **Approved next phase, not started**: see the last bullet of the
   2026-10-31 section (sked renders from a period definition, JSON import,
   print view).
+- **2026-11-05 (Linux machine)**: Roster Editor's Calendar link section now
+  loads the two links by itself when a physician is selected (per-window
+  cache, "Retry loading links" only on failure; quiet note when sked is not
+  configured). The "Generate calendar link" button is gone. Verified the
+  link is deterministic (sked signs physician id + fixed 2099 expiry with
+  HMAC; two mints via the local backend were byte-identical), so nothing is
+  stored in physicians.yaml or anywhere else. sked manual section on
+  calendar links updated (sked repo, still uncommitted with the 3.2 edit).
+  Unraid confirmed stale over HTTP (`/api/monthly-requests/plan` and
+  `/api/sked/calendar-link` both 404). **User 2026-11-05: Unraid is not
+  being used for solves at the moment (the recent 3%-gap January runs were
+  all local); they will copy physicians.yaml and rebuild there themselves,
+  by script, when it is needed. Do not raise the Unraid rebuild or config
+  sync as a pending item.**
 
 **2026-10-31 — the monthly request template is GENERATED, not hand-made
 (first use: the March 2027 requests, everyone entering on sked).** The

@@ -56,7 +56,12 @@ export default function RosterEditor() {
   const [linkBusy, setLinkBusy] = useState(false)
   const [linkError, setLinkError] = useState(null)
   // Calendar links (sked .ics feed + live view) for the selected physician.
-  const [calLink, setCalLink] = useState(null)       // { feed_url, live_url } once generated
+  // sked signs the same physician id to the same token every time (fixed
+  // expiry, pure HMAC), so the links are derived, not stored: they are
+  // fetched when a physician is selected and remembered for this window's
+  // lifetime in calLinkCache so switching back and forth is instant.
+  const [calLink, setCalLink] = useState(null)       // { feed_url, live_url } once fetched
+  const calLinkCache = useRef(new Map())             // physician id -> { feed_url, live_url }
   const [calBusy, setCalBusy] = useState(false)
   const [calError, setCalError] = useState(null)
   const [calCopied, setCalCopied] = useState(null)   // 'feed' | 'live' | null
@@ -107,8 +112,25 @@ export default function RosterEditor() {
       .catch(err => { setPeriods([]); setPeriodsError(err.message) })
   }, [apiBaseResolved])
 
-  // A generated link belongs to one physician: drop it when the selection changes.
-  useEffect(() => { setCalLink(null); setCalError(null); setCalCopied(null); setCalMailResult(null) }, [selectedId])
+  // The links belong to one physician: swap them when the selection changes,
+  // fetching from sked the first time each physician is opened. A 400 means
+  // sked isn't configured; shown quietly like the Preference sheet section.
+  useEffect(() => {
+    setCalLink(null); setCalError(null); setCalCopied(null); setCalMailResult(null)
+    if (!selectedId || !apiBaseResolved) return
+    const cached = calLinkCache.current.get(selectedId)
+    if (cached) { setCalLink(cached); return }
+    let cancelled = false
+    setCalBusy(true)
+    getCalendarLink(selectedId)
+      .then(link => {
+        calLinkCache.current.set(selectedId, link)
+        if (!cancelled) setCalLink(link)
+      })
+      .catch(err => { if (!cancelled) setCalError(err.message) })
+      .finally(() => { if (!cancelled) setCalBusy(false) })
+    return () => { cancelled = true }
+  }, [selectedId, apiBaseResolved])
 
   const handleEmailCalendarLink = useCallback(() => {
     if (!form || !form.email) return
@@ -138,12 +160,13 @@ export default function RosterEditor() {
       .finally(() => setBulkMailBusy(false))
   }, [physicians])
 
-  const handleGenerateCalendarLink = useCallback(() => {
+  // Retry after a failed fetch (backend down, sked unreachable).
+  const handleRetryCalendarLink = useCallback(() => {
     if (!form) return
     setCalBusy(true)
     setCalError(null)
     getCalendarLink(form.id)
-      .then(setCalLink)
+      .then(link => { calLinkCache.current.set(form.id, link); setCalLink(link) })
       .catch(err => setCalError(err.message))
       .finally(() => setCalBusy(false))
   }, [form])
@@ -667,17 +690,24 @@ export default function RosterEditor() {
               <Section title="Calendar link">
                 <p className="text-xs text-slate-500 mb-2">
                   A permanent personal calendar for this physician. The feed URL goes into Google or Apple
-                  Calendar as a subscription; the live view shows the current schedule instantly. Both are
-                  the same link every time it is generated, so it can be sent once and kept.
+                  Calendar as a subscription; the live view shows the current schedule instantly. The links
+                  are permanent (the same every time), so they can be sent once and kept.
                 </p>
                 {!calLink ? (
-                  <button
-                    onClick={handleGenerateCalendarLink}
-                    disabled={calBusy}
-                    className="px-3 py-1.5 text-sm font-medium text-white bg-sky-600 rounded-md hover:bg-sky-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                  >
-                    {calBusy ? 'Generating…' : 'Generate calendar link'}
-                  </button>
+                  calBusy ? (
+                    <p className="text-sm text-slate-400">Loading links…</p>
+                  ) : calError && calError.toLowerCase().includes('not configured') ? (
+                    <p className="text-sm text-slate-500">sked is not configured, so no calendar links are available.</p>
+                  ) : (
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={handleRetryCalendarLink}
+                        className="px-3 py-1.5 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50 transition-colors"
+                      >
+                        Retry loading links
+                      </button>
+                    </div>
+                  )
                 ) : (
                   <div className="space-y-2">
                     <div>
@@ -728,7 +758,7 @@ export default function RosterEditor() {
                     </span>
                   )}
                 </div>
-                {calError && <p className="text-xs text-red-600 mt-1">{calError}</p>}
+                {calError && !calError.toLowerCase().includes('not configured') && <p className="text-xs text-red-600 mt-1">{calError}</p>}
               </Section>
 
               <Section title="Validation rule overrides">

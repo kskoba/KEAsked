@@ -50,17 +50,21 @@ function monthEnd(year, month) {
 
 // Consecutive marked days sharing a label form one run -- the unit the
 // template labels (row 2 above the first day) and the email lists.
+// Grouping compares trimmed labels, but `label` keeps the text exactly as
+// typed: the run's input is bound to it, and a trimmed value would eat the
+// space the user just typed after "Boxing" (the backend strips on receipt).
 function runsOf(marks) {
   const dates = Object.keys(marks).sort()
   const runs = []
   for (const d of dates) {
-    const label = (marks[d] || '').trim()
+    const raw = marks[d] || ''
+    const key = raw.trim()
     const last = runs[runs.length - 1]
-    if (last && last.label === label && addDays(last.end, 1) === d) {
+    if (last && last.key === key && addDays(last.end, 1) === d) {
       last.end = d
       last.dates.push(d)
     } else {
-      runs.push({ start: d, end: d, label, dates: [d] })
+      runs.push({ start: d, end: d, label: raw, key, dates: [d] })
     }
   }
   return runs

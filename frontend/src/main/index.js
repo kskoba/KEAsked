@@ -225,14 +225,27 @@ function startPythonServer(configDir) {
 }
 
 function stopPythonServer() {
-  if (pythonProcess) {
-    console.log('[main] Stopping Python server...')
-    if (process.platform === 'win32') {
-      spawn('taskkill', ['/pid', String(pythonProcess.pid), '/f', '/t'])
-    } else {
-      pythonProcess.kill('SIGTERM')
+  const proc = pythonProcess
+  pythonProcess = null
+  if (process.platform === 'win32') {
+    // Synchronous on purpose. This runs from window-all-closed / before-quit,
+    // and an async spawn('taskkill') used to be torn down with the exiting
+    // Electron process before it could act, leaving scheduler_server.exe
+    // alive on port 5000 (seen 2026-11-12: a stale backend survived an
+    // uninstall + reinstall, which then could not replace the locked exe).
+    // /t takes the PyInstaller bootloader's uvicorn child down with it.
+    const { execSync } = require('child_process')
+    if (proc) {
+      console.log('[main] Stopping Python server...')
+      try { execSync(`taskkill /pid ${proc.pid} /f /t 2>nul`, { stdio: 'ignore' }) } catch {}
     }
-    pythonProcess = null
+    // Fallback for a backend this process no longer tracks (re-parented
+    // child, a previous run's survivor). Only in a packaged build: in dev a
+    // developer may be running the backend by hand and expects it to stay.
+    if (app.isPackaged) killPortWindows(5000)
+  } else if (proc) {
+    console.log('[main] Stopping Python server...')
+    proc.kill('SIGTERM')
   }
 }
 

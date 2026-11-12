@@ -1,0 +1,199 @@
+name: Build Installers
+
+# Forgejo version of .github/workflows/build.yml (Forgejo reads this folder
+# and ignores .github/workflows once it exists).
+#
+# Runners (all self-hosted, registered globally on the Forgejo instance):
+#   windows  -- Windows VM on Unraid, host mode. Needs on PATH: Git for
+#               Windows (provides bash), Python 3.11 (the `py` launcher),
+#               Node 20+.
+#   macos    -- the Mac mini (`widget-mac`), host mode. Needs: Homebrew
+#               python@3.11, Node 20+, Xcode command line tools.
+#   docker   -- the Unraid runner (`gimli`), used only to publish a release.
+#
+# Host-mode runners keep their disks between runs, so each job builds in a
+# fresh venv and cleans up what it creates outside the workspace.
+#
+# Repo secrets (Settings -> Actions -> Secrets):
+#   APPLE_CERTIFICATE              base64 of the Developer ID Application .p12
+#   APPLE_CERTIFICATE_PASSWORD     password for that .p12
+#   APPLE_ID                       Apple ID email used for notarization
+#   APPLE_APP_SPECIFIC_PASSWORD    app-specific password (appleid.apple.com)
+#   APPLE_TEAM_ID                  10-character Team ID
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  # ─── Windows x64 ────────────────────────────────────────────────────────────
+  build-windows:
+    runs-on: windows
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create Python environment
+        run: |
+          rm -rf .venv dist_backend build_pyinstaller release
+          py -3.11 -m venv .venv
+          .venv/Scripts/python -m pip install --upgrade pip
+          .venv/Scripts/python -m pip install -r scheduler/requirements.txt pyinstaller
+
+      - name: Copy scheduler config
+        run: cp scheduler/config/scheduler_config.template.yaml scheduler/config/scheduler_config.yaml
+
+      - name: Bundle Python backend (PyInstaller)
+        run: |
+          .venv/Scripts/python -m PyInstaller scheduler_server.spec \
+            --distpath dist_backend \
+            --workpath build_pyinstaller \
+            --noconfirm
+
+      - name: Install npm dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build Windows installer
+        working-directory: frontend
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-vite build && npx electron-builder --win --publish=never
+
+      - name: Upload Windows artifact
+        uses: forgejo/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: release/*.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  # ─── macOS ARM64 (Apple Silicon) ────────────────────────────────────────────
+  # Intel Mac users: install Rosetta 2 -- the ARM64 binary runs via Rosetta.
+  build-mac:
+    runs-on: macos
+    env:
+      # scripts/notarize.js refuses to ship an unnotarized build when CI is set.
+      CI: 'true'
+      KEYCHAIN_NAME: kea-signing.keychain-db
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create Python environment
+        run: |
+          rm -rf .venv dist_backend build_pyinstaller release
+          python3.11 -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install -r scheduler/requirements.txt pyinstaller
+
+      - name: Copy scheduler config
+        run: cp scheduler/config/scheduler_config.template.yaml scheduler/config/scheduler_config.yaml
+
+      - name: Bundle Python backend (PyInstaller)
+        run: |
+          .venv/bin/python -m PyInstaller scheduler_server.spec \
+            --distpath dist_backend \
+            --workpath build_pyinstaller \
+            --noconfirm
+
+      - name: Install npm dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      # ── Certificate import ─────────────────────────────────────────────────
+      # A keychain of its own with a known password, so signing works from the
+      # runner without touching (or needing to unlock) the login keychain.
+      - name: Import Developer ID certificate
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$HOME/Library/Keychains/$KEYCHAIN_NAME"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          P12="$(mktemp -t kea-cert).p12"
+
+          # A previous run that died may have left the keychain behind.
+          security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+
+          echo "$CERTIFICATE_BASE64" | base64 --decode -o "$P12"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          security import "$P12" \
+            -P "$CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          rm -f "$P12"
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+      # ── Sign, notarize, and package ────────────────────────────────────────
+      # Do NOT set CSC_LINK/CSC_KEY_PASSWORD: electron-builder would re-import
+      # the cert. It discovers the Developer ID Application identity from the
+      # keychain search list. APPLE_* are read by scripts/notarize.js.
+      - name: Build macOS DMG (sign + notarize)
+        working-directory: frontend
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npx electron-builder --mac --arm64 --publish=never
+
+      - name: Upload macOS artifact
+        uses: forgejo/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: release/*.dmg
+          if-no-files-found: error
+          retention-days: 14
+
+      # The Mac is shared with other projects' builds: put the keychain search
+      # list back and remove the certificate whatever happened above.
+      - name: Remove signing keychain
+        if: always()
+        run: |
+          security list-keychains -d user -s login.keychain-db
+          security delete-keychain "$HOME/Library/Keychains/$KEYCHAIN_NAME" 2>/dev/null || true
+
+  # ─── Forgejo release (tag pushes only) ──────────────────────────────────────
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-windows, build-mac]
+    runs-on: docker
+    steps:
+      - name: Download all artifacts
+        uses: forgejo/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create release
+        uses: actions/forgejo-release@v2
+        with:
+          direction: upload
+          url: ${{ github.server_url }}
+          repo: ${{ github.repository }}
+          tag: ${{ github.ref_name }}
+          title: "KEA Physician Scheduler ${{ github.ref_name }}"
+          release-dir: dist
+          token: ${{ secrets.GITHUB_TOKEN }}
+          release-notes: |
+            ## Downloads
+            | Platform | File |
+            |---|---|
+            | Windows (x64) | `KEA Physician Scheduler Setup *.exe` |
+            | macOS (Apple Silicon + Intel via Rosetta 2) | `*.dmg` |
+
+            > **macOS note:** The app is signed and notarized. Double-click the DMG to install normally.

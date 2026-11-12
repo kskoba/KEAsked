@@ -10,6 +10,32 @@ order). Never put real names back into tracked files.
 
 ## ⭐ Next task — start here
 
+**2026-11-11 — moving off GitHub to the Forgejo instance on Unraid; desktop
+installers move to self-hosted runners (Mac mini + a Windows VM).** Read
+`MIGRATION_PLAN.md` (repo root, untracked; a copy of the one in
+`../keats-time`, keep the two identical) before touching remotes, CI or
+release builds -- the section "KEAsked desktop installers" at its end is
+the to-do list. `.forgejo/workflows/build.yml` is drafted, never run, not
+committed. The plan holds account identifiers and internal addresses: do
+not commit it here without the user's say-so.
+
+**2026-11-12 -- the Windows build runner exists.** It is the Windows 11 VM
+`cog-windows` on Unraid (Tailscale `100.73.36.107`, user `cog`; `ssh
+cog-windows` works from the Linux machine, remote shell is `cmd.exe`).
+Forgejo runner `cog-windows`, labels `windows` / `windows-x64`, host mode,
+files in `C:\forgejo-runner\`, scheduled task `ForgejoRunner`. Tools: Git
+bash, Python 3.11 (`py -3.11`), Node 26. A throwaway job passed on it; the
+KEAsked `build-windows` job has NOT run yet. Watch on the first run: the
+GitHub workflow pinned Node 20 and the VM has Node 26 (Mac mini has 22),
+untested with electron-builder 24. Automatic Windows updates are off by
+policy on the VM. Details in the plan, item 5 of the KEAsked to-do list.
+**Mac mini ready too (2026-11-12):** Python 3.11 installed; every
+`build-mac` step was run by hand over SSH (unsigned .dmg built, Node 22 +
+electron-builder 24 fine) and the keychain steps were rehearsed with a
+self-signed cert. The `forgejo` remote exists. Remaining: enable Actions +
+the five Apple secrets on `kskoba/KEAsked` (user, in the Forgejo web UI),
+commit + push `build.yml` to `forgejo`, start a manual run.
+
 **HANDOFF 2026-11-01 (written on the Linux machine for the work PC; the
 repo itself syncs via Dropbox, so the files below are already here):**
 - **Template work is in two commits, both local, NOT pushed**: `366124b`
